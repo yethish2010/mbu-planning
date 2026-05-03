@@ -970,6 +970,20 @@ const getRoomDisplayLabel = (room: any, rooms: any[] = []) => {
   return parentLabel ? `${room.room_number} inside ${parentLabel}` : room.room_number;
 };
 
+const getRoomNameDisplay = (room: any) => {
+  if (!room) return '';
+  const roomLayout = normalizeRoomLayoutValue(room?.room_layout);
+  if (HIERARCHY_CHILD_ROOM_LAYOUTS.includes(roomLayout)) return '';
+  const explicitRoomName = room?.room_name?.toString().trim();
+  if (explicitRoomName) return explicitRoomName;
+  const labName = room?.lab_name?.toString().trim();
+  if (labName) return labName;
+  if (HIERARCHY_PARENT_ROOM_LAYOUTS.includes(roomLayout)) {
+    return room?.room_section_name?.toString().trim() || '';
+  }
+  return '';
+};
+
 const findRoomsByImportLabel = (rooms: any[], value: unknown) => {
   const normalizedValue = normalizeLookupValue(value);
   const lookupVariants = new Set(getRoomLookupVariants(value));
@@ -1309,10 +1323,11 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   Room: {
-    headers: ['Room ID', 'Room Number', 'Room Aliases', 'Building', 'Block / Direct Floors', 'Floor', 'Room Layout', 'Sub Room Count', 'Room Type', 'Sub Room Type', 'Sub Room Name', 'Parent Room', 'Usage Category', 'Is Bookable', 'Capacity', 'Status', 'Lab Name', 'Sub Lab Name', 'Restroom For'],
+    headers: ['Room ID', 'Room Number', 'Room Name', 'Room Aliases', 'Building', 'Block / Direct Floors', 'Floor', 'Room Layout', 'Sub Room Count', 'Room Type', 'Sub Room Type', 'Sub Room Name', 'Parent Room', 'Usage Category', 'Is Bookable', 'Capacity', 'Status', 'Lab Name', 'Sub Lab Name', 'Restroom For'],
     instructions: [
       'You can safely export Room Management data, edit it in Excel, and import it back to update existing rows. Keep Room ID, Room Number, Building, Block / Direct Floors, and Floor unchanged unless you intentionally want to move the room.',
       'For re-importing exported files, keep the exported Floor and Block / Direct Floors labels exactly as they appear in the file so the importer can match the same room location correctly.',
+      'Room Name is the main name for a normal, shared, or parent room. For Split Child or Inside Child rows, keep Room Name blank and use Sub Room Name instead.',
       'Parent Room / Inside / Parent Room is optional for non-child rows. Leave it blank or use - only when there is no parent room.',
       'Use Shared Room for one physical room with multiple doors/entrances. It behaves like a normal single room and does not need Sub Room Count, Sub Room Name, or Parent Room.',
       'For seminar halls or shared venues with multiple room numbers like 4015 and 4016, create one canonical room row and list the alternate labels in Room Aliases separated by commas.',
@@ -1329,6 +1344,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       {
         'Room ID': 'ROOM-LAB-201',
         'Room Number': 'LAB-201',
+        'Room Name': 'Computer Lab',
         'Room Aliases': '',
         Building: 'M-Plaza',
         'Block / Direct Floors': 'Block A',
@@ -1350,6 +1366,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       {
         'Room ID': 'ROOM-SH-4015',
         'Room Number': '4015',
+        'Room Name': 'Shared Seminar Hall',
         'Room Aliases': '4016',
         Building: 'M-Plaza',
         'Block / Direct Floors': 'Direct floors',
@@ -1371,6 +1388,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       {
         'Room ID': 'ROOM-LAB-201A',
         'Room Number': 'LAB-201-A',
+        'Room Name': '',
         Building: 'M-Plaza',
         'Block / Direct Floors': 'Block A',
         Floor: 'First Floor',
@@ -1391,6 +1409,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       {
         'Room ID': 'ROOM-LAB-201S',
         'Room Number': 'LAB-201-S',
+        'Room Name': '',
         Building: 'M-Plaza',
         'Block / Direct Floors': 'Block A',
         Floor: 'First Floor',
@@ -1411,6 +1430,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       {
         'Room ID': 'ROOM-019',
         'Room Number': '19',
+        'Room Name': 'Main Room 19',
         Building: 'M-Plaza',
         'Block / Direct Floors': 'Block A',
         Floor: 'First Floor',
@@ -1431,6 +1451,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       {
         'Room ID': 'ROOM-020',
         'Room Number': '20',
+        'Room Name': '',
         Building: 'M-Plaza',
         'Block / Direct Floors': 'Block A',
         Floor: 'First Floor',
@@ -4804,13 +4825,16 @@ function RoomManagement() {
     const parentRoomId = data.parent_room_id ? Number(data.parent_room_id) : null;
     const roomLayout = normalizeRoomLayoutValue(data.room_layout);
     const isChildLayout = HIERARCHY_CHILD_ROOM_LAYOUTS.includes(roomLayout);
+    const parentRoomName = data.room_name?.toString().trim() || '';
     const parentLabName = data.lab_name?.toString().trim() || '';
     const childLabName = data.sub_lab_name?.toString().trim() || '';
     const effectiveLabName = (isChildLayout ? (childLabName || parentLabName) : (parentLabName || childLabName));
+    const effectiveRoomName = isChildLayout ? '' : (parentRoomName || effectiveLabName || data.room_section_name?.toString().trim() || '');
     const isInfrastructureSpace = isNonCapacityRoomType(roomType);
     const requiresCapacity = isCapacityRoomType(roomType);
     const payload = {
       ...data,
+      room_name: effectiveRoomName,
       room_aliases: normalizeRoomAliases(data.room_aliases),
       room_type: roomType,
       lab_name: effectiveLabName || data.room_section_name?.toString().trim() || '',
@@ -4832,6 +4856,7 @@ function RoomManagement() {
     } else if (HIERARCHY_PARENT_ROOM_LAYOUTS.includes(payload.room_layout)) {
       payload.parent_room_id = null;
     } else if (HIERARCHY_CHILD_ROOM_LAYOUTS.includes(payload.room_layout)) {
+      payload.room_name = '';
       payload.sub_room_count = null;
     }
 
@@ -4892,6 +4917,13 @@ function RoomManagement() {
       key: 'room_number',
       label: 'Room Number',
       render: (item: any) => getRoomDisplayLabel(item, rooms),
+    },
+    {
+      key: 'room_name',
+      label: 'Room Name',
+      required: false,
+      show: (formData: any) => !HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(formData.room_layout)),
+      render: (item: any) => getRoomNameDisplay(item) || '-',
     },
     {
       key: 'room_aliases',
@@ -4986,7 +5018,7 @@ function RoomManagement() {
         if (HIERARCHY_PARENT_ROOM_LAYOUTS.includes(value)) {
           return { ...nextData, parent_room_id: '', sub_lab_name: '' };
         }
-        return { ...nextData, sub_room_count: '' };
+        return { ...nextData, room_name: '', sub_room_count: '' };
       },
     },
     {
@@ -5117,6 +5149,7 @@ function RoomManagement() {
       building_id: block?.building_id || '',
       block_id: block?.id || '',
       is_bookable: normalizeBooleanLikeValue(item?.is_bookable, true) ? '1' : '0',
+      room_name: isChildLayout ? '' : getRoomNameDisplay(item),
       room_aliases: item?.room_aliases || '',
       parent_room_id: item?.parent_room_id || '',
       room_layout: normalizeRoomLayoutValue(item?.room_layout),
@@ -5229,6 +5262,7 @@ function RoomManagement() {
       const payload = {
         room_id: row['Room ID']?.toString(),
         room_number: row['Room Number']?.toString(),
+        room_name: normalizeOptionalImportValue(getImportValue(row, ['Room Name'])),
         room_aliases: normalizeRoomAliases(getImportValue(row, ['Room Aliases', 'Aliases', 'Alternate Room Numbers'])),
         floor_id: floor?.id ?? parseInt(floorValue as any),
         room_type: normalizeRoomTypeValue(getImportValue(row, ['Sub Room Type', 'Room Type'])),
@@ -5287,6 +5321,7 @@ function RoomManagement() {
       const rowMap: Record<string, any> = {
         'Room ID': item?.room_id || '',
         'Room Number': item?.room_number || '',
+        'Room Name': !isChildRoom ? toCellValue(getRoomNameDisplay(item)) : '-',
         'Room Aliases': toCellValue(normalizeRoomAliases(item?.room_aliases)),
         'Building': building?.name || '',
         'Block / Direct Floors': block ? getBlockDisplayLabel(block, building) : '',
@@ -9114,6 +9149,7 @@ function AnalyticsDashboard() {
   const exportAnalytics = () => {
     const worksheet = XLSX.utils.json_to_sheet(filteredRoomReports.map((room: any) => ({
       Room: room.room_number,
+      RoomName: getRoomNameDisplay(room),
       Building: room.building,
       Department: room.department,
       Type: getRoomTypeDisplay(room),
@@ -10093,6 +10129,7 @@ function ReportGeneration() {
   const detailedRoomReportRows = filteredRoomReports.map((room: any) => ({
     RoomId: room.room_id?.toString() || '',
     Room: room.room_number,
+    RoomName: getRoomNameDisplay(room),
     Aliases: getRoomAliasList(room).join(', '),
     Campus: room.campus || '',
     Building: room.building,
@@ -10183,6 +10220,7 @@ function ReportGeneration() {
           ? (occupancySnapshotWindow?.label || 'Full Day')
           : 'All Hours',
         Room: room.room_number,
+        RoomName: getRoomNameDisplay(room),
         Campus: room.campus || '',
         Building: room.building,
         Block: room.block || '',
@@ -11492,6 +11530,7 @@ function ReportGeneration() {
   const exportRawUsageData = async () => {
     const rows = filteredRoomReports.map((room: any) => ({
       Room: room.room_number,
+      RoomName: getRoomNameDisplay(room),
       Campus: room.campus || '',
       Building: room.building,
       Block: room.block || '',
@@ -11527,7 +11566,7 @@ function ReportGeneration() {
       Flags: (room.flags || []).join(', '),
     }));
     const rawUsageColumns = [
-      'Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Years', 'Semesters', 'Sections',
+      'Room', 'RoomName', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Years', 'Semesters', 'Sections',
       'Type', 'SubRoomType', 'Layout', 'RoomAliases', 'ParentRoom', 'SubRoomCount', 'SubRoomName', 'UsageCategory',
       'IsBookable', 'LabName', 'SubLabName', 'RestroomFor', 'Capacity', 'Status', 'Utilization', 'ScheduledHours',
       'BookedHours', 'MaintenanceIssues', 'BookingStatuses', 'BookingDates', 'Flags'
@@ -11551,6 +11590,7 @@ function ReportGeneration() {
   const buildUtilizationReportConfigs = () => {
     const roomDetailRows = filteredRoomReports.map((room: any) => ({
       Room: room.room_number,
+      RoomName: getRoomNameDisplay(room),
       Campus: room.campus || '',
       Building: room.building,
       Block: room.block || '',

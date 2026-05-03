@@ -276,6 +276,7 @@ var getPrimarySchemaSql = (dialect) => {
       id ${idDefinition},
       room_id TEXT UNIQUE NOT NULL,
       room_number TEXT NOT NULL,
+      room_name TEXT,
       room_aliases TEXT,
       floor_id INTEGER NOT NULL,
       parent_room_id INTEGER,
@@ -510,6 +511,7 @@ await ensureColumn("blocks", "first_floor_number", "INTEGER DEFAULT 0");
 await ensureColumn("rooms", "parent_room_id", "INTEGER");
 await ensureColumn("rooms", "room_layout", "TEXT DEFAULT 'Normal'");
 await ensureColumn("rooms", "room_aliases", "TEXT");
+await ensureColumn("rooms", "room_name", "TEXT");
 await ensureColumn("rooms", "sub_room_count", "INTEGER");
 await ensureColumn("rooms", "room_section_name", "TEXT");
 await ensureColumn("rooms", "usage_category", "TEXT");
@@ -777,6 +779,7 @@ var normalizeRoomPayload = (payload) => {
   const nextPayload = { ...payload };
   nextPayload.room_type = normalizeRoomTypeValue(nextPayload.room_type);
   nextPayload.room_aliases = normalizeRoomAliases(nextPayload.room_aliases) || null;
+  nextPayload.room_name = nextPayload.room_name?.toString().trim() || null;
   nextPayload.lab_name = nextPayload.lab_name?.toString().trim() || nextPayload.room_section_name?.toString().trim() || null;
   nextPayload.restroom_type = normalizeRestroomTypeValue(nextPayload.restroom_type) || null;
   nextPayload.parent_room_id = nextPayload.parent_room_id ? Number(nextPayload.parent_room_id) : null;
@@ -797,6 +800,7 @@ var normalizeRoomPayload = (payload) => {
   } else if (HIERARCHY_PARENT_ROOM_LAYOUTS.includes(nextPayload.room_layout)) {
     nextPayload.parent_room_id = null;
   } else if (HIERARCHY_CHILD_ROOM_LAYOUTS.includes(nextPayload.room_layout)) {
+    nextPayload.room_name = null;
     nextPayload.sub_room_count = null;
   }
   if (HIERARCHY_CHILD_ROOM_LAYOUTS.includes(nextPayload.room_layout) && !nextPayload.parent_room_id) {
@@ -815,6 +819,9 @@ var normalizeRoomPayload = (payload) => {
     if (!nextPayload.lab_name) {
       throw new Error("Lab name is required when the room type is Lab.");
     }
+    if (!nextPayload.room_name) {
+      nextPayload.room_name = nextPayload.lab_name;
+    }
     nextPayload.restroom_type = null;
   } else if (nextPayload.room_type === "Restroom") {
     if (!["Male", "Female"].includes(nextPayload.restroom_type || "")) {
@@ -824,6 +831,9 @@ var normalizeRoomPayload = (payload) => {
   } else {
     nextPayload.lab_name = null;
     nextPayload.restroom_type = null;
+  }
+  if (!HIERARCHY_CHILD_ROOM_LAYOUTS.includes(nextPayload.room_layout) && !nextPayload.room_name && nextPayload.room_section_name) {
+    nextPayload.room_name = nextPayload.room_section_name;
   }
   if (isCapacityRoomType(nextPayload.room_type) && nextPayload.capacity <= 0) {
     throw new Error("Capacity is required for classroom and lab room types.");
@@ -2695,6 +2705,7 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
         department: department?.name || "Unmapped",
         school: school?.name || "Unmapped",
         room_type: room.room_type,
+        room_name: room.room_name,
         parent_room_id: room.parent_room_id,
         parent_room_number: room.parent_room_number,
         room_layout: room.room_layout,
