@@ -1165,14 +1165,32 @@ const upsertImportRecord = async (apiPath: string, payload: any, uniqueFieldGrou
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    return { ...existing, ...payload };
+    return { ...existing, ...payload, __importAction: 'updated' as const };
   }
 
-  return apiJson(apiPath, {
+  const createdRecord = await apiJson(apiPath, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
+  return { ...createdRecord, __importAction: 'created' as const };
+};
+
+type ImportAuditRow = Record<string, any>;
+type ImportAuditSummary = {
+  totalRowsRead?: number;
+  validRows?: number;
+  created?: number;
+  updated?: number;
+  skipped?: number;
+  failed?: number;
+};
+type ImportAuditResult = {
+  message?: string;
+  auditRows?: ImportAuditRow[];
+  auditHeaders?: string[];
+  auditTitle?: string;
+  summary?: ImportAuditSummary;
 };
 
 const isBlocksStructureType = (value: unknown) => {
@@ -3589,7 +3607,7 @@ function GenericCRUD({
   type: string,
   fields: any[],
   apiPath: string,
-  onImport?: (data: any[]) => Promise<void | { message?: string }>,
+  onImport?: (data: any[]) => Promise<void | ImportAuditResult>,
   prepareSubmitData?: (formData: any, editingItem: any) => Promise<any> | any,
   prepareFormData?: (item: any) => any,
   afterSubmit?: (savedItem: any, formData: any, editingItem: any) => Promise<void> | void,
@@ -3605,6 +3623,7 @@ function GenericCRUD({
   const [editingItem, setEditingItem] = useState<any>(null);
   const [formData, setFormData] = useState<any>({});
   const [isImporting, setIsImporting] = useState(false);
+  const [lastImportAudit, setLastImportAudit] = useState<ImportAuditResult | null>(null);
   const [visiblePasswordFields, setVisiblePasswordFields] = useState<Record<string, boolean>>({});
   const [searchTerm, setSearchTerm] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -3716,12 +3735,36 @@ function GenericCRUD({
     XLSX.writeFile(workbook, `${type}_Export.xlsx`);
   };
 
+  const downloadImportAudit = () => {
+    if (!lastImportAudit?.auditRows?.length) return;
+    const headers = lastImportAudit.auditHeaders?.length
+      ? lastImportAudit.auditHeaders
+      : Array.from(new Set(lastImportAudit.auditRows.flatMap((row) => Object.keys(row || {}))));
+    const workbook = XLSX.utils.book_new();
+    const summaryRows = [
+      ['Metric', 'Value'],
+      ['Audit Title', lastImportAudit.auditTitle || `${type} Import Audit`],
+      ['Total Rows Read', lastImportAudit.summary?.totalRowsRead ?? lastImportAudit.auditRows.length],
+      ['Valid Rows', lastImportAudit.summary?.validRows ?? ''],
+      ['Created', lastImportAudit.summary?.created ?? 0],
+      ['Updated', lastImportAudit.summary?.updated ?? 0],
+      ['Skipped', lastImportAudit.summary?.skipped ?? 0],
+      ['Failed', lastImportAudit.summary?.failed ?? 0],
+      ['Message', lastImportAudit.message || ''],
+    ];
+    const auditRows = lastImportAudit.auditRows.map((row) => headers.map((header) => row?.[header] ?? ''));
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(summaryRows), 'Summary');
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([headers, ...auditRows]), sanitizeExcelName(lastImportAudit.auditTitle || `${type} Audit`));
+    XLSX.writeFile(workbook, `${type}_Import_Audit.xlsx`);
+  };
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!onImport) return;
     const file = e.target.files?.[0];
     if (!file) return;
 
     setIsImporting(true);
+    setLastImportAudit(null);
     const reader = new FileReader();
     reader.onload = async (evt) => {
       try {
@@ -3729,14 +3772,18 @@ function GenericCRUD({
         const wb = XLSX.read(bstr, { type: 'binary' });
         const jsonData = wb.SheetNames.flatMap((sheetName) => {
           const ws = wb.Sheets[sheetName];
-          return XLSX.utils.sheet_to_json(ws).map((row: any) => ({
+          return XLSX.utils.sheet_to_json(ws).map((row: any, index: number) => ({
             ...row,
             __sheetName: sheetName,
+            __rowNumber: index + 2,
           }));
         });
         const importResult = await onImport(jsonData);
         await fetchData();
         if (onDataChanged) await onDataChanged();
+        if (importResult && typeof importResult === 'object') {
+          setLastImportAudit(importResult);
+        }
         const importMessage =
           importResult && typeof importResult === 'object' && 'message' in importResult
             ? importResult.message
@@ -3870,6 +3917,15 @@ function GenericCRUD({
             <FileSpreadsheet size={18} />
             Export Excel
           </button>
+          {lastImportAudit?.auditRows?.length ? (
+            <button
+              onClick={downloadImportAudit}
+              className="flex items-center gap-2 bg-amber-50 text-amber-700 border border-amber-200 px-4 py-2 rounded-lg font-bold hover:bg-amber-100 transition-all"
+            >
+              <FileSpreadsheet size={18} />
+              Download Audit
+            </button>
+          ) : null}
           <button
             onClick={handleReset}
             className="flex items-center gap-2 bg-rose-50 text-rose-600 border border-rose-200 px-4 py-2 rounded-lg font-bold hover:bg-rose-100 transition-all"
@@ -3892,6 +3948,59 @@ function GenericCRUD({
           {filterControls}
         </div>
       )}
+
+      {lastImportAudit?.auditRows?.length ? (
+        <div className="bg-white border border-amber-200 rounded-2xl p-5 shadow-sm space-y-4">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+            <div>
+              <h3 className="text-lg font-bold text-slate-800">{lastImportAudit.auditTitle || `${type} Import Audit`}</h3>
+              <p className="text-sm text-slate-500">{lastImportAudit.message || 'Review the row-level results from the most recent import.'}</p>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              {[
+                { label: 'Rows', value: lastImportAudit.summary?.totalRowsRead ?? lastImportAudit.auditRows.length },
+                { label: 'Created', value: lastImportAudit.summary?.created ?? 0 },
+                { label: 'Updated', value: lastImportAudit.summary?.updated ?? 0 },
+                { label: 'Skipped', value: lastImportAudit.summary?.skipped ?? 0 },
+                { label: 'Failed', value: lastImportAudit.summary?.failed ?? 0 },
+              ].map((item) => (
+                <div key={item.label} className="px-3 py-2 bg-slate-50 border border-slate-100 rounded-xl text-center">
+                  <p className="text-[10px] uppercase tracking-widest font-bold text-slate-400">{item.label}</p>
+                  <p className="text-lg font-bold text-slate-800">{item.value}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="overflow-x-auto max-h-96">
+            <table className="w-full text-left">
+              <thead className="sticky top-0 bg-white">
+                <tr className="border-b border-slate-100">
+                  {(lastImportAudit.auditHeaders?.length
+                    ? lastImportAudit.auditHeaders
+                    : Array.from(new Set(lastImportAudit.auditRows.flatMap((row) => Object.keys(row || {}))))
+                  ).map((header) => (
+                    <th key={header} className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest">{header}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {lastImportAudit.auditRows.map((row, index) => {
+                  const headers = lastImportAudit.auditHeaders?.length
+                    ? lastImportAudit.auditHeaders
+                    : Array.from(new Set(lastImportAudit.auditRows!.flatMap((item) => Object.keys(item || {}))));
+                  return (
+                    <tr key={`${row['Row Number'] || row.RowNumber || index}-${row['Primary ID'] || row.PrimaryId || index}`} className="hover:bg-slate-50/50">
+                      {headers.map((header) => (
+                        <td key={`${index}-${header}`} className="px-4 py-3 text-sm text-slate-600 align-top">{row?.[header] ?? '-'}</td>
+                      ))}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
 
       <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
         <table className="w-full text-left border-collapse">
@@ -5179,24 +5288,60 @@ function RoomManagement() {
     const getRowParentLabel = (row: any) => normalizeOptionalImportLookupValue(getImportValue(row, ['Parent Room', 'Inside / Parent Room']));
     const getRowSubRoomName = (row: any) => normalizeOptionalImportValue(getImportValue(row, ['Sub Room Name', 'Room Section Name', 'Section Name']));
     const getRowSubRoomCount = (row: any) => parseInt(getImportValue(row, ['Sub Room Count', 'Number of Splits', 'Number of Rooms Inside'])?.toString() || '0', 10) || 0;
+    const getAuditRowKey = (row: any) => `${row.__sheetName || 'Template'}:${row.__rowNumber || 0}:${row['Room ID'] || ''}:${row['Room Number'] || ''}`;
+    const getAuditRoomLabel = (row: any) => row['Room Number'] || row['Room ID'] || 'Unnamed room';
+    const auditHeaders = ['Sheet', 'Row Number', 'Room ID', 'Room Number', 'Status', 'Action', 'Reason'];
+    const auditRows: ImportAuditRow[] = [];
+    const summary = {
+      totalRowsRead: data.length,
+      validRows: 0,
+      created: 0,
+      updated: 0,
+      skipped: 0,
+      failed: 0,
+    };
+    const rowFailures = new Map<string, string[]>();
+    const addRowFailure = (row: any, reason: string) => {
+      const key = getAuditRowKey(row);
+      const existing = rowFailures.get(key) || [];
+      if (!existing.includes(reason)) {
+        existing.push(reason);
+        rowFailures.set(key, existing);
+      }
+    };
+    const pushAudit = (row: any, status: 'Created' | 'Updated' | 'Skipped' | 'Failed', action: string, reason: string) => {
+      auditRows.push({
+        Sheet: row.__sheetName || 'Template',
+        'Row Number': row.__rowNumber || '',
+        'Room ID': row['Room ID']?.toString() || '',
+        'Room Number': row['Room Number']?.toString() || '',
+        Status: status,
+        Action: action,
+        Reason: reason,
+      });
+      if (status === 'Created') summary.created += 1;
+      if (status === 'Updated') summary.updated += 1;
+      if (status === 'Skipped') summary.skipped += 1;
+      if (status === 'Failed') summary.failed += 1;
+    };
 
     const parentRows = data.filter(row => HIERARCHY_PARENT_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout']))));
     const childRows = data.filter(row => HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout']))));
 
     for (const row of data) {
       const layout = normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout']));
-      const roomLabel = row['Room Number'] || row['Room ID'] || 'Unnamed room';
+      const roomLabel = getAuditRoomLabel(row);
 
       if (HIERARCHY_ROOM_LAYOUTS.includes(layout) && !getRowSubRoomName(row)) {
-        throw new Error(`Room "${roomLabel}" uses ${layout}, so Sub Room Name is required.`);
+        addRowFailure(row, `Room "${roomLabel}" uses ${layout}, so Sub Room Name is required.`);
       }
 
       if (HIERARCHY_PARENT_ROOM_LAYOUTS.includes(layout) && getRowSubRoomCount(row) <= 0) {
-        throw new Error(`Room "${roomLabel}" is a ${layout}, so Sub Room Count must be greater than zero.`);
+        addRowFailure(row, `Room "${roomLabel}" is a ${layout}, so Sub Room Count must be greater than zero.`);
       }
 
       if (HIERARCHY_CHILD_ROOM_LAYOUTS.includes(layout) && !getRowParentLabel(row)) {
-        throw new Error(`Room "${roomLabel}" is a ${layout}, so Parent Room is required.`);
+        addRowFailure(row, `Room "${roomLabel}" is a ${layout}, so Parent Room is required.`);
       }
     }
 
@@ -5205,14 +5350,14 @@ function RoomManagement() {
       const expectedChildLayout = parentLayout === 'Split Parent' ? 'Split Child' : 'Inside Child';
       const expectedCount = getRowSubRoomCount(parentRow);
       const parentLabels = getRowRoomLabels(parentRow);
-      const parentLabel = parentRow['Room Number'] || parentRow['Room ID'] || 'Unnamed parent room';
+      const parentLabel = getAuditRoomLabel(parentRow);
       const matchingChildren = childRows.filter(row =>
         parentLabels.includes(getRowParentLabel(row)) &&
         normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout'])) === expectedChildLayout
       );
 
       if (matchingChildren.length !== expectedCount) {
-        throw new Error(`Room "${parentLabel}" has Sub Room Count ${expectedCount}, but ${matchingChildren.length} ${expectedChildLayout.toLowerCase()} row(s) were found in the import file.`);
+        addRowFailure(parentRow, `Room "${parentLabel}" has Sub Room Count ${expectedCount}, but ${matchingChildren.length} ${expectedChildLayout.toLowerCase()} row(s) were found in the import file.`);
       }
     }
 
@@ -5225,78 +5370,126 @@ function RoomManagement() {
       const expectedChildLayout = normalizeRoomLayoutValue(getImportValue(importedParent, ['Room Layout', 'Layout'])) === 'Split Parent'
         ? 'Split Child'
         : 'Inside Child';
-      const childLabel = childRow['Room Number'] || childRow['Room ID'] || 'Unnamed child room';
+      const childLabel = getAuditRoomLabel(childRow);
       if (childLayout !== expectedChildLayout) {
-        throw new Error(`Room "${childLabel}" should use ${expectedChildLayout} because its parent uses ${normalizeRoomLayoutValue(getImportValue(importedParent, ['Room Layout', 'Layout']))}.`);
+        addRowFailure(childRow, `Room "${childLabel}" should use ${expectedChildLayout} because its parent uses ${normalizeRoomLayoutValue(getImportValue(importedParent, ['Room Layout', 'Layout']))}.`);
       }
     }
 
-    for (const row of data) {
-      const building = buildings.find(b => normalizeLookupValue(b.name) === normalizeLookupValue(getImportValue(row, ['Building'])));
-      const blockLabel = getImportValue(row, ['Block / Direct Floors', 'Block']);
-      const normalizedBlockLabel = normalizeLookupValue(blockLabel);
-      const block = blocks.find(b =>
-        (!building || idsMatch(b.building_id, building.id)) &&
-        (
-          normalizeLookupValue(b.name) === normalizedBlockLabel ||
-          ((normalizedBlockLabel === 'direct floors' || normalizedBlockLabel === 'direct floors (no block)' || !normalizedBlockLabel) && isImplicitBuildingBlock(b, building))
-        )
-      );
-      const floorValue = getImportValue(row, ['Floor', 'Floor ID']);
-      const floor = floors.find(f =>
-        (!block || f.block_id === block.id) &&
-        (
-          f.id?.toString() === floorValue?.toString() ||
-          f.floor_number?.toString() === floorValue?.toString() ||
-          normalizeLookupValue(getFloorName(f.floor_number)) === normalizeLookupValue(floorValue) ||
-          normalizeLookupValue(getFloorDisplayLabel(f, blocks, buildings)) === normalizeLookupValue(floorValue)
-        )
-      );
-      const parentRoomValue = normalizeOptionalImportValue(getImportValue(row, ['Parent Room', 'Inside / Parent Room']));
-      const parentRoom = parentRoomValue ? findRoomByImportLabel(knownRooms, parentRoomValue) : null;
+    const layoutPriority = (row: any) => {
+      const layout = normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout']));
+      if (HIERARCHY_PARENT_ROOM_LAYOUTS.includes(layout)) return 0;
+      if (HIERARCHY_CHILD_ROOM_LAYOUTS.includes(layout)) return 2;
+      return 1;
+    };
+    const sortedRows = [...data].sort((left, right) => layoutPriority(left) - layoutPriority(right));
 
-      if (parentRoomValue && !parentRoom) {
-        throw new Error(`Parent room "${parentRoomValue}" was not found. Add the parent room first or check the room number.`);
+    for (const row of sortedRows) {
+      const existingFailures = rowFailures.get(getAuditRowKey(row));
+      if (existingFailures?.length) {
+        pushAudit(row, 'Failed', 'Validation', existingFailures.join(' '));
+        continue;
       }
 
-      const payload = {
-        room_id: row['Room ID']?.toString(),
-        room_number: row['Room Number']?.toString(),
-        room_name: normalizeOptionalImportValue(getImportValue(row, ['Room Name'])),
-        room_aliases: normalizeRoomAliases(getImportValue(row, ['Room Aliases', 'Aliases', 'Alternate Room Numbers'])),
-        floor_id: floor?.id ?? parseInt(floorValue as any),
-        room_type: normalizeRoomTypeValue(getImportValue(row, ['Sub Room Type', 'Room Type'])),
-        room_layout: normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout'])),
-        parent_room_id: parentRoom?.id || null,
-        sub_room_count: getImportValue(row, ['Sub Room Count', 'Number of Splits', 'Number of Rooms Inside']),
-        room_section_name: normalizeOptionalImportValue(getImportValue(row, ['Sub Room Name', 'Room Section Name', 'Section Name'])) || '',
-        usage_category: normalizeUsageCategoryValue(getImportValue(row, ['Usage Category', 'Usage']), getImportValue(row, ['Sub Room Type', 'Room Type'])),
-        is_bookable: isNonCapacityRoomType(getImportValue(row, ['Sub Room Type', 'Room Type'])) ? 0 : normalizeBooleanLikeValue(getImportValue(row, ['Is Bookable', 'Bookable']), true) ? 1 : 0,
-        lab_name: normalizeOptionalImportValue(getImportValue(row, ['Lab Name'])),
-        sub_lab_name: normalizeOptionalImportValue(getImportValue(row, ['Sub Lab Name'])),
-        restroom_type: normalizeRestroomTypeValue(getImportValue(row, ['Restroom For', 'Restroom Type'])),
-        capacity: isCapacityRoomType(getImportValue(row, ['Sub Room Type', 'Room Type'])) ? parseInt(row['Capacity']) || 0 : 0,
-        status: row['Status'] || 'Available'
-      };
-      if (!payload.room_id || !payload.room_number || !payload.floor_id) continue;
-      if (
-        parentRoom &&
-        (
-          parentRoom.room_id?.toString() === payload.room_id ||
-          parentRoom.room_number?.toString() === payload.room_number
-        )
-      ) {
-        throw new Error(`Room "${payload.room_number}" cannot use itself as the parent room.`);
-      }
-      const normalizedPayload = normalizeRoomFormPayload(payload, knownRooms);
-      const savedRoom = await upsertImportRecord('/api/rooms', normalizedPayload, [['room_id'], ['room_number']]);
-      const existingIndex = knownRooms.findIndex(room => room.id?.toString() === savedRoom.id?.toString());
-      if (existingIndex >= 0) {
-        knownRooms[existingIndex] = savedRoom;
-      } else {
-        knownRooms.push(savedRoom);
+      try {
+        const building = buildings.find(b => normalizeLookupValue(b.name) === normalizeLookupValue(getImportValue(row, ['Building'])));
+        const blockLabel = getImportValue(row, ['Block / Direct Floors', 'Block']);
+        const normalizedBlockLabel = normalizeLookupValue(blockLabel);
+        const block = blocks.find(b =>
+          (!building || idsMatch(b.building_id, building.id)) &&
+          (
+            normalizeLookupValue(b.name) === normalizedBlockLabel ||
+            ((normalizedBlockLabel === 'direct floors' || normalizedBlockLabel === 'direct floors (no block)' || !normalizedBlockLabel) && isImplicitBuildingBlock(b, building))
+          )
+        );
+        const floorValue = getImportValue(row, ['Floor', 'Floor ID']);
+        const floor = floors.find(f =>
+          (!block || f.block_id === block.id) &&
+          (
+            f.id?.toString() === floorValue?.toString() ||
+            f.floor_number?.toString() === floorValue?.toString() ||
+            normalizeLookupValue(getFloorName(f.floor_number)) === normalizeLookupValue(floorValue) ||
+            normalizeLookupValue(getFloorDisplayLabel(f, blocks, buildings)) === normalizeLookupValue(floorValue)
+          )
+        );
+        const parentRoomValue = normalizeOptionalImportValue(getImportValue(row, ['Parent Room', 'Inside / Parent Room']));
+        const parentRoom = parentRoomValue ? findRoomByImportLabel(knownRooms, parentRoomValue) : null;
+
+        if (parentRoomValue && !parentRoom) {
+          pushAudit(row, 'Failed', 'Parent lookup', `Parent room "${parentRoomValue}" was not found. Add the parent room first or check the room number.`);
+          continue;
+        }
+
+        const payload = {
+          room_id: row['Room ID']?.toString(),
+          room_number: row['Room Number']?.toString(),
+          room_name: normalizeOptionalImportValue(getImportValue(row, ['Room Name'])),
+          room_aliases: normalizeRoomAliases(getImportValue(row, ['Room Aliases', 'Aliases', 'Alternate Room Numbers'])),
+          floor_id: floor?.id ?? parseInt(floorValue as any),
+          room_type: normalizeRoomTypeValue(getImportValue(row, ['Sub Room Type', 'Room Type'])),
+          room_layout: normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout'])),
+          parent_room_id: parentRoom?.id || null,
+          sub_room_count: getImportValue(row, ['Sub Room Count', 'Number of Splits', 'Number of Rooms Inside']),
+          room_section_name: normalizeOptionalImportValue(getImportValue(row, ['Sub Room Name', 'Room Section Name', 'Section Name'])) || '',
+          usage_category: normalizeUsageCategoryValue(getImportValue(row, ['Usage Category', 'Usage']), getImportValue(row, ['Sub Room Type', 'Room Type'])),
+          is_bookable: isNonCapacityRoomType(getImportValue(row, ['Sub Room Type', 'Room Type'])) ? 0 : normalizeBooleanLikeValue(getImportValue(row, ['Is Bookable', 'Bookable']), true) ? 1 : 0,
+          lab_name: normalizeOptionalImportValue(getImportValue(row, ['Lab Name'])),
+          sub_lab_name: normalizeOptionalImportValue(getImportValue(row, ['Sub Lab Name'])),
+          restroom_type: normalizeRestroomTypeValue(getImportValue(row, ['Restroom For', 'Restroom Type'])),
+          capacity: isCapacityRoomType(getImportValue(row, ['Sub Room Type', 'Room Type'])) ? parseInt(row['Capacity']) || 0 : 0,
+          status: row['Status'] || 'Available'
+        };
+
+        if (!payload.room_id || !payload.room_number) {
+          pushAudit(row, 'Skipped', 'Missing primary fields', 'Room ID and Room Number are required for import.');
+          continue;
+        }
+
+        if (!payload.floor_id || Number.isNaN(Number(payload.floor_id))) {
+          pushAudit(row, 'Skipped', 'Missing floor match', `No floor match was found for "${floorValue || '-'}".`);
+          continue;
+        }
+
+        if (
+          parentRoom &&
+          (
+            parentRoom.room_id?.toString() === payload.room_id ||
+            parentRoom.room_number?.toString() === payload.room_number
+          )
+        ) {
+          pushAudit(row, 'Failed', 'Parent validation', `Room "${payload.room_number}" cannot use itself as the parent room.`);
+          continue;
+        }
+
+        const normalizedPayload = normalizeRoomFormPayload(payload, knownRooms);
+        const savedRoom: any = await upsertImportRecord('/api/rooms', normalizedPayload, [['room_id'], ['room_number']]);
+        const existingIndex = knownRooms.findIndex(room => room.id?.toString() === savedRoom.id?.toString());
+        if (existingIndex >= 0) {
+          knownRooms[existingIndex] = savedRoom;
+        } else {
+          knownRooms.push(savedRoom);
+        }
+        pushAudit(
+          row,
+          savedRoom.__importAction === 'updated' ? 'Updated' : 'Created',
+          savedRoom.__importAction === 'updated' ? 'Updated existing record' : 'Created new record',
+          savedRoom.__importAction === 'updated'
+            ? 'Matched an existing room by Room ID or Room Number and updated it.'
+            : 'Inserted a new room record.'
+        );
+      } catch (err: any) {
+        pushAudit(row, 'Failed', 'Import failed', err?.message || 'Unexpected import error.');
       }
     }
+
+    summary.validRows = summary.totalRowsRead - summary.failed;
+    return {
+      message: `Room import completed. Created ${summary.created}, updated ${summary.updated}, skipped ${summary.skipped}, failed ${summary.failed}.`,
+      auditRows,
+      auditHeaders,
+      auditTitle: 'Room Import Audit',
+      summary,
+    };
   };
 
   const buildRoomExportData = (items: any[]) => {
@@ -9428,11 +9621,14 @@ function ReportGeneration() {
     flag: '',
     snapshotMode: 'date',
     snapshotDay: '',
-    snapshotTime: ''
+    snapshotTime: '',
+    roomCategoryType: 'room_type',
+    roomCategoryValue: '',
   });
   const REPORT_TYPE_OPTIONS = [
     { value: 'room_utilization', label: 'Room Utilization' },
     { value: 'available_room_summary', label: 'Available Room Summary' },
+    { value: 'category_room_list', label: 'Category-wise Room List' },
     { value: 'room_level_detail', label: 'Room-level Detail' },
     { value: 'campus_utilization', label: 'Campus Utilization' },
     { value: 'building_utilization', label: 'Building Utilization' },
@@ -9464,6 +9660,7 @@ function ReportGeneration() {
   const REPORT_EXPORT_COLUMNS: Record<string, string[]> = {
     room_utilization: ['Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Utilization', 'ScheduledHours', 'BookedHours', 'Capacity', 'Status', 'Flags'],
     available_room_summary: ['SummaryScope', 'Category', 'AvailableRooms', 'RoomNumbers'],
+    category_room_list: ['CategoryType', 'CategoryValue', 'RoomId', 'Room', 'RoomName', 'Campus', 'Building', 'Block', 'Floor', 'Type', 'Layout', 'UsageCategory', 'Status', 'Capacity'],
     room_level_detail: ['RoomId', 'Room', 'Aliases', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Status', 'Capacity', 'Utilization', 'ScheduledHours', 'BookedHours', 'Years', 'Semesters', 'Sections', 'Flags'],
     campus_utilization: ['Campus', 'Buildings', 'Rooms', 'AvgUtilization'],
     school_utilization: ['School', 'Departments', 'Rooms', 'TotalCapacity', 'AvgUtilization', 'UnmappedRooms'],
@@ -9804,6 +10001,73 @@ function ReportGeneration() {
       (room: any) => room.sub_lab_name?.toString().trim() || room.lab_name?.toString().trim() || ''
     ),
   ];
+  const categoryTypeOptions = [
+    { value: 'room_type', label: 'Room Type' },
+    { value: 'sub_room_type', label: 'Sub Room Type' },
+    { value: 'usage_category', label: 'Usage Category' },
+    { value: 'lab_name', label: 'Lab Name' },
+    { value: 'sub_lab_name', label: 'Sub Lab Name' },
+    { value: 'restroom_for', label: 'Restroom For' },
+    { value: 'building', label: 'Building' },
+    { value: 'floor', label: 'Floor' },
+    { value: 'status', label: 'Status' },
+  ];
+  const getCategoryValueForRoom = (room: any, categoryType: string) => {
+    switch (categoryType) {
+      case 'room_type':
+        return !HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room.room_layout))
+          ? getBaseRoomTypeDisplay(room)
+          : '';
+      case 'sub_room_type':
+        return HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room.room_layout))
+          ? getBaseRoomTypeDisplay(room)
+          : '';
+      case 'usage_category':
+        return room.usage_category || normalizeUsageCategoryValue('', room.room_type) || '';
+      case 'lab_name':
+        return room.lab_name?.toString().trim() || '';
+      case 'sub_lab_name':
+        return room.sub_lab_name?.toString().trim() || '';
+      case 'restroom_for':
+        return room.restroom_type?.toString().trim() || '';
+      case 'building':
+        return room.building || '';
+      case 'floor':
+        return getFloorName(room.floor_number);
+      case 'status':
+        return room.status || '';
+      default:
+        return '';
+    }
+  };
+  const categoryValueOptions = Array.from(new Set(
+    filteredRoomReports
+      .map((room: any) => getCategoryValueForRoom(room, filters.roomCategoryType))
+      .filter(Boolean)
+  )).sort((left: any, right: any) => left.toString().localeCompare(right.toString(), undefined, { numeric: true, sensitivity: 'base' }));
+  const categoryWiseRoomListRows = filteredRoomReports
+    .filter((room: any) => {
+      const categoryValue = getCategoryValueForRoom(room, filters.roomCategoryType);
+      if (!categoryValue) return false;
+      if (filters.roomCategoryValue && categoryValue !== filters.roomCategoryValue) return false;
+      return true;
+    })
+    .map((room: any) => ({
+      CategoryType: categoryTypeOptions.find((option) => option.value === filters.roomCategoryType)?.label || 'Category',
+      CategoryValue: getCategoryValueForRoom(room, filters.roomCategoryType),
+      RoomId: room.room_id || '',
+      Room: room.room_number || '',
+      RoomName: getRoomNameDisplay(room),
+      Campus: room.campus || '',
+      Building: room.building || '',
+      Block: room.block || '',
+      Floor: getFloorName(room.floor_number),
+      Type: getRoomTypeDisplay(room),
+      Layout: room.room_layout || 'Normal',
+      UsageCategory: room.usage_category || normalizeUsageCategoryValue('', room.room_type) || '',
+      Status: room.status || '',
+      Capacity: room.capacity ?? '',
+    }));
   const yearSummary = yearOptions.map((year: any) => {
     const yearRooms = filteredRoomReports.filter((room: any) => (room.yearTags || []).includes(year));
     return {
@@ -11618,6 +11882,11 @@ function ReportGeneration() {
         sheetName: 'Available Room Summary',
         rows: availableRoomSummaryRows,
       },
+      category_room_list: {
+        fileName: 'category-wise-room-list-report.xlsx',
+        sheetName: 'Category-wise Room List',
+        rows: categoryWiseRoomListRows,
+      },
       room_level_detail: {
         fileName: 'room-level-detail-report.xlsx',
         sheetName: 'Room-level Detail',
@@ -12146,6 +12415,25 @@ function ReportGeneration() {
             <option value="">All Flags</option>
             {flagOptions.map((flag: any) => <option key={flag} value={flag}>{flag}</option>)}
           </select>
+          {filters.reportType === 'category_room_list' && (
+            <>
+              <select
+                value={filters.roomCategoryType}
+                onChange={e => setFilters({ ...filters, roomCategoryType: e.target.value, roomCategoryValue: '' })}
+                className="px-3 py-2 bg-indigo-50 border border-indigo-200 rounded-xl text-sm focus:outline-none focus:border-indigo-500"
+              >
+                {categoryTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+              <select
+                value={filters.roomCategoryValue}
+                onChange={e => setFilters({ ...filters, roomCategoryValue: e.target.value })}
+                className="px-3 py-2 bg-indigo-50 border border-indigo-200 rounded-xl text-sm focus:outline-none focus:border-indigo-500"
+              >
+                <option value="">All Category Values</option>
+                {categoryValueOptions.map((value: any) => <option key={value} value={value}>{value}</option>)}
+              </select>
+            </>
+          )}
           {filters.reportType === 'per_room_occupancy' && (
             <>
               <select value={filters.snapshotMode} onChange={e => setFilters({ ...filters, snapshotMode: e.target.value, snapshotTime: e.target.value === 'hour' ? filters.snapshotTime : '', snapshotDay: e.target.value === 'date' ? '' : filters.snapshotDay })} className="px-3 py-2 bg-amber-50 border border-amber-200 rounded-xl text-sm focus:outline-none focus:border-amber-500">
@@ -12415,6 +12703,67 @@ function ReportGeneration() {
                         <tr>
                           <td colSpan={4} className="py-8 text-center text-sm text-slate-400 italic">
                             No available-room summary rows match the selected filters.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {filters.reportType === 'category_room_list' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-2">Category-wise Room List</h3>
+                <p className="text-sm text-slate-500 mb-6">
+                  Use the category dropdowns above to review rooms grouped by a single room category such as room type, sub room type, usage category, lab name, restroom type, building, floor, or status.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
+                  <div className="p-4 bg-indigo-50 rounded-2xl border border-indigo-100">
+                    <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-widest">Category Type</p>
+                    <p className="text-lg font-bold text-slate-800">{categoryTypeOptions.find((option) => option.value === filters.roomCategoryType)?.label || 'Category'}</p>
+                  </div>
+                  <div className="p-4 bg-sky-50 rounded-2xl border border-sky-100">
+                    <p className="text-[10px] font-bold text-sky-600 uppercase tracking-widest">Selected Value</p>
+                    <p className="text-lg font-bold text-slate-800">{filters.roomCategoryValue || 'All Category Values'}</p>
+                  </div>
+                  <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
+                    <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest">Matching Rooms</p>
+                    <p className="text-2xl font-bold text-slate-800">{categoryWiseRoomListRows.length}</p>
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        {['Category Type', 'Category Value', 'Room ID', 'Room', 'Room Name', 'Campus', 'Building', 'Block', 'Floor', 'Type', 'Layout', 'Usage Category', 'Status', 'Capacity'].map((column) => (
+                          <th key={column} className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">{column}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {categoryWiseRoomListRows.map((item: any, index: number) => (
+                        <tr key={`${item.RoomId || item.Room}-${index}`} className="hover:bg-slate-50/50">
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.CategoryType}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.CategoryValue}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.RoomId}</td>
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.Room}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.RoomName || '-'}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Campus || '-'}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Building || '-'}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Block || '-'}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Floor || '-'}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Type || '-'}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Layout || '-'}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.UsageCategory || '-'}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Status || '-'}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Capacity ?? '-'}</td>
+                        </tr>
+                      ))}
+                      {categoryWiseRoomListRows.length === 0 && (
+                        <tr>
+                          <td colSpan={14} className="py-8 text-center text-sm text-slate-400 italic">
+                            No rooms match the selected category filters.
                           </td>
                         </tr>
                       )}
