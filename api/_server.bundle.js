@@ -762,8 +762,9 @@ var BOOKABLE_ROOM_TYPE_VALUES = [
   "Gym"
 ];
 var BOOKABLE_USAGE_CATEGORY_VALUES = ["Teaching", "Lab Work", "Multipurpose", "Meeting"];
+var ROOM_ALIAS_PLACEHOLDER_VALUES = /* @__PURE__ */ new Set(["-", "--", "---", "n/a", "na", "none", "null", "nil"]);
 var normalizeRoomAliases = (value) => Array.from(new Set(
-  value?.toString().split(/[\n,;|/]+/).map((alias) => alias.trim()).filter(Boolean) || []
+  value?.toString().split(/[\n,;|/]+/).map((alias) => alias.trim()).filter((alias) => alias.length > 0 && !ROOM_ALIAS_PLACEHOLDER_VALUES.has(normalizeDuplicateValue(alias))) || []
 )).join(", ");
 var getRoomAliasTokens = (value) => normalizeRoomAliases(value).split(",").map((alias) => normalizeDuplicateValue(alias)).filter(Boolean);
 var isReservableRoomRecord = (room) => {

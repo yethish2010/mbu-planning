@@ -648,11 +648,12 @@ const BOOKABLE_ROOM_TYPE_VALUES = [
   "Gym",
 ];
 const BOOKABLE_USAGE_CATEGORY_VALUES = ["Teaching", "Lab Work", "Multipurpose", "Meeting"];
+const ROOM_ALIAS_PLACEHOLDER_VALUES = new Set(["-", "--", "---", "n/a", "na", "none", "null", "nil"]);
 const normalizeRoomAliases = (value: any) => Array.from(new Set(
   value?.toString()
     .split(/[\n,;|/]+/)
     .map((alias: string) => alias.trim())
-    .filter(Boolean) || []
+    .filter((alias: string) => alias.length > 0 && !ROOM_ALIAS_PLACEHOLDER_VALUES.has(normalizeDuplicateValue(alias))) || []
 )).join(", ");
 
 const getRoomAliasTokens = (value: any) =>

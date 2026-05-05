@@ -954,7 +954,7 @@ const isRoomReservable = (room: any) => {
 const splitAliasTokens = (value: unknown): string[] =>
   String(value ?? '')
     .split(/[\n,;|/]+/)
-    .map((alias: string) => alias.trim())
+    .map((alias: string) => normalizeOptionalImportValue(alias))
     .filter((alias: string) => alias.length > 0);
 
 const getRoomAliasList = (room: any): string[] =>
