@@ -11894,6 +11894,88 @@ function ReportGeneration() {
     anchor.click();
     URL.revokeObjectURL(url);
   };
+  const sanitizeExportFilePart = (value?: string | null) =>
+    (value || '')
+      .toString()
+      .trim()
+      .replace(/[\\/:*?"<>|]+/g, ' ')
+      .replace(/\s+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '');
+  const getReportLabelByType = (reportType: string, fallback: string) =>
+    REPORT_TYPE_OPTIONS.find((option) => option.value === reportType)?.label || fallback;
+  const buildActiveFilterSummaryRows = (
+    reportName: string,
+    options: { includeCategory?: boolean; includeSnapshot?: boolean } = {},
+  ) => {
+    const rows: Array<{ Section: string; Field: string; Value: string }> = [
+      { Section: 'Report', Field: 'Report Name', Value: reportName },
+      { Section: 'Report', Field: 'Generated On', Value: new Date().toLocaleString('en-GB') },
+    ];
+    const addFilter = (field: string, value?: string | null) => {
+      const safeValue = value?.toString().trim();
+      if (!safeValue) return;
+      rows.push({ Section: 'Filters', Field: field, Value: safeValue });
+    };
+    addFilter('From Date', filters.dateFrom ? formatDisplayDate(filters.dateFrom) : '');
+    addFilter('To Date', filters.dateTo ? formatDisplayDate(filters.dateTo) : '');
+    addFilter('Campus', filters.campus);
+    addFilter('Building', filters.building);
+    addFilter('Block / Direct Floors', filters.block);
+    addFilter('Floor', filters.floor);
+    addFilter('Department', filters.department);
+    addFilter('Year', filters.year);
+    addFilter('Semester', filters.semester);
+    addFilter('Section', filters.section);
+    addFilter('Room', filters.room);
+    addFilter('Room Type', filters.roomType);
+    addFilter('Booking Status', filters.bookingStatus);
+    addFilter('Flag', filters.flag);
+    if (options.includeCategory) {
+      addFilter('Category Type', categoryTypeOptions.find((option) => option.value === filters.roomCategoryType)?.label || filters.roomCategoryType);
+      addFilter('Category Value', filters.roomCategoryValue);
+    }
+    if (options.includeSnapshot && filters.reportType === 'per_room_occupancy') {
+      addFilter('Snapshot Mode', filters.snapshotMode);
+      addFilter('Snapshot Day', filters.snapshotDay);
+      addFilter('Snapshot Time', filters.snapshotTime);
+    }
+    return rows;
+  };
+  const buildExportFileName = (
+    baseLabel: string,
+    options: { includeCategory?: boolean; includeSnapshot?: boolean } = {},
+  ) => {
+    const parts: string[] = [];
+    const pushPart = (value?: string | null) => {
+      const sanitized = sanitizeExportFilePart(value);
+      if (sanitized) parts.push(sanitized);
+    };
+    pushPart(filters.campus);
+    pushPart(filters.building);
+    pushPart(filters.block);
+    pushPart(filters.floor);
+    pushPart(filters.department);
+    pushPart(filters.year);
+    pushPart(filters.semester);
+    pushPart(filters.section);
+    pushPart(filters.room);
+    pushPart(filters.roomType);
+    if (options.includeCategory) {
+      pushPart(categoryTypeOptions.find((option) => option.value === filters.roomCategoryType)?.label || filters.roomCategoryType);
+      pushPart(filters.roomCategoryValue);
+    }
+    if (options.includeSnapshot && filters.reportType === 'per_room_occupancy') {
+      pushPart(filters.snapshotMode);
+      pushPart(filters.snapshotDay);
+      pushPart(filters.snapshotTime);
+    }
+    if (filters.dateFrom) pushPart(`From-${formatDisplayDate(filters.dateFrom)}`);
+    if (filters.dateTo) pushPart(`To-${formatDisplayDate(filters.dateTo)}`);
+    pushPart(baseLabel);
+    const joined = parts.filter(Boolean).join('_') || sanitizeExportFilePart(baseLabel) || 'report';
+    return `${joined.slice(0, 180)}.xlsx`;
+  };
 
   const buildWorkbookFromReportConfigs = async (reportConfigs: ReportConfigMap, reportOrder: string[], fileName: string) => {
     const workbook = await createExcelWorkbook();
@@ -11924,14 +12006,18 @@ function ReportGeneration() {
   };
   const exportUtilizationReport = async () => {
     const reportConfigs = buildUtilizationReportConfigs();
-    await buildWorkbookFromReportConfigs(reportConfigs, Object.keys(reportConfigs), 'utilization-report.xlsx');
+    await buildWorkbookFromReportConfigs(
+      reportConfigs,
+      Object.keys(reportConfigs),
+      buildExportFileName('Utilization Report'),
+    );
   };
   const exportSchoolSummaryReport = async () => {
     const reportConfigs = buildUtilizationReportConfigs();
     const config = reportConfigs.school_utilization;
     await exportRowsToWorkbook(
       config.rows,
-      config.fileName,
+      buildExportFileName('School Utilization Summary'),
       config.sheetName,
       REPORT_EXPORT_COLUMNS.school_utilization,
       'school_utilization',
@@ -11982,7 +12068,7 @@ function ReportGeneration() {
       'IsBookable', 'LabName', 'SubLabName', 'RestroomFor', 'Capacity', 'Status', 'Utilization', 'ScheduledHours',
       'BookedHours', 'MaintenanceIssues', 'BookingStatuses', 'BookingDates', 'Flags'
     ];
-    await exportRowsToWorkbook(rows, 'raw-usage-data.xlsx', 'Raw Usage Data', rawUsageColumns, 'raw_usage_data', 'Raw Usage Data');
+    await exportRowsToWorkbook(rows, buildExportFileName('Raw Usage Data'), 'Raw Usage Data', rawUsageColumns, 'raw_usage_data', 'Raw Usage Data');
   };
   const exportRowsToWorkbook = async (rows: any[], fileName: string, sheetName: string, columns?: string[], reportType = 'custom_report', reportName = sheetName) => {
     const workbook = await createExcelWorkbook();
@@ -12326,6 +12412,46 @@ function ReportGeneration() {
       },
     };
   };
+  const exportCategoryWiseRoomWorkbook = async () => {
+    const workbook = await createExcelWorkbook();
+    const reportType = 'category_room_list';
+    const reportName = getReportLabelByType(reportType, 'Category-wise Room List');
+    const exportColumns = getReportColumns(reportType, categoryWiseRoomListRows);
+    const overviewRows = [
+      ...buildActiveFilterSummaryRows(reportName, { includeCategory: true }),
+      { Section: 'Summary', Field: 'Rooms Listed', Value: `${categoryWiseRoomListRows.length}` },
+      { Section: 'Summary', Field: 'Unique Categories', Value: `${categoryWiseGroupSummary.length}` },
+      { Section: 'Summary', Field: filters.roomCategoryValue ? 'Selected Category' : 'Top Category', Value: filters.roomCategoryValue || topCategoryGroup?.value || '-' },
+      { Section: 'Summary', Field: filters.roomCategoryValue ? 'Matching Rooms' : 'Largest Group', Value: `${filters.roomCategoryValue ? categoryWiseRoomListRows.length : (topCategoryGroup?.roomCount ?? 0)}` },
+    ];
+    appendExcelDataSheet(workbook, 'Summary', overviewRows, ['Section', 'Field', 'Value']);
+    appendExcelDataSheet(workbook, 'Complete Room List', categoryWiseRoomListRows, exportColumns);
+    appendExcelImageSheet(workbook, reportType, reportName, 'Complete Room List', categoryWiseRoomListRows, exportColumns);
+
+    const recommendationItems: ReportRecommendationItem[] = [{
+      reportType,
+      reportName,
+      sheetName: 'Complete Room List',
+      rows: categoryWiseRoomListRows,
+      columns: exportColumns || [],
+    }];
+
+    categoryWiseGroupSummary.forEach((group) => {
+      const rows = categoryWiseRoomGroups[group.value] || [];
+      appendExcelDataSheet(workbook, group.value || 'Unspecified', rows, exportColumns);
+      appendExcelImageSheet(workbook, reportType, `${reportName} - ${group.value || 'Unspecified'}`, group.value || 'Unspecified', rows, exportColumns);
+      recommendationItems.push({
+        reportType,
+        reportName: `${reportName} - ${group.value || 'Unspecified'}`,
+        sheetName: group.value || 'Unspecified',
+        rows,
+        columns: exportColumns || [],
+      });
+    });
+
+    appendExcelChartRecommendationsSheet(workbook, recommendationItems);
+    await saveExcelWorkbook(workbook, buildExportFileName(reportName, { includeCategory: true }));
+  };
 
   const exportReportByType = async (reportType: string) => {
     const reportConfigs = buildUtilizationReportConfigs();
@@ -12334,10 +12460,15 @@ function ReportGeneration() {
       alert('Selected report type is not available for individual export.');
       return;
     }
+    if (reportType === 'category_room_list') {
+      await exportCategoryWiseRoomWorkbook();
+      return;
+    }
     if (reportType === 'per_room_occupancy' && perRoomOccupancyMatrix) {
       const workbook = await createExcelWorkbook();
-      const reportName = REPORT_TYPE_OPTIONS.find((option) => option.value === reportType)?.label || config.sheetName;
+      const reportName = getReportLabelByType(reportType, config.sheetName);
       const exportColumns = getReportColumns(reportType, config.rows);
+      appendExcelDataSheet(workbook, 'Summary', buildActiveFilterSummaryRows(reportName, { includeSnapshot: true }), ['Section', 'Field', 'Value']);
       appendExcelDataSheet(workbook, config.sheetName, config.rows, exportColumns);
       appendExcelDataSheet(workbook, `${config.sheetName} Matrix`, perRoomOccupancyMatrix.rows, perRoomOccupancyMatrixColumns);
       appendExcelImageSheet(workbook, reportType, reportName, config.sheetName, config.rows, exportColumns);
@@ -12348,17 +12479,18 @@ function ReportGeneration() {
         rows: config.rows,
         columns: exportColumns,
       }]);
-      await saveExcelWorkbook(workbook, config.fileName);
+      await saveExcelWorkbook(workbook, buildExportFileName(reportName, { includeSnapshot: true }));
       return;
     }
     const exportColumns = getReportColumns(reportType, config.rows);
+    const reportName = getReportLabelByType(reportType, config.sheetName);
     await exportRowsToWorkbook(
       config.rows,
-      config.fileName,
+      buildExportFileName(reportName, { includeSnapshot: reportType === 'per_room_occupancy' }),
       config.sheetName,
       exportColumns,
       reportType,
-      REPORT_TYPE_OPTIONS.find((option) => option.value === reportType)?.label || config.sheetName,
+      reportName,
     );
   };
   const exportComprehensiveWorkbook = async () => {
@@ -12420,6 +12552,7 @@ function ReportGeneration() {
 
     const workbook = await createExcelWorkbook();
     appendExcelDataSheet(workbook, 'Overall Summary', reportSummaryRows, ['S. No', 'Report Type', 'Report Name', 'Sheet Name', 'Total Rows']);
+    appendExcelDataSheet(workbook, 'Applied Filters', buildActiveFilterSummaryRows('Comprehensive Utilization Workbook', { includeCategory: true, includeSnapshot: true }), ['Section', 'Field', 'Value']);
     appendExcelDataSheet(workbook, 'Complete Data', completeDataRows, completeDataHeaders);
     const recommendationItems: ReportRecommendationItem[] = [];
     orderedReportTypes.forEach((reportType) => {
@@ -12440,7 +12573,7 @@ function ReportGeneration() {
       });
     });
     appendExcelChartRecommendationsSheet(workbook, recommendationItems);
-    await saveExcelWorkbook(workbook, 'comprehensive-utilization-workbook.xlsx');
+    await saveExcelWorkbook(workbook, buildExportFileName('Comprehensive Utilization Workbook', { includeCategory: true, includeSnapshot: true }));
   };
   const exportCurrentReport = () => { void exportReportByType(filters.reportType); };
   const selectedSchoolRooms = selectedSchool
