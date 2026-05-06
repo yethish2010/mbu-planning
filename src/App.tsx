@@ -1080,7 +1080,12 @@ const getParentRoomDisplay = (room: any, rooms: any[] = []) => {
 const getRoomNameDisplay = (room: any) => {
   if (!room) return '';
   const roomLayout = normalizeRoomLayoutValue(room?.room_layout);
-  if (HIERARCHY_CHILD_ROOM_LAYOUTS.includes(roomLayout)) return '';
+  if (HIERARCHY_CHILD_ROOM_LAYOUTS.includes(roomLayout)) {
+    return room?.room_section_name?.toString().trim()
+      || room?.sub_lab_name?.toString().trim()
+      || room?.lab_name?.toString().trim()
+      || '';
+  }
   const explicitRoomName = room?.room_name?.toString().trim();
   if (explicitRoomName) return explicitRoomName;
   const labName = room?.lab_name?.toString().trim();
