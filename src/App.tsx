@@ -970,6 +970,22 @@ const getRoomDisplayLabel = (room: any, rooms: any[] = []) => {
   return parentLabel ? `${room.room_number} inside ${parentLabel}` : room.room_number;
 };
 
+const getHierarchyLevelDisplay = (room: any) => {
+  const roomLayout = normalizeRoomLayoutValue(room?.room_layout);
+  if (roomLayout === 'Shared Room') return 'Shared';
+  if (roomLayout === 'Split Parent') return 'Split Parent';
+  if (roomLayout === 'Split Child') return 'Split Child';
+  if (roomLayout === 'Inside Parent') return 'Inside Parent';
+  if (roomLayout === 'Inside Child') return 'Inside Child';
+  return 'Normal';
+};
+
+const getParentRoomDisplay = (room: any, rooms: any[] = []) => {
+  if (!room || !HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room?.room_layout))) return '';
+  const parent = rooms.find(item => item.id?.toString() === room.parent_room_id?.toString());
+  return parent?.room_number || room.parent_room_number || '';
+};
+
 const getRoomNameDisplay = (room: any) => {
   if (!room) return '';
   const roomLayout = normalizeRoomLayoutValue(room?.room_layout);
@@ -9735,7 +9751,7 @@ function ReportGeneration() {
   const REPORT_EXPORT_COLUMNS: Record<string, string[]> = {
     room_utilization: ['Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Utilization', 'ScheduledHours', 'BookedHours', 'Capacity', 'Status', 'Flags'],
     available_room_summary: ['SummaryScope', 'Category', 'AvailableRooms', 'RoomNumbers'],
-    category_room_list: ['CategoryType', 'CategoryValue', 'RoomId', 'Room', 'RoomName', 'Campus', 'Building', 'Block', 'Floor', 'Type', 'Layout', 'UsageCategory', 'Status', 'Capacity'],
+    category_room_list: ['CategoryType', 'CategoryValue', 'RoomId', 'Room', 'RoomName', 'Campus', 'Building', 'Block', 'Floor', 'Type', 'HierarchyLevel', 'ParentRoom', 'Layout', 'UsageCategory', 'Status', 'Capacity'],
     room_level_detail: ['RoomId', 'Room', 'Aliases', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Status', 'Capacity', 'Utilization', 'ScheduledHours', 'BookedHours', 'Years', 'Semesters', 'Sections', 'Flags'],
     campus_utilization: ['Campus', 'Buildings', 'Rooms', 'AvgUtilization'],
     school_utilization: ['School', 'Departments', 'Rooms', 'TotalCapacity', 'AvgUtilization', 'UnmappedRooms'],
@@ -10138,6 +10154,8 @@ function ReportGeneration() {
       Block: room.block || '',
       Floor: getFloorName(room.floor_number),
       Type: getRoomTypeDisplay(room),
+      HierarchyLevel: getHierarchyLevelDisplay(room),
+      ParentRoom: getParentRoomDisplay(room),
       Layout: room.room_layout || 'Normal',
       UsageCategory: room.usage_category || normalizeUsageCategoryValue('', room.room_type) || '',
       Status: room.status || '',
@@ -12854,7 +12872,7 @@ function ReportGeneration() {
                   <table className="w-full text-left">
                     <thead>
                       <tr className="border-b border-slate-100">
-                        {['Category Type', 'Category Value', 'Room ID', 'Room', 'Room Name', 'Campus', 'Building', 'Block', 'Floor', 'Type', 'Layout', 'Usage Category', 'Status', 'Capacity'].map((column) => (
+                        {['Category Type', 'Category Value', 'Room ID', 'Room', 'Room Name', 'Campus', 'Building', 'Block', 'Floor', 'Type', 'Hierarchy Level', 'Parent Room', 'Layout', 'Usage Category', 'Status', 'Capacity'].map((column) => (
                           <th key={column} className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">{column}</th>
                         ))}
                       </tr>
@@ -12872,6 +12890,8 @@ function ReportGeneration() {
                           <td className="py-4 text-sm text-slate-500">{item.Block || '-'}</td>
                           <td className="py-4 text-sm text-slate-500">{item.Floor || '-'}</td>
                           <td className="py-4 text-sm text-slate-500">{item.Type || '-'}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.HierarchyLevel || '-'}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.ParentRoom || '-'}</td>
                           <td className="py-4 text-sm text-slate-500">{item.Layout || '-'}</td>
                           <td className="py-4 text-sm text-slate-500">{item.UsageCategory || '-'}</td>
                           <td className="py-4 text-sm text-slate-500">{item.Status || '-'}</td>
@@ -12880,7 +12900,7 @@ function ReportGeneration() {
                       ))}
                       {categoryWiseRoomListRows.length === 0 && (
                         <tr>
-                          <td colSpan={14} className="py-8 text-center text-sm text-slate-400 italic">
+                          <td colSpan={16} className="py-8 text-center text-sm text-slate-400 italic">
                             No rooms match the selected category filters.
                           </td>
                         </tr>
