@@ -983,6 +983,77 @@ const getHierarchyLevelDisplay = (room: any) => {
   return 'Normal';
 };
 
+const CATEGORY_ROOM_REPORT_GROUP_ORDER = [
+  'Class Rooms',
+  'Labs',
+  'Faculty & Admin',
+  'Seminar Halls',
+  'Auditoriums',
+  'Examination Section Rooms',
+  'Access & Circulation',
+  'Utilities & Support',
+] as const;
+
+const getCategoryRoomReportGroup = (room: any) => {
+  const roomType = getEffectiveBaseRoomTypeDisplay(room);
+  if ([
+    'Classroom',
+    'Smart Classroom',
+    'Lecture Hall',
+    'Tutorial Room',
+    'Multipurpose Classroom',
+    'Multipurpose Lecture Hall',
+  ].includes(roomType)) return 'Class Rooms';
+  if ([
+    'Lab',
+    'Computer Lab',
+    'Research Lab',
+    'Language Lab',
+    'Workshop',
+    'Studio',
+    'Classroom Lab',
+    'Multipurpose Lab',
+  ].includes(roomType)) return 'Labs';
+  if ([
+    'Office',
+    'Faculty Room',
+    'Staff Room',
+    'HOD Cabin',
+    'Dean Office',
+    'Admin Office',
+    'Reception',
+    'Library',
+    'Reading Room',
+    'Meeting Room',
+    'Board Room',
+    'Waiting Area',
+    'Common Room',
+    'Lounge',
+  ].includes(roomType)) return 'Faculty & Admin';
+  if (['Seminar Hall', 'Conference Room'].includes(roomType)) return 'Seminar Halls';
+  if (roomType === 'Auditorium') return 'Auditoriums';
+  if (['Examination Section', 'Exam Hall'].includes(roomType)) return 'Examination Section Rooms';
+  if (['Entrance', 'Main Entrance', 'Emergency Exit', 'Exit', 'Corridor', 'Staircase'].includes(roomType)) {
+    return 'Access & Circulation';
+  }
+  if ([
+    'Restroom',
+    'Store',
+    'Records Room',
+    'Server Room',
+    'Electrical Room',
+    'Maintenance Room',
+    'Utility',
+    'Medical Room',
+    'Security Room',
+    'Sports Room',
+    'Gym',
+    'Pantry',
+    'Cafeteria',
+  ].includes(roomType)) return 'Utilities & Support';
+  return 'Faculty & Admin';
+};
+
 const getParentRoomDisplay = (room: any, rooms: any[] = []) => {
   if (!room || !HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room?.room_layout))) return '';
   const parent = rooms.find(item => item.id?.toString() === room.parent_room_id?.toString());
@@ -9754,7 +9825,7 @@ function ReportGeneration() {
   const REPORT_EXPORT_COLUMNS: Record<string, string[]> = {
     room_utilization: ['Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Utilization', 'ScheduledHours', 'BookedHours', 'Capacity', 'Status', 'Flags'],
     available_room_summary: ['SummaryScope', 'Category', 'AvailableRooms', 'RoomNumbers'],
-    category_room_list: ['CategoryType', 'CategoryValue', 'RoomId', 'Room', 'RoomName', 'Campus', 'Building', 'Block', 'Floor', 'Type', 'HierarchyLevel', 'ParentRoom', 'Layout', 'UsageCategory', 'Status', 'Capacity'],
+    category_room_list: ['CategoryType', 'CategoryValue', 'ReportCategory', 'RoomId', 'Room', 'RoomName', 'Campus', 'Building', 'Block', 'Floor', 'Type', 'HierarchyLevel', 'ParentRoom', 'Layout', 'UsageCategory', 'Status', 'Capacity'],
     room_level_detail: ['RoomId', 'Room', 'Aliases', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Status', 'Capacity', 'Utilization', 'ScheduledHours', 'BookedHours', 'Years', 'Semesters', 'Sections', 'Flags'],
     campus_utilization: ['Campus', 'Buildings', 'Rooms', 'AvgUtilization'],
     school_utilization: ['School', 'Departments', 'Rooms', 'TotalCapacity', 'AvgUtilization', 'UnmappedRooms'],
@@ -10147,6 +10218,7 @@ function ReportGeneration() {
     .map((room: any) => ({
       CategoryType: categoryTypeOptions.find((option) => option.value === filters.roomCategoryType)?.label || 'Category',
       CategoryValue: getCategoryValueForRoom(room, filters.roomCategoryType),
+      ReportCategory: getCategoryRoomReportGroup(room),
       RoomId: room.room_id || '',
       Room: room.room_number || '',
       RoomName: getRoomNameDisplay(room),
@@ -10162,6 +10234,16 @@ function ReportGeneration() {
       Status: room.status || '',
       Capacity: room.capacity ?? '',
     }));
+  const categoryWiseReportGroups = CATEGORY_ROOM_REPORT_GROUP_ORDER.reduce((acc: Record<string, any[]>, groupName) => {
+    acc[groupName] = categoryWiseRoomListRows.filter((row: any) => row.ReportCategory === groupName);
+    return acc;
+  }, {} as Record<string, any[]>);
+  const categoryWiseReportGroupSummary = CATEGORY_ROOM_REPORT_GROUP_ORDER
+    .map((value) => ({
+      value,
+      roomCount: (categoryWiseReportGroups[value] || []).length,
+    }))
+    .filter((item) => item.roomCount > 0);
   const categoryWiseRoomGroups = categoryWiseRoomListRows.reduce((acc: Record<string, any[]>, row: any) => {
     const key = row.CategoryValue || 'Unspecified';
     if (!acc[key]) acc[key] = [];
@@ -10178,6 +10260,7 @@ function ReportGeneration() {
       return left.value.localeCompare(right.value, undefined, { numeric: true, sensitivity: 'base' });
     });
   const topCategoryGroup = categoryWiseGroupSummary[0];
+  const topReportCategoryGroup = categoryWiseReportGroupSummary[0];
   const yearSummary = yearOptions.map((year: any) => {
     const yearRooms = filteredRoomReports.filter((room: any) => (room.yearTags || []).includes(year));
     return {
@@ -10232,11 +10315,11 @@ function ReportGeneration() {
         },
         {
           label: filters.roomCategoryValue ? 'Selected Category' : 'Top Category',
-          value: filters.roomCategoryValue || topCategoryGroup?.value || '-',
+          value: filters.roomCategoryValue || topCategoryGroup?.value || topReportCategoryGroup?.value || '-',
         },
         {
           label: filters.roomCategoryValue ? 'Matching Rooms' : 'Largest Group',
-          value: `${filters.roomCategoryValue ? categoryWiseRoomListRows.length : (topCategoryGroup?.roomCount ?? 0)}`,
+          value: `${filters.roomCategoryValue ? categoryWiseRoomListRows.length : (topCategoryGroup?.roomCount ?? topReportCategoryGroup?.roomCount ?? 0)}`,
         },
       ]
     : [
@@ -11248,6 +11331,13 @@ function ReportGeneration() {
         sortBy: 'Utilization (desc)',
         note: 'Detailed room-by-room operational picture with academic context tags.',
       },
+      category_room_list: {
+        chart: 'Column Chart',
+        xAxis: 'ReportCategory',
+        yAxis: 'Room Count',
+        sortBy: 'Room Count (desc)',
+        note: 'Shows how filtered rooms are distributed by grouped room categories and location.',
+      },
       campus_utilization: {
         chart: 'Column Chart',
         xAxis: 'Campus',
@@ -11624,6 +11714,80 @@ function ReportGeneration() {
       return { points: lifecyclePoints, xLabel: 'Lifecycle Stage', yLabel: 'Count', chartType: recommendation.chart, note: recommendation.note };
     }
 
+    if (reportType === 'category_room_list') {
+      const buildCountPoints = (field: string) => {
+        const grouped = new Map<string, number>();
+        safeRows.forEach((row: any) => {
+          const label = (row?.[field] ?? '').toString().trim();
+          if (!label) return;
+          grouped.set(label, (grouped.get(label) || 0) + 1);
+        });
+        return Array.from(grouped.entries())
+          .map(([label, value]) => ({ label, value }))
+          .sort((a, b) => b.value - a.value)
+          .slice(0, 12);
+      };
+      const reportCategoryPoints = buildCountPoints('ReportCategory');
+      if (reportCategoryPoints.length > 1) {
+        return {
+          points: reportCategoryPoints,
+          xLabel: 'Report Category',
+          yLabel: 'Room Count',
+          chartType: recommendation.chart,
+          note: 'Shows how filtered rooms are distributed across grouped room categories.',
+        };
+      }
+      const buildingPoints = buildCountPoints('Building');
+      if (buildingPoints.length > 1) {
+        return {
+          points: buildingPoints,
+          xLabel: 'Building',
+          yLabel: 'Room Count',
+          chartType: recommendation.chart,
+          note: 'Shows how rooms in this category are distributed across buildings.',
+        };
+      }
+      const hierarchyPoints = buildCountPoints('HierarchyLevel');
+      if (hierarchyPoints.length > 1) {
+        return {
+          points: hierarchyPoints,
+          xLabel: 'Hierarchy Level',
+          yLabel: 'Room Count',
+          chartType: recommendation.chart,
+          note: 'Shows the parent/child mix for the filtered category rooms.',
+        };
+      }
+      const statusPoints = buildCountPoints('Status');
+      if (statusPoints.length > 1) {
+        return {
+          points: statusPoints,
+          xLabel: 'Status',
+          yLabel: 'Room Count',
+          chartType: recommendation.chart,
+          note: 'Shows the room-status distribution for the filtered category rooms.',
+        };
+      }
+      const typePoints = buildCountPoints('Type');
+      if (typePoints.length > 1) {
+        return {
+          points: typePoints,
+          xLabel: 'Effective Room Type',
+          yLabel: 'Room Count',
+          chartType: recommendation.chart,
+          note: 'Shows the effective room types represented inside the filtered category rooms.',
+        };
+      }
+      const singleCategoryLabel =
+        (safeRows[0]?.CategoryValue ?? safeRows[0]?.ReportCategory ?? safeRows[0]?.Type ?? 'Rooms').toString().trim() || 'Rooms';
+      return {
+        points: [{ label: singleCategoryLabel, value: safeRows.length }],
+        xLabel: 'Category',
+        yLabel: 'Room Count',
+        chartType: recommendation.chart,
+        note: 'Shows the total rooms matched for the selected category filters.',
+      };
+    }
+
     const xColumn = findMatchingReportColumn(columns, recommendation.xAxis) || columns.find((column) =>
       safeRows.some((row: any) => row?.[column] != null && toNumericValue(row?.[column]) == null)
     ) || columns[0] || 'Category';
@@ -11977,6 +12141,71 @@ function ReportGeneration() {
     return `${joined.slice(0, 180)}.xlsx`;
   };
 
+  const buildCategoryRoomWorkbookSummaryRows = (reportName: string) => [
+    ...buildActiveFilterSummaryRows(reportName, { includeCategory: true }),
+    { Section: 'Summary', Field: 'Rooms Listed', Value: `${categoryWiseRoomListRows.length}` },
+    { Section: 'Summary', Field: 'Grouped Categories', Value: `${categoryWiseReportGroupSummary.length}` },
+    {
+      Section: 'Summary',
+      Field: filters.roomCategoryValue ? 'Selected Category' : 'Largest Group',
+      Value: filters.roomCategoryValue || topReportCategoryGroup?.value || '-',
+    },
+    {
+      Section: 'Summary',
+      Field: filters.roomCategoryValue ? 'Matching Rooms' : 'Largest Group Count',
+      Value: `${filters.roomCategoryValue ? categoryWiseRoomListRows.length : (topReportCategoryGroup?.roomCount ?? 0)}`,
+    },
+  ];
+
+  const appendCategoryRoomWorkbookSections = (
+    workbook: ExcelWorkbook,
+    reportName: string,
+    options: {
+      summarySheetName?: string;
+      completeSheetName?: string;
+    } = {},
+  ) => {
+    const completeSheetName = options.completeSheetName || 'Complete Room List';
+    const summarySheetName = options.summarySheetName;
+    const exportColumns = getReportColumns('category_room_list', categoryWiseRoomListRows);
+    const groupedSheetColumns = exportColumns.filter((column) => column !== 'ReportCategory');
+    const recommendationItems: ReportRecommendationItem[] = [];
+
+    if (summarySheetName) {
+      appendExcelDataSheet(
+        workbook,
+        summarySheetName,
+        buildCategoryRoomWorkbookSummaryRows(reportName),
+        ['Section', 'Field', 'Value'],
+      );
+    }
+
+    appendExcelDataSheet(workbook, completeSheetName, categoryWiseRoomListRows, exportColumns);
+    appendExcelImageSheet(workbook, 'category_room_list', reportName, completeSheetName, categoryWiseRoomListRows, exportColumns);
+    recommendationItems.push({
+      reportType: 'category_room_list',
+      reportName,
+      sheetName: completeSheetName,
+      rows: categoryWiseRoomListRows,
+      columns: exportColumns || [],
+    });
+
+    CATEGORY_ROOM_REPORT_GROUP_ORDER.forEach((groupName) => {
+      const rows = categoryWiseReportGroups[groupName] || [];
+      appendExcelDataSheet(workbook, groupName, rows, groupedSheetColumns);
+      appendExcelImageSheet(workbook, 'category_room_list', `${reportName} - ${groupName}`, groupName, rows, groupedSheetColumns);
+      recommendationItems.push({
+        reportType: 'category_room_list',
+        reportName: `${reportName} - ${groupName}`,
+        sheetName: groupName,
+        rows,
+        columns: groupedSheetColumns || [],
+      });
+    });
+
+    return recommendationItems;
+  };
+
   const buildWorkbookFromReportConfigs = async (reportConfigs: ReportConfigMap, reportOrder: string[], fileName: string) => {
     const workbook = await createExcelWorkbook();
     const recommendationItems: Array<{
@@ -11991,6 +12220,15 @@ function ReportGeneration() {
       if (!config) return;
       const exportColumns = getReportColumns(reportType, config.rows);
       const reportName = REPORT_TYPE_OPTIONS.find((option) => option.value === reportType)?.label || config.sheetName;
+      if (reportType === 'category_room_list') {
+        recommendationItems.push(
+          ...appendCategoryRoomWorkbookSections(workbook, reportName, {
+            summarySheetName: 'Category Room Report Summary',
+            completeSheetName: config.sheetName,
+          }),
+        );
+        return;
+      }
       appendExcelDataSheet(workbook, config.sheetName, config.rows, exportColumns);
       appendExcelImageSheet(workbook, reportType, reportName, config.sheetName, config.rows, exportColumns);
       recommendationItems.push({
@@ -12416,37 +12654,9 @@ function ReportGeneration() {
     const workbook = await createExcelWorkbook();
     const reportType = 'category_room_list';
     const reportName = getReportLabelByType(reportType, 'Category-wise Room List');
-    const exportColumns = getReportColumns(reportType, categoryWiseRoomListRows);
-    const overviewRows = [
-      ...buildActiveFilterSummaryRows(reportName, { includeCategory: true }),
-      { Section: 'Summary', Field: 'Rooms Listed', Value: `${categoryWiseRoomListRows.length}` },
-      { Section: 'Summary', Field: 'Unique Categories', Value: `${categoryWiseGroupSummary.length}` },
-      { Section: 'Summary', Field: filters.roomCategoryValue ? 'Selected Category' : 'Top Category', Value: filters.roomCategoryValue || topCategoryGroup?.value || '-' },
-      { Section: 'Summary', Field: filters.roomCategoryValue ? 'Matching Rooms' : 'Largest Group', Value: `${filters.roomCategoryValue ? categoryWiseRoomListRows.length : (topCategoryGroup?.roomCount ?? 0)}` },
-    ];
-    appendExcelDataSheet(workbook, 'Summary', overviewRows, ['Section', 'Field', 'Value']);
-    appendExcelDataSheet(workbook, 'Complete Room List', categoryWiseRoomListRows, exportColumns);
-    appendExcelImageSheet(workbook, reportType, reportName, 'Complete Room List', categoryWiseRoomListRows, exportColumns);
-
-    const recommendationItems: ReportRecommendationItem[] = [{
-      reportType,
-      reportName,
-      sheetName: 'Complete Room List',
-      rows: categoryWiseRoomListRows,
-      columns: exportColumns || [],
-    }];
-
-    categoryWiseGroupSummary.forEach((group) => {
-      const rows = categoryWiseRoomGroups[group.value] || [];
-      appendExcelDataSheet(workbook, group.value || 'Unspecified', rows, exportColumns);
-      appendExcelImageSheet(workbook, reportType, `${reportName} - ${group.value || 'Unspecified'}`, group.value || 'Unspecified', rows, exportColumns);
-      recommendationItems.push({
-        reportType,
-        reportName: `${reportName} - ${group.value || 'Unspecified'}`,
-        sheetName: group.value || 'Unspecified',
-        rows,
-        columns: exportColumns || [],
-      });
+    const recommendationItems = appendCategoryRoomWorkbookSections(workbook, reportName, {
+      summarySheetName: 'Report Summary',
+      completeSheetName: 'Complete Room List',
     });
 
     appendExcelChartRecommendationsSheet(workbook, recommendationItems);
@@ -12559,18 +12769,27 @@ function ReportGeneration() {
       const report = reportConfigs[reportType as keyof typeof reportConfigs];
       const exportColumns = getReportColumns(reportType, report.rows);
       const reportName = reportLabels.get(reportType) || report.sheetName;
-      appendExcelDataSheet(workbook, report.sheetName, report.rows, exportColumns);
+      if (reportType === 'category_room_list') {
+        recommendationItems.push(
+          ...appendCategoryRoomWorkbookSections(workbook, reportName, {
+            summarySheetName: 'Category Room Report Summary',
+            completeSheetName: report.sheetName,
+          }),
+        );
+      } else {
+        appendExcelDataSheet(workbook, report.sheetName, report.rows, exportColumns);
+        appendExcelImageSheet(workbook, reportType, reportName, report.sheetName, report.rows, exportColumns);
+        recommendationItems.push({
+          reportType,
+          reportName,
+          sheetName: report.sheetName,
+          rows: report.rows,
+          columns: exportColumns || [],
+        });
+      }
       if (reportType === 'per_room_occupancy' && perRoomOccupancyMatrix) {
         appendExcelDataSheet(workbook, `${report.sheetName} Matrix`, perRoomOccupancyMatrix.rows, perRoomOccupancyMatrixColumns);
       }
-      appendExcelImageSheet(workbook, reportType, reportName, report.sheetName, report.rows, exportColumns);
-      recommendationItems.push({
-        reportType,
-        reportName,
-        sheetName: report.sheetName,
-        rows: report.rows,
-        columns: exportColumns || [],
-      });
     });
     appendExcelChartRecommendationsSheet(workbook, recommendationItems);
     await saveExcelWorkbook(workbook, buildExportFileName('Comprehensive Utilization Workbook', { includeCategory: true, includeSnapshot: true }));
@@ -13006,7 +13225,7 @@ function ReportGeneration() {
                   <table className="w-full text-left">
                     <thead>
                       <tr className="border-b border-slate-100">
-                        {['Category Type', 'Category Value', 'Room ID', 'Room', 'Room Name', 'Campus', 'Building', 'Block', 'Floor', 'Type', 'Hierarchy Level', 'Parent Room', 'Layout', 'Usage Category', 'Status', 'Capacity'].map((column) => (
+                        {['Category Type', 'Category Value', 'Report Category', 'Room ID', 'Room', 'Room Name', 'Campus', 'Building', 'Block', 'Floor', 'Type', 'Hierarchy Level', 'Parent Room', 'Layout', 'Usage Category', 'Status', 'Capacity'].map((column) => (
                           <th key={column} className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">{column}</th>
                         ))}
                       </tr>
@@ -13016,6 +13235,7 @@ function ReportGeneration() {
                         <tr key={`${item.RoomId || item.Room}-${index}`} className="hover:bg-slate-50/50">
                           <td className="py-4 text-sm font-bold text-slate-700">{item.CategoryType}</td>
                           <td className="py-4 text-sm text-slate-500">{item.CategoryValue}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.ReportCategory || '-'}</td>
                           <td className="py-4 text-sm text-slate-500">{item.RoomId}</td>
                           <td className="py-4 text-sm font-bold text-slate-700">{item.Room}</td>
                           <td className="py-4 text-sm text-slate-500">{item.RoomName || '-'}</td>
@@ -13034,7 +13254,7 @@ function ReportGeneration() {
                       ))}
                       {categoryWiseRoomListRows.length === 0 && (
                         <tr>
-                          <td colSpan={16} className="py-8 text-center text-sm text-slate-400 italic">
+                          <td colSpan={17} className="py-8 text-center text-sm text-slate-400 italic">
                             No rooms match the selected category filters.
                           </td>
                         </tr>
