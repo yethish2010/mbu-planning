@@ -1071,6 +1071,16 @@ const getCategoryRoomReportGroup = (room: any) => {
   return 'Faculty & Admin';
 };
 
+const getRoomMixCounts = (rooms: any[] = []) => rooms.reduce((acc, room) => {
+  const group = getCategoryRoomReportGroup(room);
+  if (group === 'Class Rooms') acc.classrooms += 1;
+  if (group === 'Labs') acc.labs += 1;
+  return acc;
+}, { classrooms: 0, labs: 0 });
+
+const formatRoomMixSummary = (counts: { classrooms: number; labs: number }) =>
+  `Classrooms: ${counts.classrooms} | Labs: ${counts.labs}`;
+
 const getParentRoomDisplay = (room: any, rooms: any[] = []) => {
   if (!room || !HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room?.room_layout))) return '';
   const parent = rooms.find(item => item.id?.toString() === room.parent_room_id?.toString());
@@ -3461,6 +3471,11 @@ function DashboardHome() {
       .slice(0, 5);
   }, [utilizationReport]);
 
+  const dashboardRoomMix = useMemo(
+    () => getRoomMixCounts(Array.isArray(utilizationReport?.roomReports) ? utilizationReport.roomReports : []),
+    [utilizationReport],
+  );
+
   const lowestUsageRooms = useMemo(() => {
     const roomReports = Array.isArray(utilizationReport?.roomReports) ? utilizationReport.roomReports : [];
     return roomReports
@@ -3479,7 +3494,7 @@ function DashboardHome() {
 
   const statCards = [
     { label: 'Total Buildings', value: stats?.totalBuildings || '0', icon: Building2, color: 'text-blue-600', bg: 'bg-blue-50', path: '/digital-twin?view=3D' },
-    { label: 'Available Now', value: stats?.availableNow || '0', icon: DoorOpen, color: 'text-emerald-600', bg: 'bg-emerald-50', path: '/rooms' },
+    { label: 'Available Now', value: stats?.availableNow || '0', icon: DoorOpen, color: 'text-emerald-600', bg: 'bg-emerald-50', path: '/rooms', detail: formatRoomMixSummary(dashboardRoomMix) },
     { label: 'Scheduled Today', value: stats?.scheduledRooms || '0', icon: Calendar, color: 'text-indigo-600', bg: 'bg-indigo-50', path: '/digital-twin?status=ScheduledToday' },
     { label: 'Equipment Issues', value: stats?.equipmentIssues || '0', icon: AlertTriangle, color: 'text-rose-600', bg: 'bg-rose-50', path: '/maintenance?status=open' },
     { label: 'Pending Bookings', value: stats?.pendingBookings || '0', icon: Clock, color: 'text-amber-600', bg: 'bg-amber-50', path: '/bookings?status=Pending' },
@@ -3515,6 +3530,9 @@ function DashboardHome() {
             </div>
             <h3 className="text-3xl font-black text-slate-800 mb-1">{stat.value}</h3>
             <p className="text-xs text-slate-500 font-bold uppercase tracking-widest">{stat.label}</p>
+            {stat.detail && (
+              <p className="text-[11px] text-slate-400 font-semibold mt-2">{stat.detail}</p>
+            )}
           </button>
         ))}
       </div>
@@ -10288,6 +10306,12 @@ function ReportGeneration() {
     });
   const topCategoryGroup = categoryWiseGroupSummary[0];
   const topReportCategoryGroup = categoryWiseReportGroupSummary[0];
+  const filteredRoomMix = getRoomMixCounts(filteredRoomReports);
+  const categoryWiseRoomMix = categoryWiseRoomListRows.reduce((acc, row) => {
+    if (row?.ReportCategory === 'Class Rooms') acc.classrooms += 1;
+    if (row?.ReportCategory === 'Labs') acc.labs += 1;
+    return acc;
+  }, { classrooms: 0, labs: 0 });
   const yearSummary = yearOptions.map((year: any) => {
     const yearRooms = filteredRoomReports.filter((room: any) => (room.yearTags || []).includes(year));
     return {
@@ -10335,6 +10359,7 @@ function ReportGeneration() {
         {
           label: 'Rooms Listed',
           value: `${categoryWiseRoomListRows.length}`,
+          detail: formatRoomMixSummary(categoryWiseRoomMix),
         },
         {
           label: 'Unique Categories',
@@ -10349,10 +10374,11 @@ function ReportGeneration() {
           value: `${filters.roomCategoryValue ? categoryWiseRoomListRows.length : (topCategoryGroup?.roomCount ?? topReportCategoryGroup?.roomCount ?? 0)}`,
         },
       ]
-    : [
+      : [
         {
           label: 'Rooms Analyzed',
           value: `${filteredRoomReports.length}`,
+          detail: formatRoomMixSummary(filteredRoomMix),
         },
         {
           label: 'Avg Utilization',
@@ -12984,6 +13010,9 @@ function ReportGeneration() {
             <div key={card.label} className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
               <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{card.label}</p>
               <p className="text-xl font-bold text-slate-800">{card.value}</p>
+              {card.detail && (
+                <p className="text-[11px] text-slate-400 font-semibold mt-2">{card.detail}</p>
+              )}
             </div>
           ))}
         </div>
@@ -15683,6 +15712,7 @@ function DigitalTwin() {
     scopeRooms.some(room => getRoomUsageMetrics(room).totalUsedHours > 0) && scopeUtilizationRaw > 0 && scopeUtilizationRaw < 1
       ? '<1%'
       : `${Math.round(scopeUtilizationRaw)}%`;
+  const scopeRoomMix = getRoomMixCounts(scopeRooms);
   const stats = {
     totalRooms: scopeRooms.length,
     availableRooms: scopeRooms.filter(r => getRoomLiveStatus(r) === 'Available').length,
@@ -15693,7 +15723,7 @@ function DigitalTwin() {
     totalSchedules: scopeSchedules.length,
   };
   const twinStatCards = [
-    { label: 'Total Rooms', value: stats.totalRooms, icon: DoorOpen, iconBg: 'bg-emerald-50', iconClass: 'text-emerald-500', path: '/rooms' },
+    { label: 'Total Rooms', value: stats.totalRooms, detail: formatRoomMixSummary(scopeRoomMix), icon: DoorOpen, iconBg: 'bg-emerald-50', iconClass: 'text-emerald-500', path: '/rooms' },
     { label: 'Utilization', value: stats.utilization, icon: Activity, iconBg: 'bg-blue-50', iconClass: 'text-blue-500', path: '/reports' },
     { label: 'Maintenance', value: stats.maintenanceRooms, icon: Wrench, iconBg: 'bg-amber-50', iconClass: 'text-amber-500', path: '/maintenance' },
     { label: 'Buildings', value: stats.totalBuildings, icon: Building2, iconBg: 'bg-indigo-50', iconClass: 'text-indigo-500', path: '/buildings' },
@@ -15736,6 +15766,9 @@ function DigitalTwin() {
             <div>
               <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{card.label}</p>
               <p className="text-xl font-bold text-slate-800">{card.value}</p>
+              {card.detail && (
+                <p className="text-[11px] text-slate-400 font-semibold mt-1">{card.detail}</p>
+              )}
             </div>
           </button>
         ))}
