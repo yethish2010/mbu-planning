@@ -923,6 +923,9 @@ const getRoomTypeDisplay = (room: any) => {
 const getBaseRoomTypeDisplay = (room: any) =>
   normalizeRoomTypeValue(room?.room_type) || room?.room_type || '';
 
+const getEffectiveBaseRoomTypeDisplay = (room: any) =>
+  normalizeRoomTypeValue(room?.room_type || room?.sub_room_type) || room?.room_type || room?.sub_room_type || '';
+
 const normalizeBooleanLikeValue = (value: unknown, defaultValue = true) => {
   if (value === undefined || value === null || value === '') return defaultValue;
   if (typeof value === 'boolean') return value;
@@ -10106,12 +10109,10 @@ function ReportGeneration() {
   const getCategoryValueForRoom = (room: any, categoryType: string) => {
     switch (categoryType) {
       case 'room_type':
-        return !HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room.room_layout))
-          ? getBaseRoomTypeDisplay(room)
-          : '';
+        return getEffectiveBaseRoomTypeDisplay(room);
       case 'sub_room_type':
         return HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room.room_layout))
-          ? getBaseRoomTypeDisplay(room)
+          ? getEffectiveBaseRoomTypeDisplay(room)
           : '';
       case 'usage_category':
         return room.usage_category || normalizeUsageCategoryValue('', room.room_type) || '';
@@ -10153,7 +10154,7 @@ function ReportGeneration() {
       Building: room.building || '',
       Block: room.block || '',
       Floor: getFloorName(room.floor_number),
-      Type: getRoomTypeDisplay(room),
+      Type: getEffectiveBaseRoomTypeDisplay(room),
       HierarchyLevel: getHierarchyLevelDisplay(room),
       ParentRoom: getParentRoomDisplay(room),
       Layout: room.room_layout || 'Normal',
