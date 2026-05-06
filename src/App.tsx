@@ -10143,6 +10143,22 @@ function ReportGeneration() {
       Status: room.status || '',
       Capacity: room.capacity ?? '',
     }));
+  const categoryWiseRoomGroups = categoryWiseRoomListRows.reduce((acc: Record<string, any[]>, row: any) => {
+    const key = row.CategoryValue || 'Unspecified';
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(row);
+    return acc;
+  }, {});
+  const categoryWiseGroupSummary = Object.entries(categoryWiseRoomGroups)
+    .map(([value, rows]) => ({
+      value,
+      roomCount: (rows as any[]).length,
+    }))
+    .sort((left, right) => {
+      if (right.roomCount !== left.roomCount) return right.roomCount - left.roomCount;
+      return left.value.localeCompare(right.value, undefined, { numeric: true, sensitivity: 'base' });
+    });
+  const topCategoryGroup = categoryWiseGroupSummary[0];
   const yearSummary = yearOptions.map((year: any) => {
     const yearRooms = filteredRoomReports.filter((room: any) => (room.yearTags || []).includes(year));
     return {
@@ -10185,6 +10201,43 @@ function ReportGeneration() {
   const avgFilteredUtilization = Math.round(filteredRoomReports.reduce((acc: number, room: any) => acc + room.utilization, 0) / (filteredRoomReports.length || 1));
   const mostUsedRoom = [...filteredRoomReports].sort((a: any, b: any) => b.utilization - a.utilization)[0];
   const leastUsedRoom = [...filteredRoomReports].sort((a: any, b: any) => a.utilization - b.utilization)[0];
+  const categorySummaryCards = filters.reportType === 'category_room_list'
+    ? [
+        {
+          label: 'Rooms Listed',
+          value: `${categoryWiseRoomListRows.length}`,
+        },
+        {
+          label: 'Unique Categories',
+          value: `${categoryWiseGroupSummary.length}`,
+        },
+        {
+          label: filters.roomCategoryValue ? 'Selected Category' : 'Top Category',
+          value: filters.roomCategoryValue || topCategoryGroup?.value || '-',
+        },
+        {
+          label: filters.roomCategoryValue ? 'Matching Rooms' : 'Largest Group',
+          value: `${filters.roomCategoryValue ? categoryWiseRoomListRows.length : (topCategoryGroup?.roomCount ?? 0)}`,
+        },
+      ]
+    : [
+        {
+          label: 'Rooms Analyzed',
+          value: `${filteredRoomReports.length}`,
+        },
+        {
+          label: 'Avg Utilization',
+          value: `${avgFilteredUtilization}%`,
+        },
+        {
+          label: 'Most Used',
+          value: mostUsedRoom?.room_number || '-',
+        },
+        {
+          label: 'Least Used',
+          value: leastUsedRoom?.room_number || '-',
+        },
+      ];
   const filteredRoomIdSet = new Set<string>(filteredRoomReports.map((room: any) => room.room_id?.toString()).filter(Boolean));
   const filteredRoomNumberSet = new Set<string>(filteredRoomReports.map((room: any) => room.room_number?.toString().trim()).filter(Boolean));
   const roomMetaByRoomId = new Map<string, any>(filteredRoomReports.map((room: any) => [room.room_id?.toString(), room]));
@@ -12529,22 +12582,12 @@ function ReportGeneration() {
           )}
         </div>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-          <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Rooms Analyzed</p>
-            <p className="text-xl font-bold text-slate-800">{filteredRoomReports.length}</p>
-          </div>
-          <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Avg Utilization</p>
-            <p className="text-xl font-bold text-slate-800">{avgFilteredUtilization}%</p>
-          </div>
-          <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Most Used</p>
-            <p className="text-xl font-bold text-slate-800">{mostUsedRoom?.room_number || '-'}</p>
-          </div>
-          <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Least Used</p>
-            <p className="text-xl font-bold text-slate-800">{leastUsedRoom?.room_number || '-'}</p>
-          </div>
+          {categorySummaryCards.map((card) => (
+            <div key={card.label} className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{card.label}</p>
+              <p className="text-xl font-bold text-slate-800">{card.value}</p>
+            </div>
+          ))}
         </div>
       </div>
 
