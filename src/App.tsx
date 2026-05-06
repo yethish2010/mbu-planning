@@ -5489,23 +5489,29 @@ function RoomManagement() {
           continue;
         }
 
+        const roomLayoutValue = normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout']));
+        const isChildRoomLayout = HIERARCHY_CHILD_ROOM_LAYOUTS.includes(roomLayoutValue);
+        const importedRoomType = isChildRoomLayout
+          ? getImportValue(row, ['Sub Room Type', 'Room Type'])
+          : getImportValue(row, ['Room Type', 'Sub Room Type']);
+
         const payload = {
           room_id: row['Room ID']?.toString(),
           room_number: row['Room Number']?.toString(),
           room_name: normalizeOptionalImportValue(getImportValue(row, ['Room Name'])),
           room_aliases: normalizeRoomAliases(getImportValue(row, ['Room Aliases', 'Aliases', 'Alternate Room Numbers'])),
           floor_id: floor?.id ?? parseInt(floorValue as any),
-          room_type: normalizeRoomTypeValue(getImportValue(row, ['Sub Room Type', 'Room Type'])),
-          room_layout: normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout'])),
+          room_type: normalizeRoomTypeValue(importedRoomType),
+          room_layout: roomLayoutValue,
           parent_room_id: parentRoom?.id || null,
           sub_room_count: getImportValue(row, ['Sub Room Count', 'Number of Splits', 'Number of Rooms Inside']),
           room_section_name: normalizeOptionalImportValue(getImportValue(row, ['Sub Room Name', 'Room Section Name', 'Section Name'])) || '',
-          usage_category: normalizeUsageCategoryValue(getImportValue(row, ['Usage Category', 'Usage']), getImportValue(row, ['Sub Room Type', 'Room Type'])),
-          is_bookable: isNonCapacityRoomType(getImportValue(row, ['Sub Room Type', 'Room Type'])) ? 0 : normalizeBooleanLikeValue(getImportValue(row, ['Is Bookable', 'Bookable']), true) ? 1 : 0,
+          usage_category: normalizeUsageCategoryValue(getImportValue(row, ['Usage Category', 'Usage']), importedRoomType),
+          is_bookable: isNonCapacityRoomType(importedRoomType) ? 0 : normalizeBooleanLikeValue(getImportValue(row, ['Is Bookable', 'Bookable']), true) ? 1 : 0,
           lab_name: normalizeOptionalImportValue(getImportValue(row, ['Lab Name'])),
           sub_lab_name: normalizeOptionalImportValue(getImportValue(row, ['Sub Lab Name'])),
           restroom_type: normalizeRestroomTypeValue(getImportValue(row, ['Restroom For', 'Restroom Type'])),
-          capacity: isCapacityRoomType(getImportValue(row, ['Sub Room Type', 'Room Type'])) ? parseInt(row['Capacity']) || 0 : 0,
+          capacity: isCapacityRoomType(importedRoomType) ? parseInt(row['Capacity']) || 0 : 0,
           status: row['Status'] || 'Available'
         };
 
