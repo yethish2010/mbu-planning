@@ -973,6 +973,23 @@ const getRoomDisplayLabel = (room: any, rooms: any[] = []) => {
   return parentLabel ? `${room.room_number} inside ${parentLabel}` : room.room_number;
 };
 
+const compareRoomSortLabels = (left: unknown, right: unknown) =>
+  normalizeOptionalImportValue(left).localeCompare(
+    normalizeOptionalImportValue(right),
+    undefined,
+    { numeric: true, sensitivity: 'base' },
+  );
+
+const compareRoomsByNaturalOrder = (left: any, right: any, rooms: any[] = []) => {
+  const leftLabel = getRoomDisplayLabel(left, rooms) || left?.room_number || left?.Room || '';
+  const rightLabel = getRoomDisplayLabel(right, rooms) || right?.room_number || right?.Room || '';
+  const byLabel = compareRoomSortLabels(leftLabel, rightLabel);
+  if (byLabel !== 0) return byLabel;
+  const leftRoomId = left?.room_id || left?.RoomId || left?.room_id?.toString() || '';
+  const rightRoomId = right?.room_id || right?.RoomId || right?.room_id?.toString() || '';
+  return compareRoomSortLabels(leftRoomId, rightRoomId);
+};
+
 const getHierarchyLevelDisplay = (room: any) => {
   const roomLayout = normalizeRoomLayoutValue(room?.room_layout);
   if (roomLayout === 'Shared Room') return 'Shared';
@@ -5664,7 +5681,7 @@ function RoomManagement() {
       return normalized || '-';
     };
 
-    const rows = items.map(item => {
+    const rows = [...items].sort((left, right) => compareRoomsByNaturalOrder(left, right, rooms)).map(item => {
       const floor = floors.find(f => idsMatch(f.id, item?.floor_id));
       const block = blocks.find(b => idsMatch(b.id, floor?.block_id));
       const building = buildings.find(b => idsMatch(b.id, block?.building_id));
@@ -5721,6 +5738,7 @@ function RoomManagement() {
       prepareFormData={prepareFormData}
       onDataChanged={refreshRooms}
       dataFilter={roomMatchesLocationFilters}
+      dataSorter={(left, right) => compareRoomsByNaturalOrder(left, right, rooms)}
       filterControls={roomFilterControls}
     />
   );
@@ -10018,6 +10036,9 @@ function ReportGeneration() {
     if (filters.roomType && !matchesReportFilterValue(booking.room_type || roomMeta?.room_type, filters.roomType)) return false;
     return true;
   });
+  const sortedFilteredRoomReports = [...filteredRoomReports].sort((left: any, right: any) =>
+    compareRoomsByNaturalOrder(left, right)
+  );
   const campusOptions = Array.from(new Set(roomReports.map((room: any) => room.campus).filter(Boolean))).sort();
   const buildingOptions = Array.from(new Set(roomReports.map((room: any) => room.building).filter(Boolean))).sort();
   const blockOptions = Array.from(new Set(roomReports
@@ -10120,7 +10141,7 @@ function ReportGeneration() {
         .map((value) => value?.toString().trim())
         .filter(Boolean)
     )).sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' }));
-  const availableRoomReports = filteredRoomReports.filter((room: any) => room.status === 'Available');
+  const availableRoomReports = sortedFilteredRoomReports.filter((room: any) => room.status === 'Available');
   const summarizeAvailableRooms = (scope: string, rows: any[], getLabel: (room: any) => string) => Array.from(new Set(
     rows.map((room: any) => getLabel(room)).filter(Boolean)
   )).map((label) => {
@@ -10208,7 +10229,7 @@ function ReportGeneration() {
       .map((room: any) => getCategoryValueForRoom(room, filters.roomCategoryType))
       .filter(Boolean)
   )).sort((left: any, right: any) => left.toString().localeCompare(right.toString(), undefined, { numeric: true, sensitivity: 'base' }));
-  const categoryWiseRoomListRows = filteredRoomReports
+  const categoryWiseRoomListRows = sortedFilteredRoomReports
     .filter((room: any) => {
       const categoryValue = getCategoryValueForRoom(room, filters.roomCategoryType);
       if (!categoryValue) return false;
@@ -10233,7 +10254,8 @@ function ReportGeneration() {
       UsageCategory: room.usage_category || normalizeUsageCategoryValue('', room.room_type) || '',
       Status: room.status || '',
       Capacity: room.capacity ?? '',
-    }));
+    }))
+    .sort((left: any, right: any) => compareRoomsByNaturalOrder(left, right));
   const categoryWiseReportGroups = CATEGORY_ROOM_REPORT_GROUP_ORDER.reduce((acc: Record<string, any[]>, groupName) => {
     acc[groupName] = categoryWiseRoomListRows.filter((row: any) => row.ReportCategory === groupName);
     return acc;
@@ -10620,7 +10642,7 @@ function ReportGeneration() {
       roomNumbers: roomNumbers.join(', '),
     };
   });
-  const detailedRoomReportRows = filteredRoomReports.map((room: any) => ({
+  const detailedRoomReportRows = sortedFilteredRoomReports.map((room: any) => ({
     RoomId: room.room_id?.toString() || '',
     Room: room.room_number,
     RoomName: getRoomNameDisplay(room),
@@ -12263,7 +12285,7 @@ function ReportGeneration() {
     );
   };
   const exportRawUsageData = async () => {
-    const rows = filteredRoomReports.map((room: any) => ({
+    const rows = sortedFilteredRoomReports.map((room: any) => ({
       Room: room.room_number,
       RoomName: getRoomNameDisplay(room),
       Campus: room.campus || '',
@@ -12323,7 +12345,7 @@ function ReportGeneration() {
     await saveExcelWorkbook(workbook, fileName);
   };
   const buildUtilizationReportConfigs = () => {
-    const roomDetailRows = filteredRoomReports.map((room: any) => ({
+    const roomDetailRows = sortedFilteredRoomReports.map((room: any) => ({
       Room: room.room_number,
       RoomName: getRoomNameDisplay(room),
       Campus: room.campus || '',
@@ -13997,7 +14019,7 @@ function ReportGeneration() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
-                    {filteredRoomReports.map((room: any) => (
+                    {sortedFilteredRoomReports.map((room: any) => (
                       <tr key={`${room.building}-${room.room_number}`} className="hover:bg-slate-50/50">
                         <td className="py-4 text-sm font-bold text-slate-700">{room.room_number}</td>
                         <td className="py-4 text-sm text-slate-500">{room.building}</td>
