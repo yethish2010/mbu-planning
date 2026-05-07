@@ -733,6 +733,17 @@ const ROOM_LAYOUT_OPTIONS = ['Normal', 'Shared Room', 'Split Parent', 'Split Chi
 const HIERARCHY_PARENT_ROOM_LAYOUTS = ['Split Parent', 'Inside Parent'];
 const HIERARCHY_CHILD_ROOM_LAYOUTS = ['Split Child', 'Inside Child'];
 const HIERARCHY_ROOM_LAYOUTS = [...HIERARCHY_PARENT_ROOM_LAYOUTS, ...HIERARCHY_CHILD_ROOM_LAYOUTS];
+const PRIVATE_ATTACHED_RESTROOM_PARENT_TYPES = new Set([
+  'HOD Cabin',
+  'Dean Office',
+  'Faculty Room',
+  'Staff Room',
+]);
+
+const allowsBlankAttachedRestroomType = (roomType: unknown, roomLayout: unknown, parentRoom?: any) =>
+  normalizeRoomTypeValue(roomType) === 'Restroom' &&
+  HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(roomLayout)) &&
+  PRIVATE_ATTACHED_RESTROOM_PARENT_TYPES.has(normalizeRoomTypeValue(parentRoom?.room_type));
 const USAGE_CATEGORY_OPTIONS = ['Access', 'Administration', 'Dining', 'Examination', 'Healthcare', 'Lab Work', 'Meeting', 'Multipurpose', 'Office', 'Restricted', 'Restroom', 'Security', 'Sports', 'Storage', 'Teaching', 'Utility'];
 const BOOKABLE_ROOM_TYPES = new Set([
   'Classroom',
@@ -1480,6 +1491,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       'A child room can have a different room type and lab name from its parent room.',
       'Capacity is used only for classroom and lab room types. For classroom/lab parent rows and classroom/lab child rows, fill Capacity. For all other room types, leave Capacity blank and it will be imported as 0.',
       'For offices, cabins, examination sections, library/reading rooms, admin/support/service rooms, restrooms, and access spaces, leave Is Bookable and Capacity blank. They are imported as non-bookable spaces with capacity 0.',
+      'Restroom For should be filled for stable public categories like Male or Female. For attached/private child restrooms inside HOD Cabin, Dean Office, Faculty Room, or Staff Room, you can leave Restroom For blank.',
       'During import, a parent row with Sub Room Count must have the same number of matching child rows in the same Excel file.',
     ],
     exampleRows: [
@@ -5197,13 +5209,15 @@ function RoomManagement() {
       throw new Error('Please enter the sub room count for split parent or inside parent rooms.');
     }
 
+    const allowsBlankRestroomType = allowsBlankAttachedRestroomType(roomType, payload.room_layout, parentRoom);
+
     if (roomType === 'Lab') {
       if (!payload.lab_name) {
         throw new Error(isChildLayout ? 'Please enter the sub lab name for this child lab room.' : 'Please enter the lab name.');
       }
       payload.restroom_type = '';
     } else if (roomType === 'Restroom') {
-      if (!RESTROOM_TYPE_OPTIONS.includes(payload.restroom_type)) {
+      if (!allowsBlankRestroomType && !RESTROOM_TYPE_OPTIONS.includes(payload.restroom_type)) {
         throw new Error('Please select Male or Female for the restroom.');
       }
       payload.lab_name = '';

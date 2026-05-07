@@ -657,6 +657,12 @@ var normalizeRoomLayoutValue = (value) => {
 var HIERARCHY_PARENT_ROOM_LAYOUTS = ["Split Parent", "Inside Parent"];
 var HIERARCHY_CHILD_ROOM_LAYOUTS = ["Split Child", "Inside Child"];
 var HIERARCHY_ROOM_LAYOUTS = [...HIERARCHY_PARENT_ROOM_LAYOUTS, ...HIERARCHY_CHILD_ROOM_LAYOUTS];
+var PRIVATE_ATTACHED_RESTROOM_PARENT_TYPES = /* @__PURE__ */ new Set([
+  "HOD Cabin",
+  "Dean Office",
+  "Faculty Room",
+  "Staff Room"
+]);
 var normalizeUsageCategoryValue = (value, roomType) => {
   const normalized = value?.toString().trim().toLowerCase();
   const options = ["Access", "Administration", "Dining", "Examination", "Healthcare", "Lab Work", "Meeting", "Multipurpose", "Office", "Restricted", "Restroom", "Security", "Sports", "Storage", "Teaching", "Utility"];
@@ -825,9 +831,6 @@ var normalizeRoomPayload = (payload) => {
     }
     nextPayload.restroom_type = null;
   } else if (nextPayload.room_type === "Restroom") {
-    if (!["Male", "Female"].includes(nextPayload.restroom_type || "")) {
-      throw new Error("Please choose Male or Female when the room type is Restroom.");
-    }
     nextPayload.lab_name = null;
   } else {
     nextPayload.lab_name = null;
@@ -868,6 +871,19 @@ var getBookableRoomError = async (roomId) => {
     return `Room ${room.room_number} cannot be booked because its room type or usage category is not bookable.`;
   }
   return null;
+};
+var allowsBlankAttachedRestroomType = async (room) => {
+  if (normalizeRoomTypeValue(room?.room_type) !== "Restroom") return false;
+  if (!HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room?.room_layout))) return false;
+  if (!room?.parent_room_id) return false;
+  const parentRoom = await db.prepare("SELECT room_type FROM rooms WHERE id = ?").get(room.parent_room_id);
+  return PRIVATE_ATTACHED_RESTROOM_PARENT_TYPES.has(normalizeRoomTypeValue(parentRoom?.room_type));
+};
+var getRestroomValidationError = async (room) => {
+  if (normalizeRoomTypeValue(room?.room_type) !== "Restroom") return null;
+  if (["Male", "Female"].includes(room?.restroom_type || "")) return null;
+  if (await allowsBlankAttachedRestroomType(room)) return null;
+  return "Please choose Male or Female for the restroom.";
 };
 var getCurrentIndiaDate = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(/* @__PURE__ */ new Date());
 var normalizeIsoDate = (value) => {
@@ -2152,6 +2168,8 @@ var createCrudRoutes = (tableName, idField = "id") => {
       if (tableName === "rooms") {
         const hierarchyError = await validateRoomHierarchy(req.body);
         if (hierarchyError) return res.status(400).json({ error: hierarchyError });
+        const restroomValidationError = await getRestroomValidationError(req.body);
+        if (restroomValidationError) return res.status(400).json({ error: restroomValidationError });
       }
       if (tableName === "department_allocations") {
         const room = await db.prepare("SELECT room_number, capacity, room_type, is_bookable FROM rooms WHERE id = ?").get(req.body.room_id);
@@ -2274,6 +2292,8 @@ var createCrudRoutes = (tableName, idField = "id") => {
       if (tableName === "rooms") {
         const hierarchyError = await validateRoomHierarchy({ ...existingItem, ...req.body }, req.params.id);
         if (hierarchyError) return res.status(400).json({ error: hierarchyError });
+        const restroomValidationError = await getRestroomValidationError({ ...existingItem, ...req.body });
+        if (restroomValidationError) return res.status(400).json({ error: restroomValidationError });
       }
       if (tableName === "department_allocations") {
         const nextAllocation = { ...existingItem, ...req.body };
