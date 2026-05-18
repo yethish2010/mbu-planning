@@ -1892,7 +1892,32 @@ var duplicateRules = {
 };
 var normalizeDuplicateValue = (value) => typeof value === "string" ? value.trim().toLowerCase() : value;
 var idsEqual = (left, right) => left !== void 0 && left !== null && right !== void 0 && right !== null && left.toString() === right.toString();
-var shouldUseCaseInsensitiveTextComparison = (fieldName, value) => {
+var NUMERIC_DUPLICATE_COMPARE_FIELDS = /* @__PURE__ */ new Set([
+  "buildings.campus_id",
+  "blocks.building_id",
+  "floors.block_id",
+  "departments.school_id",
+  "department_allocations.school_id",
+  "department_allocations.department_id",
+  "department_allocations.room_id",
+  "timing_profiles.school_id",
+  "timing_profiles.department_id",
+  "academic_calendars.school_id",
+  "academic_calendars.department_id",
+  "academic_calendars.timing_profile_id",
+  "batch_room_allocations.academic_calendar_id",
+  "batch_room_allocations.school_id",
+  "batch_room_allocations.department_id",
+  "batch_room_allocations.room_id",
+  "equipment.room_id",
+  "schedules.department_id",
+  "schedules.room_id",
+  "bookings.department_id",
+  "bookings.room_id",
+  "maintenance.room_id"
+]);
+var shouldUseCaseInsensitiveTextComparison = (tableName, fieldName, value) => {
+  if (NUMERIC_DUPLICATE_COMPARE_FIELDS.has(`${tableName}.${fieldName}`)) return false;
   if (typeof value !== "string") return false;
   const normalizedField = fieldName.toLowerCase();
   if (normalizedField === "date" || normalizedField.endsWith("_date")) return false;
@@ -1960,9 +1985,9 @@ var checkDuplicateRecord = async (tableName, data, excludeId) => {
   const rules = duplicateRules[tableName] || [];
   for (const rule of rules) {
     if (rule.fields.some((field) => data[field] == null || data[field] === "")) continue;
-    const whereClause = rule.fields.map((field) => shouldUseCaseInsensitiveTextComparison(field, data[field]) ? `LOWER(TRIM(${field})) = ?` : `${field} = ?`).join(" AND ");
+    const whereClause = rule.fields.map((field) => shouldUseCaseInsensitiveTextComparison(tableName, field, data[field]) ? `LOWER(TRIM(${field})) = ?` : `${field} = ?`).join(" AND ");
     const values = rule.fields.map(
-      (field) => shouldUseCaseInsensitiveTextComparison(field, data[field]) ? normalizeDuplicateValue(data[field]) : data[field]
+      (field) => shouldUseCaseInsensitiveTextComparison(tableName, field, data[field]) ? normalizeDuplicateValue(data[field]) : data[field]
     );
     const query = `SELECT id FROM ${tableName} WHERE ${whereClause}${excludeId ? " AND id != ?" : ""}`;
     const existing = await db.prepare(query).get(...values, ...excludeId ? [excludeId] : []);
