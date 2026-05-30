@@ -10212,6 +10212,8 @@ function ReportGeneration() {
   const [reportSchedules, setReportSchedules] = useState<any[]>([]);
   const [reportAcademicCalendars, setReportAcademicCalendars] = useState<any[]>([]);
   const [reportMaintenance, setReportMaintenance] = useState<any[]>([]);
+  const [reportDepartmentAllocations, setReportDepartmentAllocations] = useState<any[]>([]);
+  const [reportBatchRoomAllocations, setReportBatchRoomAllocations] = useState<any[]>([]);
   const [suggestions, setSuggestions] = useState<any[]>([]);
   const [suggestionError, setSuggestionError] = useState('');
   const [activeTab, setActiveTab] = useState<'utilization' | 'methodology' | 'kpis'>('utilization');
@@ -10280,7 +10282,7 @@ function ReportGeneration() {
     campus_utilization: ['Campus', 'Buildings', 'Rooms', 'AvgUtilization'],
     school_utilization: ['School', 'Departments', 'Rooms', 'TotalCapacity', 'AvgUtilization', 'UnmappedRooms'],
     building_utilization: ['Building', 'Rooms', 'MaintenanceIssues', 'AvgUtilization'],
-    department_allocation: ['Department', 'School', 'Rooms', 'TotalCapacity', 'AvgUtilization'],
+    department_allocation: ['Department', 'School', 'AllocatedRooms', 'SharedRooms', 'ExclusiveRooms', 'UsedRooms', 'ActiveBatchAllocations', 'AllocationUtilization', 'TotalCapacity', 'AvgUtilization', 'RoomNumbers'],
     room_type_utilization: ['RoomType', 'Rooms', 'AvgUtilization'],
     usage_category_utilization: ['UsageCategory', 'Rooms', 'AvgUtilization'],
     year_utilization: ['Year', 'Rooms', 'AvgUtilization'],
@@ -10336,29 +10338,37 @@ function ReportGeneration() {
 
   const fetchUtilization = async () => {
     try {
-      const [reportRes, bookingRes, scheduleRes, academicRes, maintenanceRes] = await Promise.all([
+      const [reportRes, bookingRes, scheduleRes, academicRes, maintenanceRes, departmentAllocationRes, batchAllocationRes] = await Promise.all([
         fetch('/api/reports/utilization', { credentials: 'include' }),
         fetch('/api/bookings', { credentials: 'include' }),
         fetch('/api/schedules', { credentials: 'include' }),
         fetch('/api/academic_calendars', { credentials: 'include' }),
         fetch('/api/maintenance', { credentials: 'include' }),
+        fetch('/api/department_allocations', { credentials: 'include' }),
+        fetch('/api/batch_room_allocations', { credentials: 'include' }),
       ]);
       const data = await reportRes.json();
       const bookingData = await bookingRes.json();
       const scheduleData = await scheduleRes.json();
       const academicData = await academicRes.json();
       const maintenanceData = await maintenanceRes.json();
+      const departmentAllocationData = await departmentAllocationRes.json();
+      const batchAllocationData = await batchAllocationRes.json();
       setUtilizationData(data);
       setReportBookings(Array.isArray(bookingData) ? bookingData : []);
       setReportSchedules(Array.isArray(scheduleData) ? scheduleData : []);
       setReportAcademicCalendars(Array.isArray(academicData) ? academicData : []);
       setReportMaintenance(Array.isArray(maintenanceData) ? maintenanceData : []);
+      setReportDepartmentAllocations(Array.isArray(departmentAllocationData) ? departmentAllocationData : []);
+      setReportBatchRoomAllocations(Array.isArray(batchAllocationData) ? batchAllocationData : []);
     } catch (err) {
       console.error(err);
       setReportBookings([]);
       setReportSchedules([]);
       setReportAcademicCalendars([]);
       setReportMaintenance([]);
+      setReportDepartmentAllocations([]);
+      setReportBatchRoomAllocations([]);
     } finally {
       setLoading(false);
     }
@@ -11090,6 +11100,106 @@ function ReportGeneration() {
     Sections: (room.sectionTags || []).join(', '),
     Flags: (room.flags || []).join(', '),
   }));
+  const filteredDepartmentAllocationRecords = reportDepartmentAllocations.filter((allocation: any) => {
+    const roomMeta =
+      roomMetaById.get(allocation.room_id?.toString()) ||
+      roomMetaByNumber.get(allocation.room_number?.toString()) ||
+      roomMetaByNumber.get(allocation.room_label?.toString());
+    if (filters.campus && !matchesReportFilterValue(roomMeta?.campus, filters.campus)) return false;
+    if (filters.building && !matchesReportFilterValue(roomMeta?.building, filters.building)) return false;
+    if (filters.block && !matchesReportFilterValue(roomMeta?.block, filters.block)) return false;
+    if (filters.floor && roomMeta?.floor_number?.toString() !== filters.floor) return false;
+    if (filters.department && !matchesReportFilterValue(roomMeta?.department || allocation.department_name, filters.department)) return false;
+    if (filters.semester && !matchesReportFilterValue(allocation.semester || roomMeta?.semesterTags?.[0], filters.semester)) return false;
+    if (filters.year && !(roomMeta?.yearTags || []).includes(filters.year)) return false;
+    if (filters.section && !(roomMeta?.sectionTags || []).includes(filters.section)) return false;
+    if (filters.room && !matchesReportFilterValue(roomMeta?.room_number || allocation.room_number || allocation.room_label, filters.room)) return false;
+    if (filters.roomType && !matchesReportFilterValue(roomMeta?.room_type || allocation.room_type, filters.roomType)) return false;
+    return true;
+  });
+  const filteredBatchAllocationRecords = reportBatchRoomAllocations.filter((allocation: any) => {
+    const roomMeta =
+      roomMetaById.get(allocation.room_id?.toString()) ||
+      roomMetaByNumber.get(allocation.room_number?.toString()) ||
+      roomMetaByNumber.get(allocation.room_label?.toString());
+    if (filters.campus && !matchesReportFilterValue(roomMeta?.campus, filters.campus)) return false;
+    if (filters.building && !matchesReportFilterValue(roomMeta?.building, filters.building)) return false;
+    if (filters.block && !matchesReportFilterValue(roomMeta?.block, filters.block)) return false;
+    if (filters.floor && roomMeta?.floor_number?.toString() !== filters.floor) return false;
+    if (filters.department && !matchesReportFilterValue(roomMeta?.department || allocation.department_name, filters.department)) return false;
+    if (filters.semester && !matchesReportFilterValue(allocation.semester || roomMeta?.semesterTags?.[0], filters.semester)) return false;
+    if (filters.year && !matchesReportFilterValue(allocation.year_of_study || roomMeta?.yearTags?.[0], filters.year)) return false;
+    if (filters.section && !matchesReportFilterValue(allocation.section, filters.section) && !(roomMeta?.sectionTags || []).includes(filters.section)) return false;
+    if (filters.room && !matchesReportFilterValue(roomMeta?.room_number || allocation.room_number || allocation.room_label, filters.room)) return false;
+    if (filters.roomType && !matchesReportFilterValue(roomMeta?.room_type || allocation.room_type, filters.roomType)) return false;
+    return true;
+  });
+  const departmentAllocationSummary = (() => {
+    const distinctDepartments = Array.from(new Set(
+      filteredDepartmentAllocationRecords
+        .map((allocation: any) => allocation.department_name || roomMetaById.get(allocation.room_id?.toString())?.department)
+        .filter(Boolean)
+    ));
+    const sharedDepartmentCountByRoom = new Map<string, number>();
+    const departmentIdsByRoom = new Map<string, Set<string>>();
+    filteredDepartmentAllocationRecords.forEach((allocation: any) => {
+      const roomKey = allocation.room_id?.toString();
+      const departmentKey = allocation.department_id?.toString();
+      if (!roomKey || !departmentKey) return;
+      const existing = departmentIdsByRoom.get(roomKey) || new Set<string>();
+      existing.add(departmentKey);
+      departmentIdsByRoom.set(roomKey, existing);
+    });
+    departmentIdsByRoom.forEach((departmentIds, roomKey) => {
+      sharedDepartmentCountByRoom.set(roomKey, departmentIds.size);
+    });
+
+    return distinctDepartments.map((departmentName) => {
+      const departmentAllocations = filteredDepartmentAllocationRecords.filter((allocation: any) =>
+        matchesReportFilterValue(allocation.department_name || roomMetaById.get(allocation.room_id?.toString())?.department, departmentName)
+      );
+      const schoolName = departmentAllocations.find((allocation: any) => allocation.school_name)?.school_name
+        || departmentAllocations.map((allocation: any) => roomMetaById.get(allocation.room_id?.toString())?.school).find(Boolean)
+        || 'Unmapped';
+      const uniqueRoomIds = Array.from(new Set(departmentAllocations.map((allocation: any) => allocation.room_id?.toString()).filter(Boolean)));
+      const roomMetas = uniqueRoomIds
+        .map((roomId) => roomMetaById.get(roomId))
+        .filter(Boolean);
+      const roomNumbers = roomMetas
+        .map((room: any) => room.room_number?.toString().trim())
+        .filter(Boolean)
+        .sort((a: string, b: string) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+      const sharedRooms = uniqueRoomIds.filter((roomId) => (sharedDepartmentCountByRoom.get(roomId) || 0) > 1).length;
+      const exclusiveRooms = Math.max(uniqueRoomIds.length - sharedRooms, 0);
+      const usedRooms = roomMetas.filter((room: any) => Number(room?.utilization) > 0 || Number(room?.scheduledHours) > 0 || Number(room?.bookedHours) > 0).length;
+      const totalCapacity = roomMetas.reduce((acc: number, room: any) => acc + Number(room?.capacity || 0), 0);
+      const avgUtilization = Math.round(roomMetas.reduce((acc: number, room: any) => acc + Number(room?.utilization || 0), 0) / (roomMetas.length || 1));
+      const activeBatchAllocations = filteredBatchAllocationRecords.filter((allocation: any) =>
+        uniqueRoomIds.includes(allocation.room_id?.toString()) &&
+        matchesReportFilterValue(allocation.department_name || roomMetaById.get(allocation.room_id?.toString())?.department, departmentName) &&
+        (!allocation.status || ['Active', 'Upcoming'].includes(allocation.status))
+      ).length;
+      const allocationUtilization = uniqueRoomIds.length > 0
+        ? Math.round((usedRooms / uniqueRoomIds.length) * 100)
+        : 0;
+      return {
+        name: departmentName,
+        school: schoolName,
+        allocatedRooms: uniqueRoomIds.length,
+        sharedRooms,
+        exclusiveRooms,
+        usedRooms,
+        activeBatchAllocations,
+        allocationUtilization,
+        totalCapacity,
+        avgUtilization,
+        roomNumbers: roomNumbers.join(', '),
+      };
+    }).sort((a: any, b: any) => {
+      if (b.allocatedRooms !== a.allocatedRooms) return b.allocatedRooms - a.allocatedRooms;
+      return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+    });
+  })();
   const maintenanceRoomReportRows = (() => {
     const hasMaintenanceDateScope = Boolean(filters.dateFrom || filters.dateTo);
     const maintenanceByRoomKey = new Map<string, any[]>();
@@ -11157,6 +11267,10 @@ function ReportGeneration() {
   const maintenancePendingTotal = maintenanceRoomReportRows.reduce((total: number, row: any) => total + Number(row.PendingIssues || 0), 0);
   const latestMaintenanceRow = [...maintenanceRoomReportRows]
     .sort((left: any, right: any) => (right.LatestReportedDate || '').localeCompare(left.LatestReportedDate || ''))[0];
+  const totalAllocatedRooms = departmentAllocationSummary.reduce((total: number, item: any) => total + Number(item.allocatedRooms || 0), 0);
+  const totalSharedRooms = departmentAllocationSummary.reduce((total: number, item: any) => total + Number(item.sharedRooms || 0), 0);
+  const totalUsedAllocatedRooms = departmentAllocationSummary.reduce((total: number, item: any) => total + Number(item.usedRooms || 0), 0);
+  const topAllocatedDepartment = departmentAllocationSummary[0];
   const categorySummaryCards = filters.reportType === 'category_room_list'
     ? [
         {
@@ -11199,6 +11313,25 @@ function ReportGeneration() {
               value: latestMaintenanceRow?.Room || '-',
             },
           ]
+        : filters.reportType === 'department_allocation'
+          ? [
+              {
+                label: 'Allocated Rooms',
+                value: `${totalAllocatedRooms}`,
+              },
+              {
+                label: 'Shared Rooms',
+                value: `${totalSharedRooms}`,
+              },
+              {
+                label: 'Used Allocated Rooms',
+                value: `${totalUsedAllocatedRooms}`,
+              },
+              {
+                label: 'Top Department',
+                value: topAllocatedDepartment?.name || '-',
+              },
+            ]
         : [
             {
               label: 'Rooms Analyzed',
@@ -11937,9 +12070,9 @@ function ReportGeneration() {
       department_allocation: {
         chart: 'Clustered Bar',
         xAxis: 'Department',
-        yAxis: 'Rooms / TotalCapacity',
-        sortBy: 'Rooms (desc)',
-        note: 'Compares room allocation and capacity by department.',
+        yAxis: 'AllocatedRooms / TotalCapacity',
+        sortBy: 'AllocatedRooms (desc)',
+        note: 'Compares real allocated-room counts, capacity, and usage coverage by department.',
       },
       room_type_utilization: {
         chart: 'Bar Chart',
@@ -13033,12 +13166,18 @@ function ReportGeneration() {
       department_allocation: {
         fileName: 'department-allocation-report.xlsx',
         sheetName: 'Department Allocation',
-        rows: departmentSummary.map((department: any) => ({
+        rows: departmentAllocationSummary.map((department: any) => ({
           Department: department.name,
           School: department.school,
-          Rooms: department.roomCount,
+          AllocatedRooms: department.allocatedRooms,
+          SharedRooms: department.sharedRooms,
+          ExclusiveRooms: department.exclusiveRooms,
+          UsedRooms: department.usedRooms,
+          ActiveBatchAllocations: department.activeBatchAllocations,
+          AllocationUtilization: `${department.allocationUtilization}%`,
           TotalCapacity: department.totalCapacity,
           AvgUtilization: `${department.avgUtilization}%`,
+          RoomNumbers: department.roomNumbers,
         })),
       },
       room_type_utilization: {
@@ -13763,20 +13902,41 @@ function ReportGeneration() {
                     <thead>
                       <tr className="border-b border-slate-100">
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Department</th>
-                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Rooms</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">School</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Allocated Rooms</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Shared</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Exclusive</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Used</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Batch Allocations</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Room Numbers</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total Capacity</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Allocation Utilization</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Avg Utilization</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50">
-                      {departmentSummary.map((department: any) => (
+                      {departmentAllocationSummary.map((department: any) => (
                         <tr key={department.name} className="hover:bg-slate-50/50">
                           <td className="py-4 text-sm font-bold text-slate-700">{department.name}</td>
-                          <td className="py-4 text-sm text-slate-500">{department.roomCount}</td>
+                          <td className="py-4 text-sm text-slate-500">{department.school}</td>
+                          <td className="py-4 text-sm text-slate-500">{department.allocatedRooms}</td>
+                          <td className="py-4 text-sm text-slate-500">{department.sharedRooms}</td>
+                          <td className="py-4 text-sm text-slate-500">{department.exclusiveRooms}</td>
+                          <td className="py-4 text-sm text-slate-500">{department.usedRooms}</td>
+                          <td className="py-4 text-sm text-slate-500">{department.activeBatchAllocations}</td>
+                          <td className="py-4 text-sm text-slate-500 max-w-[18rem]">{department.roomNumbers || '-'}</td>
                           <td className="py-4 text-sm text-slate-500">{department.totalCapacity}</td>
+                          <td className="py-4 text-sm font-bold text-slate-700 text-right">{department.allocationUtilization}%</td>
                           <td className="py-4 text-sm font-bold text-slate-700 text-right">{department.avgUtilization}%</td>
                         </tr>
                       ))}
+                      {departmentAllocationSummary.length === 0 && (
+                        <tr>
+                          <td colSpan={11} className="py-8 text-center text-sm text-slate-400 italic">
+                            No department allocations match the selected filters.
+                          </td>
+                        </tr>
+                      )}
                     </tbody>
                   </table>
                 </div>
