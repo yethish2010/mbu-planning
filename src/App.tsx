@@ -1363,6 +1363,8 @@ const findCampusForImport = (campuses: any[], row: any) => {
 };
 
 const SEMESTER_OPTIONS = ['Odd', 'Even'];
+const SEMESTER_TYPE_LABEL = 'Semester Type';
+const EXACT_SEMESTER_LABEL = 'Exact Semester';
 const ACADEMIC_CALENDAR_EVENT_TYPES = ['Semester Period', 'Class Work', 'Examinations', 'Holiday', 'Vacation', 'Orientation', 'Registration', 'Project Review', 'Internship'];
 const ALLOCATION_STATUS_OPTIONS = ['Planned', 'Active', 'Released'];
 const BATCH_ALLOCATION_MODE_OPTIONS = ['Shared', 'Exclusive'];
@@ -1730,12 +1732,12 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   'Department Allocation': {
-    headers: ['School', 'Department', 'Semester', 'Building', 'Block', 'Floor', 'Room', 'Room Type', 'Required Capacity'],
+    headers: ['School', 'Department', 'Semester Type', 'Building', 'Block', 'Floor', 'Room', 'Room Type', 'Required Capacity'],
     exampleRows: [
       {
         School: 'School of Engineering',
         Department: 'Computer Science and Engineering',
-        Semester: 'Odd',
+        'Semester Type': 'Odd',
         Building: 'Academic Block',
         Block: 'Block A',
         Floor: 'Ground Floor',
@@ -1746,7 +1748,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   'Timing Profile': {
-    headers: ['Profile ID', 'Profile Name', 'School', 'Department', 'Program', 'Academic Year', 'Year / Semester', 'Semester', 'Section', 'Working Days', 'Slot Timings', 'Notes'],
+    headers: ['Profile ID', 'Profile Name', 'School', 'Department', 'Program', 'Academic Year', 'Year / Semester', 'Exact Semester', 'Section', 'Working Days', 'Slot Timings', 'Notes'],
     exampleRows: [
       {
         'Profile ID': 'TP-DEFAULT-CAMPUS',
@@ -1756,7 +1758,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Program: '',
         'Academic Year': '2025-26',
         'Year / Semester': '',
-        Semester: '',
+        'Exact Semester': '',
         Section: '',
         'Working Days': 'Monday,Tuesday,Wednesday,Thursday,Friday,Saturday',
         'Slot Timings': '09:00-09:55, 09:55-10:50, 11:10-12:05, 12:05-13:00, 14:15-15:10, 15:10-16:05',
@@ -1770,7 +1772,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Program: 'B.Tech',
         'Academic Year': '2025-26',
         'Year / Semester': '2nd Year',
-        Semester: 'IV Semester',
+        'Exact Semester': 'IV Semester',
         Section: '',
         'Working Days': 'Monday,Tuesday,Wednesday,Thursday,Friday,Saturday',
         'Slot Timings': '10:00-10:55, 10:55-11:50, 12:10-13:05, 13:05-14:00, 15:00-15:55, 15:55-16:50',
@@ -1784,7 +1786,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Program: 'B.Tech',
         'Academic Year': '2025-26',
         'Year / Semester': '',
-        Semester: '',
+        'Exact Semester': '',
         Section: '',
         'Working Days': 'Monday,Tuesday,Wednesday,Thursday,Friday',
         'Slot Timings': '09:30-10:25, 10:25-11:20, 11:40-12:35, 12:35-13:30, 14:20-15:15, 15:15-16:10',
@@ -1798,7 +1800,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Program: 'B.Tech',
         'Academic Year': '2025-26',
         'Year / Semester': '3rd Year - 6th Semester',
-        Semester: 'VI Semester',
+        'Exact Semester': 'VI Semester',
         Section: 'A4',
         'Working Days': 'Monday,Tuesday,Wednesday,Thursday,Friday',
         'Slot Timings': '10:00-10:55, 10:55-11:50, 12:10-13:05, 13:05-14:00, 15:00-15:55, 15:55-16:50',
@@ -1807,7 +1809,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
     instructions: [
       'Keep scope fields blank to create a broad default profile that can be reused across multiple years or semesters.',
-      'Use more specific scope fields such as Department, Year / Semester, Semester, or Section only when that context truly follows a different daily timing pattern.',
+      'Use more specific scope fields such as Department, Year / Semester, Exact Semester, or Section only when that context truly follows a different daily timing pattern.',
       'This template demonstrates four example scopes: common default, year or semester specific, department specific, and section specific.',
       'Slot Timings must be comma-separated or line-separated ranges in HH:mm-HH:mm format, for example 09:00-09:55, 09:55-10:50.',
       'Timetable View prefers the active timing profile for vacancy slot scaffolding and falls back to the imported timetable timings when no profile is matched.',
@@ -1815,7 +1817,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   'Academic Calendar': {
-    headers: ['Calendar ID', 'School', 'Department', 'Program', 'Batch', 'Academic Year', 'Semester', 'Year / Semester', 'Timing Profile', 'Event Type', 'Title', 'Start Date', 'End Date', 'Notes'],
+    headers: ['Calendar ID', 'School', 'Department', 'Program', 'Batch', 'Academic Year', 'Semester Type', 'Year / Semester', 'Timing Profile', 'Event Type', 'Title', 'Start Date', 'End Date', 'Notes'],
     exampleRows: [
       {
         'Calendar ID': 'CAL-MTECH2-2025-26',
@@ -1824,7 +1826,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Program: 'M.Tech',
         Batch: '2025-2027',
         'Academic Year': '2025-26',
-        Semester: 'Even',
+        'Semester Type': 'Even',
         'Year / Semester': '2nd Year - 4th Semester',
         'Timing Profile': 'Common UG Day Pattern',
         'Event Type': 'Semester Period',
@@ -1840,14 +1842,14 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Program: 'B.Tech',
         Batch: '2023-2027',
         'Academic Year': '2025-26',
-        Semester: 'VI Semester',
+        'Semester Type': 'Even',
         'Year / Semester': '3rd Year - 6th Semester',
         'Timing Profile': 'CSE VI Semester Late Shift',
         'Event Type': 'Semester Period',
         Title: 'B.Tech VI Semester - Teaching Period',
         'Start Date': '2026-01-02',
         'End Date': '2026-05-30',
-        Notes: 'Roman semester values are normalized automatically.',
+        Notes: 'Semester Type uses Odd or Even and can be derived from the study period.',
       },
       {
         'Calendar ID': 'CAL-MTECH2-CIAT1-2025-26',
@@ -1856,7 +1858,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Program: 'M.Tech',
         Batch: '2025-2027',
         'Academic Year': '2025-26',
-        Semester: 'Even',
+        'Semester Type': 'Even',
         'Year / Semester': '2nd Year - 4th Semester',
         'Timing Profile': 'Common UG Day Pattern',
         'Event Type': 'Examinations',
@@ -1872,7 +1874,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Program: 'M.Tech',
         Batch: '2025-2027',
         'Academic Year': '2025-26',
-        Semester: 'Even',
+        'Semester Type': 'Even',
         'Year / Semester': '2nd Year - 4th Semester',
         'Timing Profile': 'Common UG Day Pattern',
         'Event Type': 'Examinations',
@@ -1885,8 +1887,8 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     instructions: [
       `Allowed Event Type values: ${ACADEMIC_CALENDAR_EVENT_TYPES.join(', ')}.`,
       `Allowed Program values include: ${PROGRAM_OPTIONS.join(', ')}.`,
-      'Match the form order exactly: School -> Department -> Program -> Batch -> Academic Year -> Semester -> Year / Semester -> Timing Profile.',
-      'Semester accepts Odd/Even, numeric values like 6, and Roman numeral values like VI Semester. Roman numerals are normalized automatically during import.',
+      'Match the form order exactly: School -> Department -> Program -> Batch -> Academic Year -> Semester Type -> Year / Semester -> Timing Profile.',
+      'Semester Type accepts only Odd or Even. Keep the exact semester number inside Year / Semester.',
       'For Year / Semester, use values like 1st Year - 1st Semester, 1st Year - 2nd Semester, 2nd Year - 3rd Semester, 2nd Year - 4th Semester, and so on.',
       'Timing Profile is optional but recommended whenever a batch or semester follows a defined slot pattern. Use either the Profile ID or Profile Name from Timing Profile Management.',
       'Use one row per academic period. The app automatically marks rows as Upcoming, Active, or Completed from the date range.',
@@ -1897,7 +1899,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   'Batch Room Allocation': {
-    headers: ['Allocation ID', 'Academic Calendar', 'Department', 'Program', 'Batch', 'Academic Year', 'Semester', 'Year / Semester', 'Building', 'Block', 'Floor', 'Room', 'Allocation Mode', 'Room Type', 'Required Capacity', 'Start Date', 'End Date', 'Notes'],
+    headers: ['Allocation ID', 'Academic Calendar', 'Department', 'Program', 'Batch', 'Academic Year', 'Semester Type', 'Year / Semester', 'Building', 'Block', 'Floor', 'Room', 'Allocation Mode', 'Room Type', 'Required Capacity', 'Start Date', 'End Date', 'Notes'],
     exampleRows: [
       {
         'Allocation ID': 'ALLOC-MTECH2-322',
@@ -1906,7 +1908,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Program: 'M.Tech',
         Batch: '2025-2027',
         'Academic Year': '2025-26',
-        Semester: 'Even',
+        'Semester Type': 'Even',
         'Year / Semester': '2nd Year - 4th Semester',
         Building: 'M-Plaza',
         Block: 'North',
@@ -1926,7 +1928,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Program: 'B.Tech',
         Batch: '2023-2027',
         'Academic Year': '2025-26',
-        Semester: '6',
+        'Semester Type': 'Even',
         'Year / Semester': '3rd Year - 6th Semester',
         Building: 'M-Plaza',
         Block: 'North',
@@ -1937,7 +1939,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Required Capacity': 60,
         'Start Date': '2026-01-02',
         'End Date': '2026-05-30',
-        Notes: 'Numeric semester values are normalized automatically.',
+        Notes: 'Semester Type uses Odd or Even and follows the linked academic calendar.',
       },
       {
         'Allocation ID': 'ALLOC-ECE2-322',
@@ -1946,7 +1948,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Program: 'B.Tech',
         Batch: '2024-2028',
         'Academic Year': '2025-26',
-        Semester: 'Even',
+        'Semester Type': 'Even',
         'Year / Semester': '2nd Year - 4th Semester',
         Building: 'M-Plaza',
         Block: 'North',
@@ -1961,9 +1963,9 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       },
     ],
     instructions: [
-      'Use Academic Calendar to auto-fill department, batch, semester, start date, and end date wherever possible.',
+      'Use Academic Calendar to auto-fill department, batch, semester type, start date, and end date wherever possible.',
       'For CIAT or examination windows that should suppress only one batch or year, keep Program, Batch, Academic Year, and Year / Semester aligned with the Academic Calendar row so the app can apply the exam override safely.',
-      'Semester accepts Odd/Even, numeric values like 6, and Roman numeral values like VI Semester. Roman numerals are normalized automatically during import.',
+      'Semester Type accepts only Odd or Even. Keep the exact semester number in Year / Semester.',
       'Use Allocation Mode = Shared when the same room is used by multiple batches or different departments in different timetable slots during the same date range.',
       'Use Allocation Mode = Exclusive only when the room must stay reserved for one batch for that full date range.',
       'Only Exclusive allocations block overlapping date ranges. Shared allocations can overlap across departments and are separated later by timetable slots.',
@@ -5898,7 +5900,7 @@ function TimingProfileManagement() {
     },
     {
       key: 'semester',
-      label: 'Semester',
+      label: EXACT_SEMESTER_LABEL,
       type: 'select',
       required: false,
       options: (formData: any) => getScheduleSemesterOptions(formData.year_of_study),
@@ -5931,7 +5933,14 @@ function TimingProfileManagement() {
   };
 
   const handleImport = async (data: any[]) => {
+    const auditRows: ImportAuditRow[] = [];
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+    let failed = 0;
+
     for (const row of data) {
+      const sourceLabel = `${row.__sheetName || 'Sheet'} row ${row.__rowNumber || '?'}`;
       const school = schools.find(item =>
         normalizeLookupValue(item.name) === normalizeLookupValue(row['School']) ||
         normalizeLookupValue(item.school_id) === normalizeLookupValue(row['School'])
@@ -5952,7 +5961,7 @@ function TimingProfileManagement() {
         program: normalizeProgramValue(row['Program']),
         academic_year: row['Academic Year']?.toString() || null,
         year_of_study: normalizeYearOfStudyValue(getImportValue(row, ['Year / Semester', 'Year of Study', 'Year'])),
-        semester: normalizeExactSemesterValue(getImportValue(row, ['Semester']), getImportValue(row, ['Year / Semester', 'Year of Study', 'Year']), ''),
+        semester: normalizeExactSemesterValue(getImportValue(row, [EXACT_SEMESTER_LABEL, 'Semester']), getImportValue(row, ['Year / Semester', 'Year of Study', 'Year']), ''),
         section: getImportValue(row, ['Section'])?.toString().trim() || null,
         working_days: normalizeTimingProfileWorkingDays(getImportValue(row, ['Working Days'])),
         slot_pattern: normalizeTimingProfileSlotPattern(getImportValue(row, ['Slot Timings', 'Slot Pattern'])),
@@ -6020,7 +6029,7 @@ function AcademicCalendarManagement() {
     { key: 'program', label: 'Program', type: 'select', options: PROGRAM_OPTIONS },
     { key: 'batch', label: 'Batch' },
     { key: 'academic_year', label: 'Academic Year' },
-    { key: 'semester', label: 'Semester', type: 'select', resetKeys: ['year_of_study'], options: SEMESTER_OPTIONS },
+    { key: 'semester', label: SEMESTER_TYPE_LABEL, type: 'select', resetKeys: ['year_of_study'], options: SEMESTER_OPTIONS },
     {
       key: 'year_of_study',
       label: 'Year / Semester',
@@ -6101,7 +6110,14 @@ function AcademicCalendarManagement() {
   };
 
   const handleImport = async (data: any[]) => {
+    const auditRows: ImportAuditRow[] = [];
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+    let failed = 0;
+
     for (const row of data) {
+      const sourceLabel = `${row.__sheetName || 'Sheet'} row ${row.__rowNumber || '?'}`;
       const school = schools.find(item =>
         normalizeLookupValue(item.name) === normalizeLookupValue(row['School']) ||
         normalizeLookupValue(item.school_id) === normalizeLookupValue(row['School'])
@@ -6119,31 +6135,101 @@ function AcademicCalendarManagement() {
         normalizeLookupValue(item.profile_id) === normalizeLookupValue(row['Timing Profile']) ||
         normalizeLookupValue(item.profile_name) === normalizeLookupValue(row['Timing Profile'])
       );
+      const calendarId = row['Calendar ID']?.toString().trim() || '';
+      const title = row['Title']?.toString().trim() || row['Event Type']?.toString().trim() || '';
+
+      const missingReasons: string[] = [];
+      if (!calendarId) missingReasons.push('Calendar ID is missing.');
+      if (!school) missingReasons.push(`School "${row['School'] || ''}" was not found in School Management.`);
+      if (!department) missingReasons.push(`Department "${row['Department'] || ''}" was not found for the selected school.`);
+      if (!title) missingReasons.push('Title is missing.');
+      if (!startDate) missingReasons.push(`Start Date "${row['Start Date'] || ''}" could not be parsed.`);
+      if (!endDate) missingReasons.push(`End Date "${row['End Date'] || ''}" could not be parsed.`);
+
+      if (missingReasons.length > 0) {
+        skipped += 1;
+        auditRows.push({
+          Source: sourceLabel,
+          'Calendar ID': calendarId || '',
+          School: row['School'] || '',
+          Department: row['Department'] || '',
+          Status: 'Skipped',
+          Reason: missingReasons.join(' '),
+        });
+        continue;
+      }
 
       const payload = {
-        calendar_id: row['Calendar ID']?.toString(),
+        calendar_id: calendarId,
         school_id: school?.id || department?.school_id,
         department_id: department?.id,
         program: normalizeProgramValue(row['Program']),
         batch: row['Batch'],
         academic_year: row['Academic Year'],
         year_of_study: normalizeYearOfStudyValue(getImportValue(row, ['Year / Semester', 'Year of Study'])),
-        semester: normalizeSemesterValue(row['Semester'], ''),
+        semester: normalizeSemesterValue(getImportValue(row, [SEMESTER_TYPE_LABEL, 'Semester']), ''),
         timing_profile_id: timingProfile?.id || null,
         event_type: row['Event Type'] || 'Semester Period',
-        title: row['Title'] || row['Event Type'],
+        title,
         start_date: startDate,
         end_date: endDate,
         status: getRangeLifecycleStatus(startDate, endDate, 'Completed'),
         notes: row['Notes'],
       };
 
-      if (!payload.calendar_id || !payload.department_id || !payload.title || !payload.start_date || !payload.end_date) continue;
-      await upsertImportRecord('/api/academic_calendars', payload, [
-        ['calendar_id'],
-        ['department_id', 'program', 'batch', 'year_of_study', 'semester', 'event_type', 'title', 'start_date', 'end_date'],
-      ]);
+      try {
+        const savedRecord: any = await upsertImportRecord('/api/academic_calendars', payload, [
+          ['calendar_id'],
+          ['department_id', 'program', 'batch', 'year_of_study', 'semester', 'event_type', 'title', 'start_date', 'end_date'],
+        ]);
+        if (savedRecord?.__importAction === 'updated') {
+          updated += 1;
+        } else {
+          created += 1;
+        }
+        auditRows.push({
+          Source: sourceLabel,
+          'Calendar ID': payload.calendar_id,
+          School: row['School'] || '',
+          Department: row['Department'] || '',
+          Status: savedRecord?.__importAction === 'updated' ? 'Updated' : 'Created',
+          Reason: '',
+        });
+      } catch (err: any) {
+        failed += 1;
+        auditRows.push({
+          Source: sourceLabel,
+          'Calendar ID': payload.calendar_id,
+          School: row['School'] || '',
+          Department: row['Department'] || '',
+          Status: 'Failed',
+          Reason: err?.message || 'Import failed.',
+        });
+      }
     }
+
+    const validRows = created + updated + failed;
+    const totalRowsRead = data.length;
+    const message = validRows === 0
+      ? 'No academic calendar rows were imported. Open the import audit to see the skipped-row reasons.'
+      : failed > 0 || skipped > 0
+        ? `Academic calendar import finished with ${created} created, ${updated} updated, ${skipped} skipped, and ${failed} failed.`
+        : `Academic calendar import finished with ${created} created and ${updated} updated.`;
+
+    return {
+      message,
+      auditTitle: 'Academic Calendar Import Audit',
+      auditHeaders: ['Source', 'Calendar ID', 'School', 'Department', 'Status', 'Reason'],
+      auditRows,
+      summary: {
+        totalRowsRead,
+        validRows,
+        created,
+        updated,
+        skipped,
+        failed,
+      },
+    };
   };
 
   return (
@@ -6367,7 +6453,7 @@ function BatchRoomAllocationManagement() {
     { key: 'program', label: 'Program', type: 'select', options: PROGRAM_OPTIONS },
     { key: 'batch', label: 'Batch' },
     { key: 'academic_year', label: 'Academic Year' },
-    { key: 'semester', label: 'Semester', type: 'select', resetKeys: ['year_of_study'], options: SEMESTER_OPTIONS },
+    { key: 'semester', label: SEMESTER_TYPE_LABEL, type: 'select', resetKeys: ['year_of_study'], options: SEMESTER_OPTIONS },
     {
       key: 'year_of_study',
       label: 'Year / Semester',
@@ -6480,7 +6566,7 @@ function BatchRoomAllocationManagement() {
         batch: row['Batch'] || calendar?.batch,
         academic_year: row['Academic Year'] || calendar?.academic_year,
         year_of_study: normalizeYearOfStudyValue(getImportValue(row, ['Year / Semester', 'Year of Study'])) || calendar?.year_of_study,
-        semester: normalizeSemesterValue(getImportValue(row, ['Semester']), '') || calendar?.semester,
+        semester: normalizeSemesterValue(getImportValue(row, [SEMESTER_TYPE_LABEL, 'Semester']), '') || calendar?.semester,
         allocation_mode: getImportValue(row, ['Allocation Mode'])?.toString() || 'Shared',
         room_type: row['Room Type'] || room?.room_type,
         capacity: parseInt(getImportValue(row, ['Required Capacity', 'Capacity'])?.toString() || '0', 10) || 0,
@@ -6548,7 +6634,7 @@ function BatchRoomAllocationManagement() {
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-5">
           <div>
             <h3 className="text-lg font-bold text-slate-800">Find Batch Room Allocations</h3>
-            <p className="text-sm text-slate-500">Track active, upcoming, and released room allocations by batch, year, and semester, including rooms shared across departments.</p>
+            <p className="text-sm text-slate-500">Track active, upcoming, and released room allocations by batch, year, and semester type, including rooms shared across departments.</p>
           </div>
           <button
             onClick={() => setLookupFilters({ school_id: '', department_id: '', status: '' })}
@@ -6598,7 +6684,7 @@ function BatchRoomAllocationManagement() {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-100">
-                {['Department', 'Program', 'Batch', 'Year / Semester', 'Semester', 'Mode', 'Building', 'Block', 'Floor', 'Room', 'From', 'To', 'Status', 'Open'].map(header => (
+                {['Department', 'Program', 'Batch', 'Year / Semester', SEMESTER_TYPE_LABEL, 'Mode', 'Building', 'Block', 'Floor', 'Room', 'From', 'To', 'Status', 'Open'].map(header => (
                   <th key={header} className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{header}</th>
                 ))}
               </tr>
@@ -6798,7 +6884,7 @@ function DepartmentAllocationManagement() {
           .map(d => ({ value: d.id, label: d.name }));
       }
     },
-    { key: 'semester', label: 'Semester', type: 'select', resetKeys: ['room_id'], options: semesterOptions },
+    { key: 'semester', label: SEMESTER_TYPE_LABEL, type: 'select', resetKeys: ['room_id'], options: semesterOptions },
     {
       key: 'building_id',
       label: 'Building',
@@ -6905,7 +6991,7 @@ function DepartmentAllocationManagement() {
         school_id: school?.id,
         department_id: department?.id,
         room_id: room?.id,
-        semester: normalizeSemester(row['Semester']),
+        semester: normalizeSemester(getImportValue(row, [SEMESTER_TYPE_LABEL, 'Semester'])),
         room_type: row['Room Type'],
         capacity: parseInt(getImportValue(row, ['Required Capacity', 'Capacity'])?.toString() || '0', 10) || 0
       };
@@ -6946,11 +7032,11 @@ function DepartmentAllocationManagement() {
       allocation.semester === payload.semester
     );
 
-    if (!payload.semester) throw new Error('Semester is required.');
+    if (!payload.semester) throw new Error(`${SEMESTER_TYPE_LABEL} is required.`);
     if (!room) throw new Error('Please select a valid room.');
     if (requiredCapacity <= 0) throw new Error('Required capacity must be greater than zero.');
     if (requiredCapacity > room.capacity) throw new Error(`Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${requiredCapacity}.`);
-    if (duplicateAllocation) throw new Error('This room is already mapped to this department for the selected semester.');
+    if (duplicateAllocation) throw new Error(`This room is already mapped to this department for the selected ${SEMESTER_TYPE_LABEL.toLowerCase()}.`);
 
     payload.room_type = room.room_type;
     delete payload.building_id;
@@ -7000,13 +7086,13 @@ function DepartmentAllocationManagement() {
             </select>
           </div>
           <div className="space-y-1">
-            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Semester</label>
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{SEMESTER_TYPE_LABEL}</label>
             <select
               value={lookupFilters.semester}
               onChange={e => setLookupFilters({ ...lookupFilters, semester: e.target.value })}
               className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
             >
-              <option value="">All Semesters</option>
+              <option value="">{`All ${SEMESTER_TYPE_LABEL}s`}</option>
               {semesterOptions.map(semester => <option key={semester} value={semester}>{semester}</option>)}
             </select>
           </div>
@@ -7016,7 +7102,7 @@ function DepartmentAllocationManagement() {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-100">
-                {['School', 'Department', 'Building', 'Block', 'Floor', 'Room', 'Type', 'Capacity', 'Semester', 'Open'].map(header => (
+                {['School', 'Department', 'Building', 'Block', 'Floor', 'Room', 'Type', 'Capacity', SEMESTER_TYPE_LABEL, 'Open'].map(header => (
                   <th key={header} className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{header}</th>
                 ))}
               </tr>
@@ -7050,7 +7136,7 @@ function DepartmentAllocationManagement() {
               {lookupResults.length === 0 && (
                 <tr>
                   <td colSpan={10} className="px-4 py-8 text-center text-sm text-slate-400 italic">
-                    Select a school, department, or semester to view allocated rooms.
+                    {`Select a school, department, or ${SEMESTER_TYPE_LABEL.toLowerCase()} to view allocated rooms.`}
                   </td>
                 </tr>
               )}
