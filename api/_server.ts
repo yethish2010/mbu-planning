@@ -828,6 +828,23 @@ const normalizeIsoDate = (value: any) => {
   if (!trimmed) return "";
   if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
 
+  const dayFirstMatch = trimmed.match(/^(\d{1,2})[-\/\s](\d{1,2})[-\/\s](\d{4})$/);
+  if (dayFirstMatch) {
+    const [, dayRaw, monthRaw, year] = dayFirstMatch;
+    const day = dayRaw.padStart(2, "0");
+    const month = monthRaw.padStart(2, "0");
+    const isoValue = `${year}-${month}-${day}`;
+    const parsedDayFirst = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+    if (
+      !Number.isNaN(parsedDayFirst.getTime()) &&
+      parsedDayFirst.getUTCFullYear().toString() === year &&
+      (parsedDayFirst.getUTCMonth() + 1).toString().padStart(2, "0") === month &&
+      parsedDayFirst.getUTCDate().toString().padStart(2, "0") === day
+    ) {
+      return isoValue;
+    }
+  }
+
   const parsed = new Date(trimmed);
   if (Number.isNaN(parsed.getTime())) return "";
   return parsed.toISOString().slice(0, 10);

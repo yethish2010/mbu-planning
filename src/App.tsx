@@ -2141,7 +2141,26 @@ const formatExcelDate = (val: any) => {
     const date = new Date(Math.round((val - 25569) * 86400 * 1000));
     return date.toISOString().split('T')[0];
   }
-  return val?.toString();
+  const text = val?.toString().trim();
+  if (!text) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+
+  const dayFirstMatch = text.match(/^(\d{1,2})[-\/\s](\d{1,2})[-\/\s](\d{4})$/);
+  if (dayFirstMatch) {
+    const [, dayRaw, monthRaw, year] = dayFirstMatch;
+    const day = dayRaw.padStart(2, '0');
+    const month = monthRaw.padStart(2, '0');
+    const parsed = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+    if (!Number.isNaN(parsed.getTime()) && parsed.getUTCFullYear().toString() === year && (parsed.getUTCMonth() + 1).toString().padStart(2, '0') === month && parsed.getUTCDate().toString().padStart(2, '0') === day) {
+      return `${year}-${month}-${day}`;
+    }
+  }
+
+  const parsed = new Date(text);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toISOString().split('T')[0];
+  }
+  return text;
 };
 
 const formatLocalDate = (date: Date) => {
