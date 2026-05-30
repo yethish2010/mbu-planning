@@ -991,6 +991,24 @@ const compareRoomSortLabels = (left: unknown, right: unknown) =>
     { numeric: true, sensitivity: 'base' },
   );
 
+const compareNaturalSortValues = (left: unknown, right: unknown) => {
+  const leftValue = normalizeOptionalImportValue(left);
+  const rightValue = normalizeOptionalImportValue(right);
+  if (!leftValue && !rightValue) return 0;
+  if (!leftValue) return 1;
+  if (!rightValue) return -1;
+
+  const leftNumber = typeof left === 'number' ? left : Number(leftValue);
+  const rightNumber = typeof right === 'number' ? right : Number(rightValue);
+  const leftIsNumber = Number.isFinite(leftNumber) && !/[A-Za-z]/.test(leftValue);
+  const rightIsNumber = Number.isFinite(rightNumber) && !/[A-Za-z]/.test(rightValue);
+  if (leftIsNumber && rightIsNumber) {
+    return leftNumber - rightNumber;
+  }
+
+  return leftValue.localeCompare(rightValue, undefined, { numeric: true, sensitivity: 'base' });
+};
+
 const compareRoomsByNaturalOrder = (left: any, right: any, rooms: any[] = []) => {
   const leftLabel = getRoomDisplayLabel(left, rooms) || left?.room_number || left?.Room || '';
   const rightLabel = getRoomDisplayLabel(right, rooms) || right?.room_number || right?.Room || '';
@@ -3897,9 +3915,20 @@ function GenericCRUD({
       ? field.formLabel(formData, editingItem)
       : (field.formLabel || field.label);
 
+  const defaultDataSorter = (left: any, right: any) => {
+    for (const field of tableFields) {
+      const comparison = compareNaturalSortValues(
+        getFieldDisplayValue(field, left),
+        getFieldDisplayValue(field, right),
+      );
+      if (comparison !== 0) return comparison;
+    }
+    return compareNaturalSortValues(left?.id, right?.id);
+  };
+
   const displayData = (dataFilter ? data.filter(dataFilter) : data)
     .slice()
-    .sort(dataSorter || (() => 0));
+    .sort(dataSorter || defaultDataSorter);
   const filteredData = displayData.filter(item => {
     const query = searchTerm.trim().toLowerCase();
     if (!query) return true;
@@ -6391,6 +6420,18 @@ function BatchRoomAllocationManagement() {
     if (lookupFilters.department_id && allocation.department_id?.toString() !== lookupFilters.department_id) return false;
     if (lookupFilters.status && computedStatus !== lookupFilters.status) return false;
     return lookupFilters.school_id || lookupFilters.department_id || lookupFilters.status;
+  }).sort((left, right) => {
+    const leftDepartment = departments.find(item => idsMatch(item.id, left.department_id))?.name || '';
+    const rightDepartment = departments.find(item => idsMatch(item.id, right.department_id))?.name || '';
+    const departmentCompare = compareNaturalSortValues(leftDepartment, rightDepartment);
+    if (departmentCompare !== 0) return departmentCompare;
+    const programCompare = compareNaturalSortValues(left.program, right.program);
+    if (programCompare !== 0) return programCompare;
+    const batchCompare = compareNaturalSortValues(left.batch, right.batch);
+    if (batchCompare !== 0) return batchCompare;
+    const leftRoom = rooms.find(item => idsMatch(item.id, left.room_id));
+    const rightRoom = rooms.find(item => idsMatch(item.id, right.room_id));
+    return compareRoomsByNaturalOrder(leftRoom || left, rightRoom || right, rooms);
   });
 
   const getAllocationDetails = (allocation: any) => {
@@ -6862,6 +6903,18 @@ function DepartmentAllocationManagement() {
     if (lookupFilters.department_id && allocation.department_id?.toString() !== lookupFilters.department_id) return false;
     if (lookupFilters.semester && allocation.semester !== lookupFilters.semester) return false;
     return lookupFilters.school_id || lookupFilters.department_id || lookupFilters.semester;
+  }).sort((left, right) => {
+    const leftSchool = schools.find(item => idsMatch(item.id, left.school_id))?.name || '';
+    const rightSchool = schools.find(item => idsMatch(item.id, right.school_id))?.name || '';
+    const schoolCompare = compareNaturalSortValues(leftSchool, rightSchool);
+    if (schoolCompare !== 0) return schoolCompare;
+    const leftDepartment = departments.find(item => idsMatch(item.id, left.department_id))?.name || '';
+    const rightDepartment = departments.find(item => idsMatch(item.id, right.department_id))?.name || '';
+    const departmentCompare = compareNaturalSortValues(leftDepartment, rightDepartment);
+    if (departmentCompare !== 0) return departmentCompare;
+    const leftRoom = rooms.find(item => idsMatch(item.id, left.room_id));
+    const rightRoom = rooms.find(item => idsMatch(item.id, right.room_id));
+    return compareRoomsByNaturalOrder(leftRoom || left, rightRoom || right, rooms);
   });
 
   const getAllocationDetails = (allocation: any) => {
@@ -8174,10 +8227,17 @@ function BookingManagement() {
     }).sort((a, b) => {
       const aDetails = getRoomDetails(a);
       const bDetails = getRoomDetails(b);
-      if (searchCriteria.sortBy === 'largest-capacity') return (b.capacity || 0) - (a.capacity || 0);
-      if (searchCriteria.sortBy === 'building') return (aDetails.building?.name || '').localeCompare(bDetails.building?.name || '');
-      if (searchCriteria.sortBy === 'room-number') return a.room_number.toString().localeCompare(b.room_number.toString(), undefined, { numeric: true });
-      return Math.abs((a.capacity || 0) - requestedCapacity) - Math.abs((b.capacity || 0) - requestedCapacity);
+      if (searchCriteria.sortBy === 'largest-capacity') {
+        const capacityCompare = (b.capacity || 0) - (a.capacity || 0);
+        return capacityCompare !== 0 ? capacityCompare : compareRoomsByNaturalOrder(a, b, rooms);
+      }
+      if (searchCriteria.sortBy === 'building') {
+        const buildingCompare = compareNaturalSortValues(aDetails.building?.name || '', bDetails.building?.name || '');
+        return buildingCompare !== 0 ? buildingCompare : compareRoomsByNaturalOrder(a, b, rooms);
+      }
+      if (searchCriteria.sortBy === 'room-number') return compareRoomsByNaturalOrder(a, b, rooms);
+      const fitCompare = Math.abs((a.capacity || 0) - requestedCapacity) - Math.abs((b.capacity || 0) - requestedCapacity);
+      return fitCompare !== 0 ? fitCompare : compareRoomsByNaturalOrder(a, b, rooms);
     });
   };
   const getDisplayStatus = (booking: any) => {
