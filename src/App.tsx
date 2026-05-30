@@ -2529,8 +2529,8 @@ function Sidebar() {
     { name: 'Department Management', icon: Layers, path: '/departments', roles: ['Administrator'] },
     { name: 'Timing Profile Management', icon: Clock, path: '/timing-profiles', roles: ['Administrator', 'Infrastructure Manager'] },
     { name: 'Academic Calendar', icon: Calendar, path: '/academic-calendars', roles: ['Administrator', 'Infrastructure Manager'] },
-    { name: 'Batch Room Allocation', icon: DoorOpen, path: '/batch-room-allocations', roles: ['Administrator', 'Infrastructure Manager'] },
     { name: 'Department Room Mapping', icon: DoorOpen, path: '/dept-allocation', roles: ['Administrator', 'Infrastructure Manager'] },
+    { name: 'Batch Room Allocation', icon: DoorOpen, path: '/batch-room-allocations', roles: ['Administrator', 'Infrastructure Manager'] },
     { name: 'Equipment Management', icon: Wrench, path: '/equipment', roles: ['Administrator', 'Infrastructure Manager', 'Maintenance Staff'] },
     { name: 'Schedule Records', icon: Calendar, path: '/scheduling', roles: ['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)'] },
     { name: 'Timetable View', icon: Clock, path: '/timetable', roles: ['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)'] },
@@ -3293,9 +3293,10 @@ export default function App() {
             <ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}>
               <Layout title="Batch Room Allocation">
                 <DependencyGuard dependencies={[
+                  { table: 'department_allocations', label: 'Department Room Mapping' },
                   { table: 'academic_calendars', label: 'Academic Calendar' },
                   { table: 'departments', label: 'Departments' },
-                  { table: 'rooms', label: 'Rooms' }
+                  { table: 'rooms', label: 'Rooms' },
                 ]}>
                   <BatchRoomAllocationManagement />
                 </DependencyGuard>
