@@ -618,13 +618,27 @@ const isNonCapacityRoomType = (roomType: any) =>
 const CAPACITY_ROOM_TYPE_VALUES = [
   "Classroom",
   "Smart Classroom",
+  "Lecture Hall",
+  "Tutorial Room",
+  "Seminar Hall",
+  "Conference Room",
+  "Auditorium",
+  "Exam Hall",
+  "Multipurpose Room",
   "Multipurpose Classroom",
+  "Multipurpose Lecture Hall",
   "Classroom Lab",
   "Multipurpose Lab",
   "Lab",
   "Computer Lab",
   "Research Lab",
   "Language Lab",
+  "Workshop",
+  "Studio",
+  "Meeting Room",
+  "Board Room",
+  "Sports Room",
+  "Gym",
 ];
 const isCapacityRoomType = (roomType: any) =>
   CAPACITY_ROOM_TYPE_VALUES.includes(normalizeRoomTypeValue(roomType));
@@ -745,7 +759,7 @@ const normalizeRoomPayload = (payload: any) => {
   }
 
   if (isCapacityRoomType(nextPayload.room_type) && nextPayload.capacity <= 0) {
-    throw new Error("Capacity is required for classroom and lab room types.");
+    throw new Error("Capacity is required for all bookable teaching, event, meeting, sports, and lab room types.");
   }
 
   return nextPayload;

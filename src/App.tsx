@@ -774,13 +774,27 @@ const BOOKABLE_USAGE_CATEGORIES = new Set(['Teaching', 'Lab Work', 'Multipurpose
 const CAPACITY_ROOM_TYPES = new Set([
   'Classroom',
   'Smart Classroom',
+  'Lecture Hall',
+  'Tutorial Room',
+  'Seminar Hall',
+  'Conference Room',
+  'Auditorium',
+  'Exam Hall',
+  'Multipurpose Room',
   'Multipurpose Classroom',
+  'Multipurpose Lecture Hall',
   'Classroom Lab',
   'Multipurpose Lab',
   'Lab',
   'Computer Lab',
   'Research Lab',
   'Language Lab',
+  'Workshop',
+  'Studio',
+  'Meeting Room',
+  'Board Room',
+  'Sports Room',
+  'Gym',
 ]);
 const NON_CAPACITY_ROOM_TYPES = new Set([
   'Office',
@@ -1509,7 +1523,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       'For Split Child or Inside Child, leave Sub Room Count blank and enter Parent Room as the parent room number or room ID.',
       'Room Type is for parent/normal rows. Sub Room Type is for Split Child or Inside Child rows.',
       'A child room can have a different room type and lab name from its parent room.',
-      'Capacity is used only for classroom and lab room types. For classroom/lab parent rows and classroom/lab child rows, fill Capacity. For all other room types, leave Capacity blank and it will be imported as 0.',
+      'Capacity is required for all bookable teaching, event, meeting, sports, and lab room types. For those parent rows and child rows, fill Capacity. For non-bookable support spaces, leave Capacity blank and it will be imported as 0.',
       'For offices, cabins, examination sections, library/reading rooms, admin/support/service rooms, restrooms, and access spaces, leave Is Bookable and Capacity blank. They are imported as non-bookable spaces with capacity 0.',
       'Restroom For should be filled for stable public categories like Male or Female. For attached/private child restrooms inside HOD Cabin, Dean Office, Faculty Room, or Staff Room, you can leave Restroom For blank.',
       'During import, a parent row with Sub Room Count must have the same number of matching child rows in the same Excel file.',
@@ -5258,7 +5272,7 @@ function RoomManagement() {
     }
 
     if (requiresCapacity && payload.capacity <= 0) {
-      throw new Error('Please enter the capacity for classroom and lab room types.');
+      throw new Error('Please enter the capacity for all bookable teaching, event, meeting, sports, and lab room types.');
     }
 
     return payload;
