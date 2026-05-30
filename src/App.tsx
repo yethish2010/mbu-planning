@@ -2007,6 +2007,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
     instructions: [
       'Use Academic Calendar to auto-fill department, batch, semester type, start date, and end date wherever possible.',
+      'Create the matching Department Allocation first. Batch Room Allocation now accepts only rooms already mapped to the same department and semester in Department Allocation.',
       'For CIAT or examination windows that should suppress only one batch or year, keep Program, Batch, Academic Year, and Year / Semester aligned with the Academic Calendar row so the app can apply the exam override safely.',
       'Semester Type accepts only Odd or Even. Keep the exact semester number in Year / Semester.',
       'Use Allocation Mode = Shared when the same room is used by multiple batches or different departments in different timetable slots during the same date range.',
@@ -6347,6 +6348,7 @@ function BatchRoomAllocationManagement() {
   const [buildings, setBuildings] = useState<any[]>([]);
   const [calendars, setCalendars] = useState<any[]>([]);
   const [allocations, setAllocations] = useState<any[]>([]);
+  const [departmentAllocations, setDepartmentAllocations] = useState<any[]>([]);
   const [lookupFilters, setLookupFilters] = useState({ school_id: '', department_id: '', status: '' });
 
   const refreshBatchAllocationLookups = async () => {
@@ -6359,6 +6361,7 @@ function BatchRoomAllocationManagement() {
       buildingData,
       calendarData,
       allocationData,
+      departmentAllocationData,
     ] = await Promise.all([
       fetch('/api/schools', { credentials: 'include' }).then(res => res.json()),
       fetch('/api/departments', { credentials: 'include' }).then(res => res.json()),
@@ -6368,6 +6371,7 @@ function BatchRoomAllocationManagement() {
       fetch('/api/buildings', { credentials: 'include' }).then(res => res.json()),
       fetch('/api/academic_calendars', { credentials: 'include' }).then(res => res.json()),
       fetch('/api/batch_room_allocations', { credentials: 'include' }).then(res => res.json()),
+      fetch('/api/department_allocations', { credentials: 'include' }).then(res => res.json()),
     ]);
 
     setSchools(Array.isArray(schoolData) ? schoolData : []);
@@ -6378,6 +6382,7 @@ function BatchRoomAllocationManagement() {
     setBuildings(Array.isArray(buildingData) ? buildingData : []);
     setCalendars(Array.isArray(calendarData) ? calendarData : []);
     setAllocations(Array.isArray(allocationData) ? allocationData : []);
+    setDepartmentAllocations(Array.isArray(departmentAllocationData) ? departmentAllocationData : []);
   };
 
   useEffect(() => {
@@ -6422,10 +6427,27 @@ function BatchRoomAllocationManagement() {
       .map(floor => ({ value: floor.id, label: getFloorDisplayLabel(floor, blocks, buildings) }));
   };
 
+  const isRoomLinkedToDepartment = (roomId: unknown, departmentId: unknown, semesterValue?: unknown) => {
+    if (!roomId || !departmentId) return false;
+    const matchingAllocations = departmentAllocations.filter(allocation =>
+      idsMatch(allocation.room_id, roomId) &&
+      idsMatch(allocation.department_id, departmentId)
+    );
+    if (matchingAllocations.length === 0) return false;
+
+    const normalizedSemester = normalizeSemesterValue(semesterValue, '');
+    if (!normalizedSemester) return true;
+
+    return matchingAllocations.some(allocation =>
+      normalizeSemesterValue(allocation.semester, '') === normalizedSemester
+    );
+  };
+
   const getAvailableRoomOptions = (formData: any) => {
     return rooms
       .filter(room => {
         if (!isRoomReservable(room)) return false;
+        if (!isRoomLinkedToDepartment(room.id, formData.department_id, formData.semester)) return false;
         const { floor, block, building } = getRoomPath(room);
         if (!floor || !block || !building) return false;
         if (formData.building_id && !idsMatch(building.id, formData.building_id)) return false;
@@ -6658,6 +6680,7 @@ function BatchRoomAllocationManagement() {
           if (wantsDirectBlock && !isImplicitBuildingBlock(block, roomBuilding)) return false;
           if (!wantsDirectBlock && normalizeLookupValue(block?.name) !== normalizedBlockLabel) return false;
         }
+        if (!isRoomLinkedToDepartment(r.id, department?.id, normalizeSemesterValue(getImportValue(row, [SEMESTER_TYPE_LABEL, 'Semester']), ''))) return false;
         return true;
       });
 
@@ -6716,11 +6739,16 @@ function BatchRoomAllocationManagement() {
     if (payload.start_date > payload.end_date) throw new Error('Start date cannot be after end date.');
     if (requiredCapacity <= 0) throw new Error('Required capacity must be greater than zero.');
     if (requiredCapacity > room.capacity) throw new Error(`Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${requiredCapacity}.`);
+    const normalizedSemester = normalizeSemesterValue(payload.semester, '');
+    if (!isRoomLinkedToDepartment(payload.room_id, payload.department_id, normalizedSemester)) {
+      throw new Error(`Room ${room.room_number} is not mapped to ${department.name} in Department Allocation for ${normalizedSemester || 'the selected semester'}. Create the department allocation first.`);
+    }
 
     payload.school_id = department.school_id;
     payload.program = normalizeProgramValue(payload.program);
     payload.specialization = payload.specialization?.toString().trim() || null;
     payload.year_of_study = normalizeYearOfStudyValue(payload.year_of_study);
+    payload.semester = normalizedSemester || payload.semester;
     payload.allocation_mode = BATCH_ALLOCATION_MODE_OPTIONS.includes(payload.allocation_mode) ? payload.allocation_mode : 'Shared';
     payload.room_type = room.room_type;
     payload.status = getRangeLifecycleStatus(payload.start_date, payload.end_date, 'Released', 'Planned');

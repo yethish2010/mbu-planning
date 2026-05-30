@@ -1050,6 +1050,10 @@ const normalizeBatchRoomAllocationPayload = async (payload: any) => {
   if (nextPayload.capacity > room.capacity) {
     throw new Error(`Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${nextPayload.capacity}.`);
   }
+  const departmentAllocationError = await getDepartmentAllocationLinkError(nextPayload.room_id, nextPayload.department_id, nextPayload.semester);
+  if (departmentAllocationError) {
+    throw new Error(departmentAllocationError);
+  }
 
   return nextPayload;
 };
@@ -1135,6 +1139,37 @@ const isExaminationCalendarEvent = (calendar: any) => {
 
 const normalizeAcademicContextText = (value: any) =>
   normalizeDuplicateValue(value)?.toString() || "";
+
+const getDepartmentAllocationLink = async (roomId: any, departmentId: any, semester?: any) => {
+  const numericRoomId = Number(roomId || 0) || null;
+  const numericDepartmentId = Number(departmentId || 0) || null;
+  if (!numericRoomId || !numericDepartmentId) return null;
+
+  const matches = await db.prepare(`
+    SELECT id, room_id, department_id, school_id, semester
+    FROM department_allocations
+    WHERE room_id = ? AND department_id = ?
+    ORDER BY id DESC
+  `).all(numericRoomId, numericDepartmentId) as any[];
+
+  if (matches.length === 0) return null;
+
+  const normalizedSemester = normalizeSemesterKey(semester);
+  if (!normalizedSemester) return matches[0];
+
+  return matches.find(match => normalizeSemesterKey(match.semester) === normalizedSemester) || null;
+};
+
+const getDepartmentAllocationLinkError = async (roomId: any, departmentId: any, semester?: any) => {
+  if (!roomId || !departmentId) return "Please select both department and room.";
+  const linkedAllocation = await getDepartmentAllocationLink(roomId, departmentId, semester);
+  if (linkedAllocation) return null;
+
+  const room = await db.prepare("SELECT room_number FROM rooms WHERE id = ?").get(roomId) as any;
+  const department = await db.prepare("SELECT name FROM departments WHERE id = ?").get(departmentId) as any;
+  const semesterLabel = normalizeSemesterKey(semester) ? ` for ${semester}` : "";
+  return `Room ${room?.room_number || roomId} is not mapped to ${department?.name || "the selected department"}${semesterLabel} in Department Allocation. Create the department allocation first.`;
+};
 
 const normalizeScheduleSpecializationValue = (value: any) => {
   const raw = value?.toString().trim();
@@ -2525,6 +2560,8 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       if (tableName === "batch_room_allocations") {
         const bookableError = await getBookableRoomError(req.body.room_id);
         if (bookableError) return res.status(400).json({ error: bookableError });
+        const departmentAllocationError = await getDepartmentAllocationLinkError(req.body.room_id, req.body.department_id, req.body.semester);
+        if (departmentAllocationError) return res.status(400).json({ error: departmentAllocationError });
         const overlapError = await getBatchAllocationOverlapError(req.body);
         if (overlapError) return res.status(400).json({ error: overlapError });
       }
@@ -2663,6 +2700,8 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         const nextAllocation = { ...existingItem, ...req.body };
         const bookableError = await getBookableRoomError(nextAllocation.room_id);
         if (bookableError) return res.status(400).json({ error: bookableError });
+        const departmentAllocationError = await getDepartmentAllocationLinkError(nextAllocation.room_id, nextAllocation.department_id, nextAllocation.semester);
+        if (departmentAllocationError) return res.status(400).json({ error: departmentAllocationError });
         const overlapError = await getBatchAllocationOverlapError(nextAllocation, req.params.id);
         if (overlapError) return res.status(400).json({ error: overlapError });
       }
@@ -2767,6 +2806,12 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       return res.status(403).json({ error: "Only Administrator can remove users." });
     }
     try {
+      if (tableName === "department_allocations") {
+        const dependentCount = await db.prepare("SELECT COUNT(*) as total FROM batch_room_allocations").get() as any;
+        if ((Number(dependentCount?.total) || 0) > 0) {
+          return res.status(400).json({ error: "Batch Room Allocations still depend on Department Allocations. Remove batch allocations first." });
+        }
+      }
       await db.prepare(`DELETE FROM ${tableName}`).run();
       res.json({ success: true });
     } catch (err: any) {
@@ -2780,6 +2825,16 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     }
     try {
       const existingItem = await db.prepare(`SELECT * FROM ${tableName} WHERE ${idField} = ?`).get(req.params.id) as any;
+      if (tableName === "department_allocations" && existingItem) {
+        const dependentBatchAllocations = await db.prepare(`
+          SELECT COUNT(*) as total
+          FROM batch_room_allocations
+          WHERE room_id = ? AND department_id = ?
+        `).get(existingItem.room_id, existingItem.department_id) as any;
+        if ((Number(dependentBatchAllocations?.total) || 0) > 0) {
+          return res.status(400).json({ error: "This Department Allocation is still used by Batch Room Allocations. Remove or reassign those batch allocations first." });
+        }
+      }
       await db.prepare(`DELETE FROM ${tableName} WHERE ${idField} = ?`).run(req.params.id);
       if (tableName === "bookings" && existingItem) {
         const actor = (req as any).user.name;
