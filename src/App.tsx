@@ -10211,6 +10211,7 @@ function ReportGeneration() {
   const [reportBookings, setReportBookings] = useState<any[]>([]);
   const [reportSchedules, setReportSchedules] = useState<any[]>([]);
   const [reportAcademicCalendars, setReportAcademicCalendars] = useState<any[]>([]);
+  const [reportMaintenance, setReportMaintenance] = useState<any[]>([]);
   const [suggestions, setSuggestions] = useState<any[]>([]);
   const [suggestionError, setSuggestionError] = useState('');
   const [activeTab, setActiveTab] = useState<'utilization' | 'methodology' | 'kpis'>('utilization');
@@ -10253,7 +10254,7 @@ function ReportGeneration() {
     { value: 'semester_utilization', label: 'Semester Type Utilization' },
     { value: 'section_utilization', label: 'Section-wise Utilization' },
     { value: 'booking_approvals', label: 'Booking Approvals' },
-    { value: 'maintenance_impact', label: 'Maintenance Impact' },
+    { value: 'maintenance_impact', label: 'Maintenance Rooms' },
     { value: 'underused', label: 'Underused Rooms' },
     { value: 'overused', label: 'Overused Rooms' },
     { value: 'time_band_utilization', label: 'Time Band Utilization' },
@@ -10286,7 +10287,7 @@ function ReportGeneration() {
     semester_utilization: ['SemesterType', 'Rooms', 'AvgUtilization'],
     section_utilization: ['Section', 'Rooms', 'AvgUtilization'],
     booking_approvals: ['Status', 'Count'],
-    maintenance_impact: ['Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Utilization', 'ScheduledHours', 'BookedHours', 'Capacity', 'Status', 'Flags'],
+    maintenance_impact: ['Room', 'RoomName', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Capacity', 'RoomStatus', 'OpenIssues', 'PendingIssues', 'InProgressIssues', 'CompletedIssues', 'LatestIssue', 'LatestIssueStatus', 'LatestReportedDate', 'LatestResolvedDate', 'Utilization', 'ScheduledHours', 'BookedHours', 'Flags'],
     underused: ['Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Utilization', 'ScheduledHours', 'BookedHours', 'Capacity', 'Status', 'Flags'],
     overused: ['Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Utilization', 'ScheduledHours', 'BookedHours', 'Capacity', 'Status', 'Flags'],
     time_band_utilization: ['TimeBand', 'ScheduledHours', 'BookedHours', 'Utilization'],
@@ -10335,25 +10336,29 @@ function ReportGeneration() {
 
   const fetchUtilization = async () => {
     try {
-      const [reportRes, bookingRes, scheduleRes, academicRes] = await Promise.all([
+      const [reportRes, bookingRes, scheduleRes, academicRes, maintenanceRes] = await Promise.all([
         fetch('/api/reports/utilization', { credentials: 'include' }),
         fetch('/api/bookings', { credentials: 'include' }),
         fetch('/api/schedules', { credentials: 'include' }),
         fetch('/api/academic_calendars', { credentials: 'include' }),
+        fetch('/api/maintenance', { credentials: 'include' }),
       ]);
       const data = await reportRes.json();
       const bookingData = await bookingRes.json();
       const scheduleData = await scheduleRes.json();
       const academicData = await academicRes.json();
+      const maintenanceData = await maintenanceRes.json();
       setUtilizationData(data);
       setReportBookings(Array.isArray(bookingData) ? bookingData : []);
       setReportSchedules(Array.isArray(scheduleData) ? scheduleData : []);
       setReportAcademicCalendars(Array.isArray(academicData) ? academicData : []);
+      setReportMaintenance(Array.isArray(maintenanceData) ? maintenanceData : []);
     } catch (err) {
       console.error(err);
       setReportBookings([]);
       setReportSchedules([]);
       setReportAcademicCalendars([]);
+      setReportMaintenance([]);
     } finally {
       setLoading(false);
     }
@@ -10444,7 +10449,7 @@ function ReportGeneration() {
     if (filters.flag && !(room.flags || []).includes(filters.flag)) return false;
     if (filters.reportType === 'underused' && !(room.flags || []).includes('Underused')) return false;
     if (filters.reportType === 'overused' && !(room.flags || []).includes('Overused')) return false;
-    if (filters.reportType === 'maintenance_impact' && room.maintenanceIssues <= 0) return false;
+    if (filters.reportType === 'maintenance_impact' && room.maintenanceIssues <= 0 && room.status !== 'Maintenance') return false;
     if (filters.reportType === 'department_allocation' && room.department === 'Unmapped') return false;
     if (filters.reportType === 'booking_approvals' && !(room.bookingStatuses || []).length) return false;
     return true;
@@ -10465,6 +10470,26 @@ function ReportGeneration() {
     if (filters.section && !(roomMeta?.sectionTags || []).includes(filters.section)) return false;
     if (filters.room && !matchesReportFilterValue(booking.room_number || booking.room_label || roomMeta?.room_number, filters.room)) return false;
     if (filters.roomType && !matchesReportFilterValue(booking.room_type || roomMeta?.room_type, filters.roomType)) return false;
+    return true;
+  });
+  const filteredMaintenanceRecords = reportMaintenance.filter((item: any) => {
+    const roomMeta =
+      roomMetaById.get(item.room_id?.toString()) ||
+      roomMetaByNumber.get(item.room_number?.toString()) ||
+      roomMetaByNumber.get(item.room_label?.toString());
+    const reportedDate = item.reported_date?.toString();
+    if (filters.dateFrom && (!reportedDate || reportedDate < filters.dateFrom)) return false;
+    if (filters.dateTo && (!reportedDate || reportedDate > filters.dateTo)) return false;
+    if (filters.campus && !matchesReportFilterValue(roomMeta?.campus, filters.campus)) return false;
+    if (filters.building && !matchesReportFilterValue(roomMeta?.building, filters.building)) return false;
+    if (filters.block && !matchesReportFilterValue(roomMeta?.block, filters.block)) return false;
+    if (filters.floor && roomMeta?.floor_number?.toString() !== filters.floor) return false;
+    if (filters.department && !matchesReportFilterValue(roomMeta?.department, filters.department)) return false;
+    if (filters.year && !(roomMeta?.yearTags || []).includes(filters.year)) return false;
+    if (filters.semester && !(roomMeta?.semesterTags || []).includes(filters.semester)) return false;
+    if (filters.section && !(roomMeta?.sectionTags || []).includes(filters.section)) return false;
+    if (filters.room && !matchesReportFilterValue(item.room_number || item.room_label || roomMeta?.room_number, filters.room)) return false;
+    if (filters.roomType && !matchesReportFilterValue(roomMeta?.room_type, filters.roomType)) return false;
     return true;
   });
   const sortedFilteredRoomReports = [...filteredRoomReports].sort((left: any, right: any) =>
@@ -10762,45 +10787,6 @@ function ReportGeneration() {
   const avgFilteredUtilization = Math.round(filteredRoomReports.reduce((acc: number, room: any) => acc + room.utilization, 0) / (filteredRoomReports.length || 1));
   const mostUsedRoom = [...filteredRoomReports].sort((a: any, b: any) => b.utilization - a.utilization)[0];
   const leastUsedRoom = [...filteredRoomReports].sort((a: any, b: any) => a.utilization - b.utilization)[0];
-  const categorySummaryCards = filters.reportType === 'category_room_list'
-    ? [
-        {
-          label: 'Rooms Listed',
-          value: `${categoryWiseRoomListRows.length}`,
-          detail: formatRoomMixSummary(categoryWiseRoomMix),
-        },
-        {
-          label: 'Unique Categories',
-          value: `${categoryWiseGroupSummary.length}`,
-        },
-        {
-          label: filters.roomCategoryValue ? 'Selected Category' : 'Top Category',
-          value: filters.roomCategoryValue || topCategoryGroup?.value || topReportCategoryGroup?.value || '-',
-        },
-        {
-          label: filters.roomCategoryValue ? 'Matching Rooms' : 'Largest Group',
-          value: `${filters.roomCategoryValue ? categoryWiseRoomListRows.length : (topCategoryGroup?.roomCount ?? topReportCategoryGroup?.roomCount ?? 0)}`,
-        },
-      ]
-      : [
-        {
-          label: 'Rooms Analyzed',
-          value: `${filteredRoomReports.length}`,
-          detail: formatRoomMixSummary(filteredRoomMix),
-        },
-        {
-          label: 'Avg Utilization',
-          value: `${avgFilteredUtilization}%`,
-        },
-        {
-          label: 'Most Used',
-          value: mostUsedRoom?.room_number || '-',
-        },
-        {
-          label: 'Least Used',
-          value: leastUsedRoom?.room_number || '-',
-        },
-      ];
   const filteredRoomIdSet = new Set<string>(filteredRoomReports.map((room: any) => room.room_id?.toString()).filter(Boolean));
   const filteredRoomNumberSet = new Set<string>(filteredRoomReports.map((room: any) => room.room_number?.toString().trim()).filter(Boolean));
   const roomMetaByRoomId = new Map<string, any>(filteredRoomReports.map((room: any) => [room.room_id?.toString(), room]));
@@ -11104,6 +11090,134 @@ function ReportGeneration() {
     Sections: (room.sectionTags || []).join(', '),
     Flags: (room.flags || []).join(', '),
   }));
+  const maintenanceRoomReportRows = (() => {
+    const hasMaintenanceDateScope = Boolean(filters.dateFrom || filters.dateTo);
+    const maintenanceByRoomKey = new Map<string, any[]>();
+    filteredMaintenanceRecords.forEach((item: any) => {
+      const roomIdKey = item.room_id?.toString().trim();
+      const roomNumberKey = (item.room_number || item.room_label)?.toString().trim();
+      const keys = [roomIdKey, roomNumberKey].filter(Boolean) as string[];
+      keys.forEach((key) => {
+        const existing = maintenanceByRoomKey.get(key) || [];
+        existing.push(item);
+        maintenanceByRoomKey.set(key, existing);
+      });
+    });
+    return sortedFilteredRoomReports
+      .filter((room: any) => room.maintenanceIssues > 0 || room.status === 'Maintenance')
+      .map((room: any) => {
+        const roomKeys = [room.room_id?.toString().trim(), room.room_number?.toString().trim()].filter(Boolean) as string[];
+        const roomMaintenance = Array.from(new Set(
+          roomKeys.flatMap((key) => maintenanceByRoomKey.get(key) || [])
+        ));
+        if (hasMaintenanceDateScope && roomMaintenance.length === 0 && room.status !== 'Maintenance') return null;
+        const sortedMaintenance = [...roomMaintenance].sort((left: any, right: any) => {
+          const leftDate = `${left?.reported_date || ''} ${left?.reported_time || ''}`.trim();
+          const rightDate = `${right?.reported_date || ''} ${right?.reported_time || ''}`.trim();
+          return rightDate.localeCompare(leftDate);
+        });
+        const latestIssue = sortedMaintenance[0];
+        const openIssues = roomMaintenance.filter((item: any) => item.status !== 'Completed').length;
+        const pendingIssues = roomMaintenance.filter((item: any) => item.status === 'Pending').length;
+        const inProgressIssues = roomMaintenance.filter((item: any) => item.status === 'In Progress').length;
+        const completedIssues = roomMaintenance.filter((item: any) => item.status === 'Completed').length;
+        const latestResolvedIssue = [...roomMaintenance]
+          .filter((item: any) => item.status === 'Completed' && item.resolved_date)
+          .sort((left: any, right: any) => (right?.resolved_date || '').localeCompare(left?.resolved_date || ''))[0];
+        return {
+          Room: room.room_number,
+          RoomName: getRoomNameDisplay(room),
+          Campus: room.campus || '',
+          Building: room.building,
+          Block: room.block || '',
+          Floor: getFloorName(room.floor_number),
+          Department: room.department,
+          School: room.school,
+          Type: getRoomTypeDisplay(room),
+          Layout: room.room_layout || 'Normal',
+          Capacity: room.capacity,
+          RoomStatus: room.status,
+          OpenIssues: openIssues || room.maintenanceIssues || 0,
+          PendingIssues: pendingIssues,
+          InProgressIssues: inProgressIssues,
+          CompletedIssues: completedIssues,
+          LatestIssue: latestIssue?.issue_type || latestIssue?.description || '-',
+          LatestIssueStatus: latestIssue?.status || (room.status === 'Maintenance' ? 'Maintenance' : '-'),
+          LatestReportedDate: latestIssue?.reported_date || '-',
+          LatestResolvedDate: latestResolvedIssue?.resolved_date || '-',
+          Utilization: `${room.utilization}%`,
+          ScheduledHours: room.scheduledHours,
+          BookedHours: room.bookedHours,
+          Flags: (room.flags || []).join(', '),
+        };
+      })
+      .filter(Boolean) as any[];
+  })();
+  const maintenanceOpenIssueTotal = maintenanceRoomReportRows.reduce((total: number, row: any) => total + Number(row.OpenIssues || 0), 0);
+  const maintenancePendingTotal = maintenanceRoomReportRows.reduce((total: number, row: any) => total + Number(row.PendingIssues || 0), 0);
+  const latestMaintenanceRow = [...maintenanceRoomReportRows]
+    .sort((left: any, right: any) => (right.LatestReportedDate || '').localeCompare(left.LatestReportedDate || ''))[0];
+  const categorySummaryCards = filters.reportType === 'category_room_list'
+    ? [
+        {
+          label: 'Rooms Listed',
+          value: `${categoryWiseRoomListRows.length}`,
+          detail: formatRoomMixSummary(categoryWiseRoomMix),
+        },
+        {
+          label: 'Unique Categories',
+          value: `${categoryWiseGroupSummary.length}`,
+        },
+        {
+          label: filters.roomCategoryValue ? 'Selected Category' : 'Top Category',
+          value: filters.roomCategoryValue || topCategoryGroup?.value || topReportCategoryGroup?.value || '-',
+        },
+        {
+          label: filters.roomCategoryValue ? 'Matching Rooms' : 'Largest Group',
+          value: `${filters.roomCategoryValue ? categoryWiseRoomListRows.length : (topCategoryGroup?.roomCount ?? topReportCategoryGroup?.roomCount ?? 0)}`,
+        },
+      ]
+      : filters.reportType === 'maintenance_impact'
+        ? [
+            {
+              label: 'Maintenance Rooms',
+              value: `${maintenanceRoomReportRows.length}`,
+              detail: formatRoomMixSummary(getRoomMixCounts(
+                sortedFilteredRoomReports.filter((room: any) => room.maintenanceIssues > 0 || room.status === 'Maintenance')
+              )),
+            },
+            {
+              label: 'Open Issues',
+              value: `${maintenanceOpenIssueTotal}`,
+            },
+            {
+              label: 'Pending Issues',
+              value: `${maintenancePendingTotal}`,
+            },
+            {
+              label: 'Latest Room',
+              value: latestMaintenanceRow?.Room || '-',
+            },
+          ]
+        : [
+            {
+              label: 'Rooms Analyzed',
+              value: `${filteredRoomReports.length}`,
+              detail: formatRoomMixSummary(filteredRoomMix),
+            },
+            {
+              label: 'Avg Utilization',
+              value: `${avgFilteredUtilization}%`,
+            },
+            {
+              label: 'Most Used',
+              value: mostUsedRoom?.room_number || '-',
+            },
+            {
+              label: 'Least Used',
+              value: leastUsedRoom?.room_number || '-',
+            },
+          ];
   const parseTimeWindowLabel = (value?: string) => {
     if (!value || !value.includes('-')) return null;
     const [startLabel, endLabel] = value.split('-').map((item) => item.trim());
@@ -11872,9 +11986,9 @@ function ReportGeneration() {
       maintenance_impact: {
         chart: 'Bar Chart',
         xAxis: 'Room',
-        yAxis: 'MaintenanceIssues',
-        sortBy: 'MaintenanceIssues (desc)',
-        note: 'Surfaces rooms with maintenance burden.',
+        yAxis: 'OpenIssues',
+        sortBy: 'OpenIssues (desc)',
+        note: 'Surfaces rooms with open maintenance burden and latest issue status.',
       },
       underused: {
         chart: 'Horizontal Bar',
@@ -12981,9 +13095,9 @@ function ReportGeneration() {
         })),
       },
       maintenance_impact: {
-        fileName: 'maintenance-impact-report.xlsx',
-        sheetName: 'Maintenance Impact',
-        rows: roomDetailRows,
+        fileName: 'maintenance-rooms-report.xlsx',
+        sheetName: 'Maintenance Rooms',
+        rows: maintenanceRoomReportRows,
       },
       underused: {
         fileName: 'underused-rooms-report.xlsx',
@@ -13932,6 +14046,52 @@ function ReportGeneration() {
                   {bookingStatusSummary.length === 0 && (
                     <p className="text-sm text-slate-400 italic">No booking request activity matches the selected filters.</p>
                   )}
+                </div>
+              </div>
+            )}
+
+            {filters.reportType === 'maintenance_impact' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-2">Maintenance Rooms Report</h3>
+                <p className="text-sm text-slate-500 mb-6">Lists rooms with open maintenance issues or maintenance status, along with the latest issue timeline and current utilization context.</p>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        {['Room', 'Building', 'Floor', 'Department', 'Type', 'Room Status', 'Open Issues', 'Pending', 'In Progress', 'Completed', 'Latest Issue', 'Latest Status', 'Latest Reported', 'Latest Resolved', 'Utilization'].map((column) => (
+                          <th key={column} className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">{column}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {maintenanceRoomReportRows.map((item: any) => (
+                        <tr key={`${item.Room}-${item.LatestIssue}-${item.LatestReportedDate}`} className="hover:bg-slate-50/50">
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.Room}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Building}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Floor}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Department}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Type}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.RoomStatus}</td>
+                          <td className="py-4 text-sm font-bold text-rose-600">{item.OpenIssues}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.PendingIssues}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.InProgressIssues}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.CompletedIssues}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.LatestIssue}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.LatestIssueStatus}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.LatestReportedDate !== '-' ? formatDisplayDate(item.LatestReportedDate) : '-'}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.LatestResolvedDate !== '-' ? formatDisplayDate(item.LatestResolvedDate) : '-'}</td>
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.Utilization}</td>
+                        </tr>
+                      ))}
+                      {maintenanceRoomReportRows.length === 0 && (
+                        <tr>
+                          <td colSpan={15} className="py-8 text-center text-sm text-slate-400 italic">
+                            No maintenance rooms match the selected filters.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             )}
