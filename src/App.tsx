@@ -576,6 +576,7 @@ const doesAllocationMatchCalendarContext = (allocation: any, calendar: any) => {
 
   if (calendar?.program && normalizeAcademicContextText(allocation?.program) !== normalizeAcademicContextText(calendar?.program)) return false;
   if (calendar?.batch && normalizeAcademicContextText(allocation?.batch) !== normalizeAcademicContextText(calendar?.batch)) return false;
+  if (calendar?.specialization && normalizeAcademicContextText(allocation?.specialization) !== normalizeAcademicContextText(calendar?.specialization)) return false;
   if (calendar?.academic_year && normalizeAcademicContextText(allocation?.academic_year) !== normalizeAcademicContextText(calendar?.academic_year)) return false;
 
   const allocationYear = normalizeYearOfStudyValue(allocation?.year_of_study, '');
@@ -596,7 +597,7 @@ const doesScheduleMatchCalendarOverride = (schedule: any, calendar: any, batchRo
   if (calendarYear && scheduleYear && calendarYear !== scheduleYear) return false;
 
   const calendarHasSpecificContext = Boolean(
-    calendar?.program || calendar?.batch || calendar?.academic_year || calendar?.year_of_study,
+    calendar?.program || calendar?.batch || calendar?.specialization || calendar?.academic_year || calendar?.year_of_study,
   );
   if (!calendarHasSpecificContext) return true;
 
@@ -1397,6 +1398,7 @@ const findCampusForImport = (campuses: any[], row: any) => {
 const SEMESTER_OPTIONS = ['Odd', 'Even'];
 const SEMESTER_TYPE_LABEL = 'Semester Type';
 const EXACT_SEMESTER_LABEL = 'Exact Semester';
+const SPECIALIZATION_BRANCH_LABEL = 'Specialization / Branch';
 const ACADEMIC_CALENDAR_EVENT_TYPES = ['Semester Period', 'Class Work', 'Examinations', 'Holiday', 'Vacation', 'Orientation', 'Registration', 'Project Review', 'Internship'];
 const ALLOCATION_STATUS_OPTIONS = ['Planned', 'Active', 'Released'];
 const BATCH_ALLOCATION_MODE_OPTIONS = ['Shared', 'Exclusive'];
@@ -1780,7 +1782,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   'Timing Profile': {
-    headers: ['Profile ID', 'Profile Name', 'School', 'Department', 'Program', 'Academic Year', 'Year / Semester', 'Exact Semester', 'Section', 'Working Days', 'Slot Timings', 'Notes'],
+    headers: ['Profile ID', 'Profile Name', 'School', 'Department', 'Program', 'Specialization / Branch', 'Academic Year', 'Year / Semester', 'Exact Semester', 'Section', 'Working Days', 'Slot Timings', 'Notes'],
     exampleRows: [
       {
         'Profile ID': 'TP-DEFAULT-CAMPUS',
@@ -1816,6 +1818,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         School: 'School of Computing',
         Department: 'Computer Science and Engineering',
         Program: 'B.Tech',
+        'Specialization / Branch': 'AI & DS',
         'Academic Year': '2025-26',
         'Year / Semester': '',
         'Exact Semester': '',
@@ -1849,7 +1852,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   'Academic Calendar': {
-    headers: ['Calendar ID', 'School', 'Department', 'Program', 'Batch', 'Academic Year', 'Semester Type', 'Year / Semester', 'Timing Profile', 'Event Type', 'Title', 'Start Date', 'End Date', 'Notes'],
+    headers: ['Calendar ID', 'School', 'Department', 'Program', 'Batch', 'Specialization / Branch', 'Academic Year', 'Semester Type', 'Year / Semester', 'Timing Profile', 'Event Type', 'Title', 'Start Date', 'End Date', 'Notes'],
     exampleRows: [
       {
         'Calendar ID': 'CAL-MTECH2-2025-26',
@@ -1873,6 +1876,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Department: 'Computer Science and Engineering',
         Program: 'B.Tech',
         Batch: '2023-2027',
+        'Specialization / Branch': 'AI & DS',
         'Academic Year': '2025-26',
         'Semester Type': 'Even',
         'Year / Semester': '3rd Year - 6th Semester',
@@ -1919,19 +1923,19 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     instructions: [
       `Allowed Event Type values: ${ACADEMIC_CALENDAR_EVENT_TYPES.join(', ')}.`,
       `Allowed Program values include: ${PROGRAM_OPTIONS.join(', ')}.`,
-      'Match the form order exactly: School -> Department -> Program -> Batch -> Academic Year -> Semester Type -> Year / Semester -> Timing Profile.',
+      `Match the form order exactly: School -> Department -> Program -> Batch -> ${SPECIALIZATION_BRANCH_LABEL} -> Academic Year -> Semester Type -> Year / Semester -> Timing Profile.`,
       'Semester Type accepts only Odd or Even. Keep the exact semester number inside Year / Semester.',
       'For Year / Semester, use values like 1st Year - 1st Semester, 1st Year - 2nd Semester, 2nd Year - 3rd Semester, 2nd Year - 4th Semester, and so on.',
       'Timing Profile is optional but recommended whenever a batch or semester follows a defined slot pattern. Use either the Profile ID or Profile Name from Timing Profile Management.',
       'Use one row per academic period. The app automatically marks rows as Upcoming, Active, or Completed from the date range.',
       'Use Event Type = Examinations for CIAT-I, CIAT-II, semester-end exams, or any exam window where normal class timetable occupancy must be ignored.',
       'When an Examinations row is active for a department and semester, Timetable View, Room Bookings vacancy checks, and Digital Twin suppress normal class schedules for those dates.',
-      'If Program, Batch, Academic Year, or Year / Semester are also filled and matching Batch Room Allocations exist, the exam suppression is narrowed safely to that exact academic context instead of blocking every room in the department.',
+      `If Program, Batch, ${SPECIALIZATION_BRANCH_LABEL}, Academic Year, or Year / Semester are also filled and matching Batch Room Allocations exist, the exam suppression is narrowed safely to that exact academic context instead of blocking every room in the department.`,
       'Completed calendars can be reused as history; do not delete them unless they were imported by mistake.',
     ],
   },
   'Batch Room Allocation': {
-    headers: ['Allocation ID', 'Academic Calendar', 'Department', 'Program', 'Batch', 'Academic Year', 'Semester Type', 'Year / Semester', 'Building', 'Block', 'Floor', 'Room', 'Allocation Mode', 'Room Type', 'Required Capacity', 'Start Date', 'End Date', 'Notes'],
+    headers: ['Allocation ID', 'Academic Calendar', 'Department', 'Program', 'Batch', 'Specialization / Branch', 'Academic Year', 'Semester Type', 'Year / Semester', 'Building', 'Block', 'Floor', 'Room', 'Allocation Mode', 'Room Type', 'Required Capacity', 'Start Date', 'End Date', 'Notes'],
     exampleRows: [
       {
         'Allocation ID': 'ALLOC-MTECH2-322',
@@ -1939,6 +1943,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Department: 'Computer Science and Engineering',
         Program: 'M.Tech',
         Batch: '2025-2027',
+        'Specialization / Branch': '',
         'Academic Year': '2025-26',
         'Semester Type': 'Even',
         'Year / Semester': '2nd Year - 4th Semester',
@@ -1959,6 +1964,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Department: 'Computer Science and Engineering',
         Program: 'B.Tech',
         Batch: '2023-2027',
+        'Specialization / Branch': 'AI & DS',
         'Academic Year': '2025-26',
         'Semester Type': 'Even',
         'Year / Semester': '3rd Year - 6th Semester',
@@ -1979,6 +1985,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Department: 'Electronics and Communication Engineering',
         Program: 'B.Tech',
         Batch: '2024-2028',
+        'Specialization / Branch': '',
         'Academic Year': '2025-26',
         'Semester Type': 'Even',
         'Year / Semester': '2nd Year - 4th Semester',
@@ -2246,13 +2253,15 @@ const normalizeTimingProfileWorkingDays = (value: unknown) => {
 const getTimingProfileDisplayLabel = (profile: any) => {
   if (!profile) return 'Timing profile not set';
   const primary = profile.profile_name || profile.name || profile.profile_id || 'Timing Profile';
-  return profile.profile_id ? `${primary} (${profile.profile_id})` : primary;
+  const specializationSuffix = profile.specialization ? ` - ${profile.specialization}` : '';
+  return profile.profile_id ? `${primary}${specializationSuffix} (${profile.profile_id})` : `${primary}${specializationSuffix}`;
 };
 
 const getTimingProfileSpecificityScore = (profile: any) => [
   profile?.school_id,
   profile?.department_id,
   profile?.program,
+  profile?.specialization,
   profile?.academic_year,
   profile?.year_of_study,
   profile?.semester,
@@ -2264,6 +2273,7 @@ const timingProfileMatchesContext = (profile: any, context: any) => {
   if (profile.school_id && !idsMatch(profile.school_id, context.school_id)) return false;
   if (profile.department_id && !idsMatch(profile.department_id, context.department_id)) return false;
   if (profile.program && normalizeProgramValue(profile.program) !== normalizeProgramValue(context.program)) return false;
+  if (profile.specialization && normalizeLookupValue(profile.specialization) !== normalizeLookupValue(context.specialization)) return false;
   if (profile.academic_year && normalizeLookupValue(profile.academic_year) !== normalizeLookupValue(context.academic_year)) return false;
   if (profile.year_of_study && normalizeYearOfStudyValue(profile.year_of_study, '') !== normalizeYearOfStudyValue(context.year_of_study, '')) return false;
   if (profile.semester && normalizeExactSemesterValue(profile.semester, profile.year_of_study, profile.semester || '') !== normalizeExactSemesterValue(context.semester, context.year_of_study, '')) return false;
@@ -2281,6 +2291,7 @@ const academicCalendarMatchesTimingContext = (calendar: any, context: any, activ
   if (calendar.school_id && context.school_id && !idsMatch(calendar.school_id, context.school_id)) return false;
   if (calendar.department_id && context.department_id && !idsMatch(calendar.department_id, context.department_id)) return false;
   if (calendar.program && context.program && normalizeProgramValue(calendar.program) !== normalizeProgramValue(context.program)) return false;
+  if (calendar.specialization && normalizeLookupValue(calendar.specialization) !== normalizeLookupValue(context.specialization)) return false;
   if (calendar.academic_year && context.academic_year && normalizeLookupValue(calendar.academic_year) !== normalizeLookupValue(context.academic_year)) return false;
   if (calendar.year_of_study && context.year_of_study && normalizeYearOfStudyValue(calendar.year_of_study, '') !== normalizeYearOfStudyValue(context.year_of_study, '')) return false;
   if (calendar.semester && context.semester && normalizeSemesterValue(calendar.semester, '') !== normalizeSemesterValue(context.semester, '')) return false;
@@ -5931,6 +5942,7 @@ function TimingProfileManagement() {
       render: (item: any) => departments.find(department => idsMatch(department.id, item.department_id))?.name || '-',
     },
     { key: 'program', label: 'Program', type: 'select', required: false, options: PROGRAM_OPTIONS },
+    { key: 'specialization', label: SPECIALIZATION_BRANCH_LABEL, required: false },
     { key: 'academic_year', label: 'Academic Year', required: false },
     {
       key: 'year_of_study',
@@ -5965,6 +5977,7 @@ function TimingProfileManagement() {
       school_id: matchingDepartment?.school_id || nextSchoolId || null,
       department_id: nextDepartmentId || null,
       program: normalizeProgramValue(data.program),
+      specialization: data.specialization?.toString().trim() || null,
       academic_year: data.academic_year?.toString().trim() || null,
       year_of_study: normalizeYearOfStudyValue(data.year_of_study),
       semester: normalizeExactSemesterValue(data.semester, data.year_of_study, data.semester?.toString().trim() || ''),
@@ -6002,6 +6015,7 @@ function TimingProfileManagement() {
         school_id: department?.school_id || school?.id || null,
         department_id: department?.id || null,
         program: normalizeProgramValue(row['Program']),
+        specialization: getImportValue(row, [SPECIALIZATION_BRANCH_LABEL, 'Specialization', 'Branch'])?.toString().trim() || null,
         academic_year: row['Academic Year']?.toString() || null,
         year_of_study: normalizeYearOfStudyValue(getImportValue(row, ['Year / Semester', 'Year of Study', 'Year'])),
         semester: normalizeExactSemesterValue(getImportValue(row, [EXACT_SEMESTER_LABEL, 'Semester']), getImportValue(row, ['Year / Semester', 'Year of Study', 'Year']), ''),
@@ -6071,6 +6085,7 @@ function AcademicCalendarManagement() {
     },
     { key: 'program', label: 'Program', type: 'select', options: PROGRAM_OPTIONS },
     { key: 'batch', label: 'Batch' },
+    { key: 'specialization', label: SPECIALIZATION_BRANCH_LABEL, required: false },
     { key: 'academic_year', label: 'Academic Year' },
     { key: 'semester', label: SEMESTER_TYPE_LABEL, type: 'select', resetKeys: ['year_of_study'], options: SEMESTER_OPTIONS },
     {
@@ -6088,7 +6103,8 @@ function AcademicCalendarManagement() {
       options: (formData: any) => timingProfiles
         .filter(profile =>
           (!formData.school_id || !profile.school_id || idsMatch(profile.school_id, formData.school_id)) &&
-          (!formData.department_id || !profile.department_id || idsMatch(profile.department_id, formData.department_id))
+          (!formData.department_id || !profile.department_id || idsMatch(profile.department_id, formData.department_id)) &&
+          (!profile.specialization || normalizeLookupValue(profile.specialization) === normalizeLookupValue(formData.specialization))
         )
         .map(profile => ({ value: profile.id, label: getTimingProfileDisplayLabel(profile) })),
       render: (item: any) => getTimingProfileDisplayLabel(timingProfiles.find(profile => idsMatch(profile.id, item.timing_profile_id))) || '-',
@@ -6131,6 +6147,7 @@ function AcademicCalendarManagement() {
       year_of_study: normalizeYearOfStudyValue(data.year_of_study),
       timing_profile_id: data.timing_profile_id || null,
       title: data.title?.toString().trim() || data.event_type,
+      specialization: data.specialization?.toString().trim() || null,
       status: getRangeLifecycleStatus(data.start_date, data.end_date, 'Completed'),
     };
   };
@@ -6142,6 +6159,9 @@ function AcademicCalendarManagement() {
 
     const startCompare = (left.start_date || '').localeCompare(right.start_date || '');
     if (startCompare !== 0) return startCompare;
+
+    const specializationCompare = compareNaturalSortValues(left.specialization, right.specialization);
+    if (specializationCompare !== 0) return specializationCompare;
 
     const endCompare = (left.end_date || '').localeCompare(right.end_date || '');
     if (endCompare !== 0) return endCompare;
@@ -6208,6 +6228,7 @@ function AcademicCalendarManagement() {
         department_id: department?.id,
         program: normalizeProgramValue(row['Program']),
         batch: row['Batch'],
+        specialization: getImportValue(row, [SPECIALIZATION_BRANCH_LABEL, 'Specialization', 'Branch'])?.toString().trim() || null,
         academic_year: row['Academic Year'],
         year_of_study: normalizeYearOfStudyValue(getImportValue(row, ['Year / Semester', 'Year of Study'])),
         semester: normalizeSemesterValue(getImportValue(row, [SEMESTER_TYPE_LABEL, 'Semester']), ''),
@@ -6223,7 +6244,7 @@ function AcademicCalendarManagement() {
       try {
         const savedRecord: any = await upsertImportRecord('/api/academic_calendars', payload, [
           ['calendar_id'],
-          ['department_id', 'program', 'batch', 'year_of_study', 'semester', 'event_type', 'title', 'start_date', 'end_date'],
+          ['department_id', 'program', 'batch', 'specialization', 'year_of_study', 'semester', 'event_type', 'title', 'start_date', 'end_date'],
         ]);
         if (savedRecord?.__importAction === 'updated') {
           updated += 1;
@@ -6413,7 +6434,7 @@ function BatchRoomAllocationManagement() {
 
   const getCalendarLabel = (calendar: any) => {
     const studyPeriod = getStudyPeriodDisplay(calendar.year_of_study, calendar.semester, calendar.program);
-    const programLabel = [calendar.program || 'Program', calendar.batch || '', studyPeriod !== '-' ? studyPeriod : ''].filter(Boolean).join(' - ');
+    const programLabel = [calendar.program || 'Program', calendar.batch || '', calendar.specialization || '', studyPeriod !== '-' ? studyPeriod : ''].filter(Boolean).join(' - ');
     return `${calendar.title} - ${programLabel}`.trim() + ` (${formatDisplayDate(calendar.start_date)} to ${formatDisplayDate(calendar.end_date)})`;
   };
 
@@ -6482,6 +6503,7 @@ function BatchRoomAllocationManagement() {
           department_id: calendar.department_id?.toString() || nextData.department_id,
           program: calendar.program || nextData.program,
           batch: calendar.batch || nextData.batch,
+          specialization: calendar.specialization || nextData.specialization,
           academic_year: calendar.academic_year || nextData.academic_year,
           semester: calendar.semester || nextData.semester,
           year_of_study: calendar.year_of_study || nextData.year_of_study,
@@ -6507,6 +6529,7 @@ function BatchRoomAllocationManagement() {
     },
     { key: 'program', label: 'Program', type: 'select', options: PROGRAM_OPTIONS },
     { key: 'batch', label: 'Batch' },
+    { key: 'specialization', label: SPECIALIZATION_BRANCH_LABEL, required: false },
     { key: 'academic_year', label: 'Academic Year' },
     { key: 'semester', label: SEMESTER_TYPE_LABEL, type: 'select', resetKeys: ['year_of_study'], options: SEMESTER_OPTIONS },
     {
@@ -6619,6 +6642,7 @@ function BatchRoomAllocationManagement() {
         room_id: room?.id,
         program: normalizeProgramValue(row['Program']) || calendar?.program,
         batch: row['Batch'] || calendar?.batch,
+        specialization: getImportValue(row, [SPECIALIZATION_BRANCH_LABEL, 'Specialization', 'Branch'])?.toString().trim() || calendar?.specialization || null,
         academic_year: row['Academic Year'] || calendar?.academic_year,
         year_of_study: normalizeYearOfStudyValue(getImportValue(row, ['Year / Semester', 'Year of Study'])) || calendar?.year_of_study,
         semester: normalizeSemesterValue(getImportValue(row, [SEMESTER_TYPE_LABEL, 'Semester']), '') || calendar?.semester,
@@ -6634,7 +6658,7 @@ function BatchRoomAllocationManagement() {
       if (!payload.allocation_id || !payload.department_id || !payload.room_id || !payload.start_date || !payload.end_date || payload.capacity <= 0) continue;
       await upsertImportRecord('/api/batch_room_allocations', payload, [
         ['allocation_id'],
-        ['room_id', 'department_id', 'program', 'batch', 'year_of_study', 'semester', 'start_date', 'end_date'],
+        ['room_id', 'department_id', 'program', 'batch', 'specialization', 'year_of_study', 'semester', 'start_date', 'end_date'],
       ]);
     }
   };
@@ -6666,6 +6690,7 @@ function BatchRoomAllocationManagement() {
 
     payload.school_id = department.school_id;
     payload.program = normalizeProgramValue(payload.program);
+    payload.specialization = payload.specialization?.toString().trim() || null;
     payload.year_of_study = normalizeYearOfStudyValue(payload.year_of_study);
     payload.allocation_mode = BATCH_ALLOCATION_MODE_OPTIONS.includes(payload.allocation_mode) ? payload.allocation_mode : 'Shared';
     payload.room_type = room.room_type;

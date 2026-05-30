@@ -194,6 +194,7 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       school_id INTEGER,
       department_id INTEGER,
       program TEXT,
+      specialization TEXT,
       academic_year TEXT,
       year_of_study TEXT,
       semester TEXT,
@@ -212,6 +213,7 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       department_id INTEGER NOT NULL,
       program TEXT,
       batch TEXT,
+      specialization TEXT,
       academic_year TEXT,
       year_of_study TEXT,
       semester TEXT,
@@ -236,6 +238,7 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       room_id INTEGER NOT NULL,
       program TEXT,
       batch TEXT,
+      specialization TEXT,
       academic_year TEXT,
       year_of_study TEXT,
       semester TEXT,
@@ -400,6 +403,9 @@ await ensureColumn("users", "access_paths", "TEXT");
 await ensureColumn("users", "force_password_change", "INTEGER DEFAULT 0");
 await ensureColumn("batch_room_allocations", "allocation_mode", "TEXT DEFAULT 'Shared'");
 await ensureColumn("academic_calendars", "timing_profile_id", "INTEGER");
+await ensureColumn("timing_profiles", "specialization", "TEXT");
+await ensureColumn("academic_calendars", "specialization", "TEXT");
+await ensureColumn("batch_room_allocations", "specialization", "TEXT");
 
 const ROOM_TYPE_MATCH_ORDER = [
   "Admin Office",
@@ -882,6 +888,7 @@ const normalizeTimingProfilePayload = async (payload: any) => {
   nextPayload.profile_id = nextPayload.profile_id?.toString().trim() || null;
   nextPayload.profile_name = nextPayload.profile_name?.toString().trim() || nextPayload.profile_id || null;
   nextPayload.program = nextPayload.program?.toString().trim() || null;
+  nextPayload.specialization = nextPayload.specialization?.toString().trim() || null;
   nextPayload.academic_year = nextPayload.academic_year?.toString().trim() || null;
   nextPayload.year_of_study = nextPayload.year_of_study?.toString().trim() || null;
   nextPayload.semester = nextPayload.semester?.toString().trim() || null;
@@ -925,7 +932,7 @@ const normalizeAcademicCalendarPayload = async (payload: any) => {
 
   const timingProfileId = nextPayload.timing_profile_id ? Number(nextPayload.timing_profile_id) : null;
   const timingProfile = timingProfileId
-    ? await db.prepare("SELECT id, school_id, department_id FROM timing_profiles WHERE id = ?").get(timingProfileId) as any
+    ? await db.prepare("SELECT id, school_id, department_id, specialization FROM timing_profiles WHERE id = ?").get(timingProfileId) as any
     : null;
   if (timingProfileId && !timingProfile) {
     throw new Error("Please select a valid timing profile.");
@@ -936,11 +943,15 @@ const normalizeAcademicCalendarPayload = async (payload: any) => {
   if (timingProfile?.school_id && timingProfile.school_id.toString() !== department.school_id.toString()) {
     throw new Error("Selected timing profile does not belong to the selected school.");
   }
+  if (timingProfile?.specialization && normalizeAcademicContextText(timingProfile.specialization) !== normalizeAcademicContextText(nextPayload.specialization)) {
+    throw new Error("Selected timing profile does not belong to the selected specialization / branch.");
+  }
 
   nextPayload.department_id = department.id;
   nextPayload.school_id = department.school_id;
   nextPayload.program = nextPayload.program?.toString().trim() || null;
   nextPayload.batch = nextPayload.batch?.toString().trim() || null;
+  nextPayload.specialization = nextPayload.specialization?.toString().trim() || timingProfile?.specialization || null;
   nextPayload.academic_year = nextPayload.academic_year?.toString().trim() || null;
   nextPayload.year_of_study = nextPayload.year_of_study?.toString().trim() || null;
   nextPayload.semester = nextPayload.semester?.toString().trim() || null;
@@ -959,7 +970,7 @@ const normalizeBatchRoomAllocationPayload = async (payload: any) => {
   const calendarId = nextPayload.academic_calendar_id ? Number(nextPayload.academic_calendar_id) : null;
   const linkedCalendar = calendarId
     ? await db.prepare(`
-      SELECT id, school_id, department_id, program, batch, academic_year, year_of_study, semester, start_date, end_date
+      SELECT id, school_id, department_id, program, batch, specialization, academic_year, year_of_study, semester, start_date, end_date
       FROM academic_calendars
       WHERE id = ?
     `).get(calendarId) as any
@@ -1000,6 +1011,7 @@ const normalizeBatchRoomAllocationPayload = async (payload: any) => {
   nextPayload.room_id = room.id;
   nextPayload.program = nextPayload.program?.toString().trim() || linkedCalendar?.program || null;
   nextPayload.batch = nextPayload.batch?.toString().trim() || linkedCalendar?.batch || null;
+  nextPayload.specialization = nextPayload.specialization?.toString().trim() || linkedCalendar?.specialization || null;
   nextPayload.academic_year = nextPayload.academic_year?.toString().trim() || linkedCalendar?.academic_year || null;
   nextPayload.year_of_study = nextPayload.year_of_study?.toString().trim() || linkedCalendar?.year_of_study || null;
   nextPayload.semester = nextPayload.semester?.toString().trim() || linkedCalendar?.semester || null;
@@ -1146,6 +1158,7 @@ const allocationMatchesCalendarContext = (allocation: any, calendar: any) => {
 
   if (calendar?.program && normalizeAcademicContextText(allocation.program) !== normalizeAcademicContextText(calendar.program)) return false;
   if (calendar?.batch && normalizeAcademicContextText(allocation.batch) !== normalizeAcademicContextText(calendar.batch)) return false;
+  if (calendar?.specialization && normalizeAcademicContextText(allocation.specialization) !== normalizeAcademicContextText(calendar.specialization)) return false;
   if (calendar?.academic_year && normalizeAcademicContextText(allocation.academic_year) !== normalizeAcademicContextText(calendar.academic_year)) return false;
 
   const allocationYear = normalizeYearOfStudyKey(allocation.year_of_study);
@@ -1168,7 +1181,7 @@ const scheduleMatchesCalendarOverride = (schedule: any, calendar: any, activeBat
   if (calendarYear && scheduleYear && calendarYear !== scheduleYear) return false;
 
   const calendarHasSpecificContext = Boolean(
-    calendar?.program || calendar?.batch || calendar?.academic_year || calendar?.year_of_study,
+    calendar?.program || calendar?.batch || calendar?.specialization || calendar?.academic_year || calendar?.year_of_study,
   );
   if (!calendarHasSpecificContext) return true;
 
@@ -1198,7 +1211,7 @@ const filterSchedulesByAcademicCalendar = async (schedules: any[], date: string)
   if (!normalizedDate || !Array.isArray(schedules) || schedules.length === 0) return schedules;
 
   const activeExamCalendars = await db.prepare(`
-    SELECT id, department_id, program, batch, academic_year, year_of_study, semester, event_type, title, start_date, end_date
+    SELECT id, department_id, program, batch, specialization, academic_year, year_of_study, semester, event_type, title, start_date, end_date
     FROM academic_calendars
     WHERE start_date <= ? AND end_date >= ?
   `).all(normalizedDate, normalizedDate) as any[];
@@ -1207,7 +1220,7 @@ const filterSchedulesByAcademicCalendar = async (schedules: any[], date: string)
   if (examinationCalendars.length === 0) return schedules;
 
   const activeBatchAllocations = await db.prepare(`
-    SELECT id, academic_calendar_id, room_id, department_id, program, batch, academic_year, year_of_study, semester, start_date, end_date, status
+    SELECT id, academic_calendar_id, room_id, department_id, program, batch, specialization, academic_year, year_of_study, semester, start_date, end_date, status
     FROM batch_room_allocations
     WHERE start_date <= ? AND end_date >= ? AND status != ?
   `).all(normalizedDate, normalizedDate, "Released") as any[];
@@ -2028,15 +2041,15 @@ const duplicateRules: Record<string, Array<{ fields: string[]; label: string }>>
   ],
   academic_calendars: [
     { fields: ["calendar_id"], label: "Calendar ID" },
-    { fields: ["department_id", "program", "batch", "year_of_study", "semester", "event_type", "title", "start_date", "end_date"], label: "Academic calendar period" },
+    { fields: ["department_id", "program", "batch", "specialization", "year_of_study", "semester", "event_type", "title", "start_date", "end_date"], label: "Academic calendar period" },
   ],
   timing_profiles: [
     { fields: ["profile_id"], label: "Timing Profile ID" },
-    { fields: ["department_id", "program", "academic_year", "year_of_study", "semester", "section", "slot_pattern"], label: "Timing profile context" },
+    { fields: ["department_id", "program", "specialization", "academic_year", "year_of_study", "semester", "section", "slot_pattern"], label: "Timing profile context" },
   ],
   batch_room_allocations: [
     { fields: ["allocation_id"], label: "Allocation ID" },
-    { fields: ["room_id", "department_id", "program", "batch", "year_of_study", "semester", "start_date", "end_date"], label: "Batch room allocation period" },
+    { fields: ["room_id", "department_id", "program", "batch", "specialization", "year_of_study", "semester", "start_date", "end_date"], label: "Batch room allocation period" },
   ],
   equipment: [
     { fields: ["equipment_id"], label: "Equipment ID" },
