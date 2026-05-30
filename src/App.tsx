@@ -1325,6 +1325,28 @@ const apiJson = async (url: string, options?: RequestInit) => {
   return data;
 };
 
+type ExcelWorkbook = import('exceljs').Workbook;
+type ExcelWorksheet = import('exceljs').Worksheet;
+type StyledWorkbookSheet = {
+  name: string;
+  rows: any[][];
+  widths?: number[];
+  headerRowCount?: number;
+};
+
+const createExcelWorkbook = async () => {
+  const module = await import('exceljs');
+  const ExcelJSRuntime = (module as any).default || module;
+  return new ExcelJSRuntime.Workbook() as ExcelWorkbook;
+};
+
+const toExcelCellValue = (value: unknown) => {
+  if (value == null) return '';
+  if (Array.isArray(value)) return value.join(', ');
+  if (typeof value === 'object') return JSON.stringify(value);
+  return value as string | number | boolean;
+};
+
 const estimateWorkbookColumnWidths = (rows: any[][]) => {
   const columnCount = rows.reduce((max, row) => Math.max(max, row.length), 0);
   return Array.from({ length: columnCount }, (_, index) => {
@@ -1337,37 +1359,94 @@ const estimateWorkbookColumnWidths = (rows: any[][]) => {
   });
 };
 
-const downloadWorkbookViaOpenPyxl = async (
-  fileName: string,
-  sheets: Array<{ name: string; rows: any[][]; widths?: number[] }>,
-) => {
-  const response = await fetch('/api/excel/render', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      fileName,
-      sheets: sheets.map(sheet => ({
-        ...sheet,
-        widths: sheet.widths?.length ? sheet.widths : estimateWorkbookColumnWidths(sheet.rows),
-      })),
-    }),
-  });
+const sanitizeWorkbookSheetName = (value: string) => {
+  const cleaned = value.replace(/[\\/?*[\]:]/g, '').trim();
+  return (cleaned || 'Sheet').slice(0, 31);
+};
 
-  if (!response.ok) {
-    const errorPayload = await response.json().catch(() => ({}));
-    throw new Error(errorPayload?.error || 'openpyxl workbook rendering failed');
+const getUniqueWorkbookSheetName = (workbook: ExcelWorkbook, value: string) => {
+  const baseName = sanitizeWorkbookSheetName(value);
+  let candidate = baseName;
+  let index = 2;
+  while (workbook.getWorksheet(candidate)) {
+    const suffix = ` ${index}`;
+    candidate = `${baseName.slice(0, Math.max(1, 31 - suffix.length))}${suffix}`;
+    index += 1;
   }
+  return candidate;
+};
 
-  const blob = await response.blob();
-  const objectUrl = URL.createObjectURL(blob);
+const applyExcelHeaderStyle = (worksheet: ExcelWorksheet) => {
+  const headerRow = worksheet.getRow(1);
+  headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F172A' } };
+  headerRow.alignment = { vertical: 'middle', wrapText: true };
+  headerRow.height = 22;
+  worksheet.views = [{ state: 'frozen', ySplit: 1 }];
+};
+
+const applyExcelDataRowStyle = (worksheet: ExcelWorksheet, fromRow = 2) => {
+  worksheet.eachRow((row, rowNumber) => {
+    if (rowNumber < fromRow) return;
+    row.alignment = { vertical: 'top', wrapText: true };
+  });
+};
+
+const appendExcelMatrixSheet = (
+  workbook: ExcelWorkbook,
+  sheet: StyledWorkbookSheet,
+) => {
+  const worksheet = workbook.addWorksheet(getUniqueWorkbookSheetName(workbook, sheet.name));
+  const safeRows = Array.isArray(sheet.rows) ? sheet.rows : [];
+  const headerRowCount = Math.max(sheet.headerRowCount ?? 1, 0);
+  if (safeRows.length === 0) {
+    worksheet.addRow(['No data available']);
+    applyExcelHeaderStyle(worksheet);
+    worksheet.getColumn(1).width = 24;
+    return worksheet;
+  }
+  safeRows.forEach((row) => {
+    worksheet.addRow((Array.isArray(row) ? row : []).map((value) => toExcelCellValue(value)));
+  });
+  if (headerRowCount > 0) {
+    applyExcelHeaderStyle(worksheet);
+    for (let rowIndex = 2; rowIndex <= headerRowCount; rowIndex += 1) {
+      const row = worksheet.getRow(rowIndex);
+      row.font = { bold: true, color: { argb: 'FF0F172A' } };
+      row.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } };
+      row.alignment = { vertical: 'middle', wrapText: true };
+    }
+  }
+  const widths = sheet.widths?.length ? sheet.widths : estimateWorkbookColumnWidths(safeRows);
+  widths.forEach((width, index) => {
+    worksheet.getColumn(index + 1).width = Math.min(Math.max(width || 12, 12), 42);
+  });
+  applyExcelDataRowStyle(worksheet, Math.max(headerRowCount + 1, 2));
+  return worksheet;
+};
+
+const saveExcelWorkbook = async (workbook: ExcelWorkbook, fileName: string) => {
+  workbook.creator = 'MBU SmartCampus AI';
+  workbook.created = new Date();
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
-  anchor.href = objectUrl;
+  anchor.href = url;
   anchor.download = fileName;
-  document.body.appendChild(anchor);
   anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(objectUrl);
+  URL.revokeObjectURL(url);
+};
+
+const exportStyledWorkbook = async (
+  fileName: string,
+  sheets: StyledWorkbookSheet[],
+) => {
+  const workbook = await createExcelWorkbook();
+  sheets.forEach((sheet) => appendExcelMatrixSheet(workbook, sheet));
+  await saveExcelWorkbook(workbook, fileName);
 };
 
 const upsertImportRecord = async (apiPath: string, payload: any, uniqueFieldGroups: string[][]) => {
@@ -4050,19 +4129,10 @@ function GenericCRUD({
       ['Keep the header row unchanged. Replace or delete the example row(s) before importing the file.'],
       ...((templateConfig?.instructions || []).map((instruction) => [instruction])),
     ];
-    try {
-      await downloadWorkbookViaOpenPyxl(`${type}_Template.xlsx`, [
-        { name: 'Template', rows: templateRows },
-        { name: 'Instructions', rows: instructionRows },
-      ]);
-    } catch {
-      const ws = XLSX.utils.aoa_to_sheet(templateRows);
-      const noteSheet = XLSX.utils.aoa_to_sheet(instructionRows);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "Template");
-      XLSX.utils.book_append_sheet(wb, noteSheet, "Instructions");
-      XLSX.writeFile(wb, `${type}_Template.xlsx`);
-    }
+    await exportStyledWorkbook(`${type}_Template.xlsx`, [
+      { name: 'Template', rows: templateRows, headerRowCount: 1 },
+      { name: 'Instructions', rows: instructionRows, headerRowCount: 1 },
+    ]);
   };
 
   const downloadExport = async () => {
@@ -4078,16 +4148,9 @@ function GenericCRUD({
           ),
         };
     const exportRows = [exportData.headers, ...exportData.rows];
-    try {
-      await downloadWorkbookViaOpenPyxl(`${type}_Export.xlsx`, [
-        { name: sanitizeExcelName(`${type} Data`), rows: exportRows },
-      ]);
-    } catch {
-      const worksheet = XLSX.utils.aoa_to_sheet(exportRows);
-      const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, worksheet, sanitizeExcelName(`${type} Data`));
-      XLSX.writeFile(workbook, `${type}_Export.xlsx`);
-    }
+    await exportStyledWorkbook(`${type}_Export.xlsx`, [
+      { name: sanitizeExcelName(`${type} Data`), rows: exportRows, headerRowCount: 1 },
+    ]);
   };
 
   const downloadImportAudit = async () => {
@@ -4107,17 +4170,10 @@ function GenericCRUD({
       ['Message', lastImportAudit.message || ''],
     ];
     const auditRows = lastImportAudit.auditRows.map((row) => headers.map((header) => row?.[header] ?? ''));
-    try {
-      await downloadWorkbookViaOpenPyxl(`${type}_Import_Audit.xlsx`, [
-        { name: 'Summary', rows: summaryRows },
-        { name: sanitizeExcelName(lastImportAudit.auditTitle || `${type} Audit`), rows: [headers, ...auditRows] },
-      ]);
-    } catch {
-      const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(summaryRows), 'Summary');
-      XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([headers, ...auditRows]), sanitizeExcelName(lastImportAudit.auditTitle || `${type} Audit`));
-      XLSX.writeFile(workbook, `${type}_Import_Audit.xlsx`);
-    }
+    await exportStyledWorkbook(`${type}_Import_Audit.xlsx`, [
+      { name: 'Summary', rows: summaryRows, headerRowCount: 1 },
+      { name: sanitizeExcelName(lastImportAudit.auditTitle || `${type} Audit`), rows: [headers, ...auditRows], headerRowCount: 1 },
+    ]);
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -8654,20 +8710,21 @@ function BookingManagement() {
     await fetchMyBookings();
   };
 
-  const exportBookings = () => {
-    const worksheet = XLSX.utils.json_to_sheet(filteredBookings.map(booking => ({
-      Event: booking.event_name,
-      Faculty: booking.faculty_name,
-      Room: getBookingRoomNumber(booking),
-      Date: getBookingDateLabel(booking),
-      Time: getBookingTimeLabel(booking),
-      Status: getDisplayStatus(booking),
-      Purpose: booking.purpose || '',
-      Notes: booking.notes || ''
-    })));
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Bookings');
-    XLSX.writeFile(workbook, 'room-bookings-report.xlsx');
+  const exportBookings = async () => {
+    const headers = ['Event', 'Faculty', 'Room', 'Date', 'Time', 'Status', 'Purpose', 'Notes'];
+    const rows = filteredBookings.map(booking => ([
+      booking.event_name,
+      booking.faculty_name,
+      getBookingRoomNumber(booking),
+      getBookingDateLabel(booking),
+      getBookingTimeLabel(booking),
+      getDisplayStatus(booking),
+      booking.purpose || '',
+      booking.notes || '',
+    ]));
+    await exportStyledWorkbook('room-bookings-report.xlsx', [
+      { name: 'Bookings', rows: [headers, ...rows], headerRowCount: 1 },
+    ]);
   };
 
   const fetchRoomSchedule = async (room: any) => {
@@ -9891,34 +9948,39 @@ function AnalyticsDashboard() {
     ...roomReports.map((room: any) => room.room_type),
     ...bookings.map(booking => booking.room_type)
   ].filter(Boolean))).sort();
-  const exportAnalytics = () => {
-    const worksheet = XLSX.utils.json_to_sheet(filteredRoomReports.map((room: any) => ({
-      Room: room.room_number,
-      RoomName: getRoomNameDisplay(room),
-      Building: room.building,
-      Department: room.department,
-      Type: getRoomTypeDisplay(room),
-      SubRoomType: HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room.room_layout)) ? getRoomTypeDisplay(room) : '',
-      Layout: room.room_layout || 'Normal',
-      RoomAliases: getRoomAliasList(room).join(', '),
-      ParentRoom: room.parent_room_number || '',
-      SubRoomCount: room.sub_room_count ?? '',
-      SubRoomName: room.room_section_name || '',
-      UsageCategory: room.usage_category || normalizeUsageCategoryValue('', room.room_type) || '',
-      IsBookable: isRoomReservable(room) ? 'Yes' : 'No',
-      'Lab Name': room.lab_name || '',
-      'Sub Lab Name': (
+  const exportAnalytics = async () => {
+    const headers = [
+      'Room', 'RoomName', 'Building', 'Department', 'Type', 'SubRoomType', 'Layout', 'RoomAliases',
+      'ParentRoom', 'SubRoomCount', 'SubRoomName', 'UsageCategory', 'IsBookable', 'Lab Name',
+      'Sub Lab Name', 'Restroom For', 'Capacity', 'Utilization', 'Flags'
+    ];
+    const rows = filteredRoomReports.map((room: any) => ([
+      room.room_number,
+      getRoomNameDisplay(room),
+      room.building,
+      room.department,
+      getRoomTypeDisplay(room),
+      HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room.room_layout)) ? getRoomTypeDisplay(room) : '',
+      room.room_layout || 'Normal',
+      getRoomAliasList(room).join(', '),
+      room.parent_room_number || '',
+      room.sub_room_count ?? '',
+      room.room_section_name || '',
+      room.usage_category || normalizeUsageCategoryValue('', room.room_type) || '',
+      isRoomReservable(room) ? 'Yes' : 'No',
+      room.lab_name || '',
+      (
         normalizeRoomTypeValue(room.room_type) === 'Lab' &&
         HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room.room_layout))
       ) ? (room.lab_name || '') : '',
-      'Restroom For': room.restroom_type || '',
-      Capacity: room.capacity,
-      Utilization: `${room.utilization}%`,
-      Flags: (room.flags || []).join(', ')
-    })));
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Analytics');
-    XLSX.writeFile(workbook, 'analytics-summary.xlsx');
+      room.restroom_type || '',
+      room.capacity,
+      `${room.utilization}%`,
+      (room.flags || []).join(', '),
+    ]));
+    await exportStyledWorkbook('analytics-summary.xlsx', [
+      { name: 'Analytics', rows: [headers, ...rows], headerRowCount: 1 },
+    ]);
   };
 
   return (
@@ -11988,6 +12050,12 @@ function ReportGeneration() {
     value: number;
     secondaryValue?: number;
   };
+  type StyledWorkbookSheet = {
+    name: string;
+    rows: any[][];
+    widths?: number[];
+    headerRowCount?: number;
+  };
   type ExcelWorkbook = import('exceljs').Workbook;
   type ExcelWorksheet = import('exceljs').Worksheet;
 
@@ -11995,6 +12063,17 @@ function ReportGeneration() {
     const module = await import('exceljs');
     const ExcelJSRuntime = (module as any).default || module;
     return new ExcelJSRuntime.Workbook() as ExcelWorkbook;
+  };
+  const estimateWorkbookColumnWidths = (rows: any[][]) => {
+    const columnCount = rows.reduce((max, row) => Math.max(max, row.length), 0);
+    return Array.from({ length: columnCount }, (_, index) => {
+      const longest = rows.reduce((max, row) => {
+        const value = row[index];
+        const text = value === undefined || value === null ? '' : value.toString();
+        return Math.max(max, text.length);
+      }, 0);
+      return Math.min(Math.max(longest + 2, 12), 42);
+    });
   };
 
   const getReportColumns = (reportType: string, rows: any[]) => {
@@ -12028,6 +12107,44 @@ function ReportGeneration() {
     headerRow.height = 22;
     worksheet.views = [{ state: 'frozen', ySplit: 1 }];
   };
+  const applyExcelDataRowStyle = (worksheet: ExcelWorksheet, fromRow = 2) => {
+    worksheet.eachRow((row, rowNumber) => {
+      if (rowNumber < fromRow) return;
+      row.alignment = { vertical: 'top', wrapText: true };
+    });
+  };
+  const appendExcelMatrixSheet = (
+    workbook: ExcelWorkbook,
+    sheet: StyledWorkbookSheet,
+  ) => {
+    const worksheet = workbook.addWorksheet(getUniqueExcelSheetName(workbook, sheet.name));
+    const safeRows = Array.isArray(sheet.rows) ? sheet.rows : [];
+    const headerRowCount = Math.max(sheet.headerRowCount ?? 1, 0);
+    if (safeRows.length === 0) {
+      worksheet.addRow(['No data available']);
+      applyExcelHeaderStyle(worksheet);
+      worksheet.getColumn(1).width = 24;
+      return worksheet;
+    }
+    safeRows.forEach((row) => {
+      worksheet.addRow((Array.isArray(row) ? row : []).map((value) => toExcelCellValue(value)));
+    });
+    if (headerRowCount > 0) {
+      applyExcelHeaderStyle(worksheet);
+      for (let rowIndex = 2; rowIndex <= headerRowCount; rowIndex += 1) {
+        const row = worksheet.getRow(rowIndex);
+        row.font = { bold: true, color: { argb: 'FF0F172A' } };
+        row.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } };
+        row.alignment = { vertical: 'middle', wrapText: true };
+      }
+    }
+    const widths = sheet.widths?.length ? sheet.widths : estimateWorkbookColumnWidths(safeRows);
+    widths.forEach((width, index) => {
+      worksheet.getColumn(index + 1).width = Math.min(Math.max(width || 12, 12), 42);
+    });
+    applyExcelDataRowStyle(worksheet, Math.max(headerRowCount + 1, 2));
+    return worksheet;
+  };
   const appendExcelDataSheet = (
     workbook: ExcelWorkbook,
     sheetName: string,
@@ -12057,10 +12174,7 @@ function ReportGeneration() {
       );
       worksheet.getColumn(columnIndex + 1).width = Math.min(Math.max(maxLength + 2, 12), 36);
     });
-    worksheet.eachRow((row, rowNumber) => {
-      if (rowNumber === 1) return;
-      row.alignment = { vertical: 'top', wrapText: true };
-    });
+    applyExcelDataRowStyle(worksheet);
     return worksheet;
   };
   const appendExcelVisualizationDataSheet = (
@@ -12456,6 +12570,14 @@ function ReportGeneration() {
     anchor.download = fileName;
     anchor.click();
     URL.revokeObjectURL(url);
+  };
+  const exportStyledWorkbook = async (
+    fileName: string,
+    sheets: StyledWorkbookSheet[],
+  ) => {
+    const workbook = await createExcelWorkbook();
+    sheets.forEach((sheet) => appendExcelMatrixSheet(workbook, sheet));
+    await saveExcelWorkbook(workbook, fileName);
   };
   const sanitizeExportFilePart = (value?: string | null) =>
     (value || '')
