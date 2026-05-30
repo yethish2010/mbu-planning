@@ -7490,7 +7490,7 @@ function SchedulingManagement() {
     { key: 'section', label: 'Section' },
     {
       key: 'semester',
-      label: 'Semester',
+      label: EXACT_SEMESTER_LABEL,
       type: 'select',
       options: (formData: any) => getScheduleSemesterOptions(formData.year_of_study),
       render: (schedule: any) => normalizeExactSemesterValue(schedule?.semester, schedule?.year_of_study, schedule?.semester || '-') || '-',
@@ -9942,7 +9942,7 @@ function ReportGeneration() {
     { value: 'room_type_utilization', label: 'Room Type Utilization' },
     { value: 'usage_category_utilization', label: 'Usage Category Utilization' },
     { value: 'year_utilization', label: 'Year-wise Utilization' },
-    { value: 'semester_utilization', label: 'Semester-wise Utilization' },
+    { value: 'semester_utilization', label: 'Semester Type Utilization' },
     { value: 'section_utilization', label: 'Section-wise Utilization' },
     { value: 'booking_approvals', label: 'Booking Approvals' },
     { value: 'maintenance_impact', label: 'Maintenance Impact' },
@@ -9961,13 +9961,13 @@ function ReportGeneration() {
     { value: 'booking_lifecycle', label: 'Booking Lead-Time & Cancellation' },
     { value: 'no_show_risk', label: 'No-Show / Unused Booking Risk' },
     { value: 'shared_room_conflict', label: 'Shared Room Conflict Risk' },
-    { value: 'semester_peak_forecast', label: 'Semester Peak Load Forecast' },
+    { value: 'semester_peak_forecast', label: 'Semester Type Peak Load Forecast' },
   ];
   const REPORT_EXPORT_COLUMNS: Record<string, string[]> = {
     room_utilization: ['Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Utilization', 'ScheduledHours', 'BookedHours', 'Capacity', 'Status', 'Flags'],
     available_room_summary: ['SummaryScope', 'Category', 'AvailableRooms', 'RoomNumbers'],
     category_room_list: ['CategoryType', 'CategoryValue', 'ReportCategory', 'RoomId', 'Room', 'RoomName', 'Campus', 'Building', 'Block', 'Floor', 'Type', 'HierarchyLevel', 'ParentRoom', 'Layout', 'UsageCategory', 'Status', 'Capacity'],
-    room_level_detail: ['RoomId', 'Room', 'Aliases', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Status', 'Capacity', 'Utilization', 'ScheduledHours', 'BookedHours', 'Years', 'Semesters', 'Sections', 'Flags'],
+    room_level_detail: ['RoomId', 'Room', 'Aliases', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Status', 'Capacity', 'Utilization', 'ScheduledHours', 'BookedHours', 'Years', 'SemesterTypes', 'Sections', 'Flags'],
     campus_utilization: ['Campus', 'Buildings', 'Rooms', 'AvgUtilization'],
     school_utilization: ['School', 'Departments', 'Rooms', 'TotalCapacity', 'AvgUtilization', 'UnmappedRooms'],
     building_utilization: ['Building', 'Rooms', 'MaintenanceIssues', 'AvgUtilization'],
@@ -9975,7 +9975,7 @@ function ReportGeneration() {
     room_type_utilization: ['RoomType', 'Rooms', 'AvgUtilization'],
     usage_category_utilization: ['UsageCategory', 'Rooms', 'AvgUtilization'],
     year_utilization: ['Year', 'Rooms', 'AvgUtilization'],
-    semester_utilization: ['Semester', 'Rooms', 'AvgUtilization'],
+    semester_utilization: ['SemesterType', 'Rooms', 'AvgUtilization'],
     section_utilization: ['Section', 'Rooms', 'AvgUtilization'],
     booking_approvals: ['Status', 'Count'],
     maintenance_impact: ['Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Utilization', 'ScheduledHours', 'BookedHours', 'Capacity', 'Status', 'Flags'],
@@ -9987,14 +9987,14 @@ function ReportGeneration() {
     date_wise_occupancy: ['Date', 'Day', 'ScheduledHours', 'BookedHours', 'Utilization', 'ScheduledEntries', 'ApprovedBookings', 'OccupiedRooms', 'RoomNumbers'],
     per_room_occupancy: ['Date', 'Day', 'HourBand', 'Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Capacity', 'OccupancyStatus', 'ScheduledEntries', 'ApprovedBookings', 'SuppressedSchedules', 'Details'],
     department_roomtype_demand: ['Department', 'TotalDemand'],
-    clash_overlap: ['Source', 'Room', 'DayOrDate', 'YearA', 'SemesterA', 'EntryA', 'YearB', 'SemesterB', 'EntryB'],
+    clash_overlap: ['Source', 'Room', 'DayOrDate', 'YearA', 'SemesterTypeA', 'EntryA', 'YearB', 'SemesterTypeB', 'EntryB'],
     vacancy_opportunity: ['Room', 'Building', 'Department', 'IdleHoursPerWeek', 'Utilization', 'Opportunity'],
     capacity_mismatch: ['Date', 'Room', 'Department', 'Event', 'Students', 'Capacity', 'OccupancyPercent', 'MismatchType'],
-    exam_impact: ['ExamWindow', 'Department', 'Semester', 'StartDate', 'EndDate', 'Days', 'AffectedWeeklyClasses', 'EstimatedBlockedSessions'],
+    exam_impact: ['ExamWindow', 'Department', 'SemesterType', 'StartDate', 'EndDate', 'Days', 'AffectedWeeklyClasses', 'EstimatedBlockedSessions'],
     booking_lifecycle: ['TotalRequests', 'Approvals', 'Cancellations', 'CancellationRate', 'AverageLeadDays', 'LeadTimeCapturedCount'],
     no_show_risk: ['Booking', 'Date', 'Room', 'Department', 'Event', 'Students', 'Capacity', 'OccupancyPercent', 'RiskScore'],
     shared_room_conflict: ['Room', 'Building', 'RoomLayout', 'Aliases', 'Departments', 'Sections', 'Overlaps', 'RiskScore'],
-    semester_peak_forecast: ['Semester', 'Day', 'PeakBand', 'PeakSlots', 'TotalClasses'],
+    semester_peak_forecast: ['SemesterType', 'Day', 'PeakBand', 'PeakSlots', 'TotalClasses'],
   };
   const [individualReportType, setIndividualReportType] = useState('room_utilization');
 
@@ -11542,10 +11542,10 @@ function ReportGeneration() {
       },
       semester_utilization: {
         chart: 'Bar Chart',
-        xAxis: 'Semester',
+        xAxis: 'SemesterType',
         yAxis: 'AvgUtilization',
-        sortBy: 'Semester (asc)',
-        note: 'Compares odd/even semester utilization.',
+        sortBy: 'Semester Type (asc)',
+        note: 'Compares odd/even semester type utilization.',
       },
       section_utilization: {
         chart: 'Bar Chart',
@@ -11678,7 +11678,7 @@ function ReportGeneration() {
         xAxis: 'Day',
         yAxis: 'PeakSlots',
         sortBy: 'Day order',
-        note: 'Forecasts semester-wise peak load bands.',
+        note: 'Forecasts semester-type peak load bands.',
       },
       raw_usage_data: {
         chart: 'Pivot Chart',
@@ -12242,7 +12242,7 @@ function ReportGeneration() {
     addFilter('Floor', filters.floor);
     addFilter('Department', filters.department);
     addFilter('Year', filters.year);
-    addFilter('Semester', filters.semester);
+    addFilter(SEMESTER_TYPE_LABEL, filters.semester);
     addFilter('Section', filters.section);
     addFilter('Room', filters.room);
     addFilter('Room Type', filters.roomType);
@@ -12426,7 +12426,7 @@ function ReportGeneration() {
       Department: room.department,
       School: room.school,
       Years: (room.yearTags || []).map((year: string) => `Year ${year}`).join(', '),
-      Semesters: (room.semesterTags || []).join(', '),
+      SemesterTypes: (room.semesterTags || []).join(', '),
       Sections: (room.sectionTags || []).join(', '),
       Type: getRoomTypeDisplay(room),
       SubRoomType: HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room.room_layout)) ? getRoomTypeDisplay(room) : '',
@@ -12454,7 +12454,7 @@ function ReportGeneration() {
       Flags: (room.flags || []).join(', '),
     }));
     const rawUsageColumns = [
-      'Room', 'RoomName', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Years', 'Semesters', 'Sections',
+      'Room', 'RoomName', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Years', 'Semester Types', 'Sections',
       'Type', 'SubRoomType', 'Layout', 'RoomAliases', 'ParentRoom', 'SubRoomCount', 'SubRoomName', 'UsageCategory',
       'IsBookable', 'LabName', 'SubLabName', 'RestroomFor', 'Capacity', 'Status', 'Utilization', 'ScheduledHours',
       'BookedHours', 'MaintenanceIssues', 'BookingStatuses', 'BookingDates', 'Flags'
@@ -12588,9 +12588,9 @@ function ReportGeneration() {
       },
       semester_utilization: {
         fileName: 'semester-utilization-report.xlsx',
-        sheetName: 'Semester Utilization',
+        sheetName: 'Semester Type Utilization',
         rows: semesterSummary.map((item: any) => ({
-          Semester: item.name,
+          SemesterType: item.name,
           Rooms: item.roomCount,
           AvgUtilization: `${item.avgUtilization}%`,
         })),
@@ -12702,10 +12702,10 @@ function ReportGeneration() {
           Room: item.room,
           DayOrDate: item.day,
           YearA: item.yearA || '-',
-          SemesterA: item.semesterA || '-',
+          SemesterTypeA: item.semesterA || '-',
           EntryA: `${item.startA} - ${item.endA} | ${item.courseA}`,
           YearB: item.yearB || '-',
-          SemesterB: item.semesterB || '-',
+          SemesterTypeB: item.semesterB || '-',
           EntryB: `${item.startB} - ${item.endB} | ${item.courseB}`,
         })),
       },
@@ -12741,7 +12741,7 @@ function ReportGeneration() {
         rows: examImpactReport.map((item: any) => ({
           ExamWindow: item.title,
           Department: item.department,
-          Semester: item.semester,
+          SemesterType: item.semester,
           StartDate: item.startDate,
           EndDate: item.endDate,
           Days: item.days,
@@ -12792,9 +12792,9 @@ function ReportGeneration() {
       },
       semester_peak_forecast: {
         fileName: 'semester-peak-forecast-report.xlsx',
-        sheetName: 'Semester Peak Forecast',
+        sheetName: 'Semester Type Peak Forecast',
         rows: semesterPeakLoadForecast.map((item: any) => ({
-          Semester: item.semester,
+          SemesterType: item.semester,
           Day: item.day,
           PeakBand: item.peakBand,
           PeakSlots: item.peakSlots,
@@ -13044,7 +13044,7 @@ function ReportGeneration() {
             {yearOptions.map((year: any) => <option key={year} value={year}>{`Year ${year}`}</option>)}
           </select>
           <select value={filters.semester} onChange={e => setFilters({ ...filters, semester: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500">
-            <option value="">All Semesters</option>
+            <option value="">{`All ${SEMESTER_TYPE_LABEL}s`}</option>
             {semesterOptions.map((semester: any) => <option key={semester} value={semester}>{semester}</option>)}
           </select>
           <select value={filters.section} onChange={e => setFilters({ ...filters, section: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500">
@@ -13501,12 +13501,12 @@ function ReportGeneration() {
 
             {filters.reportType === 'semester_utilization' && (
               <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
-                <h3 className="text-lg font-bold text-slate-800 mb-6">Semester-wise Utilization Summary</h3>
+                <h3 className="text-lg font-bold text-slate-800 mb-6">Semester Type Utilization Summary</h3>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left">
                     <thead>
                       <tr className="border-b border-slate-100">
-                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Semester</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">{SEMESTER_TYPE_LABEL}</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Rooms</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Avg Utilization</th>
                       </tr>
@@ -13576,7 +13576,7 @@ function ReportGeneration() {
                   <table className="w-full text-left">
                     <thead>
                       <tr className="border-b border-slate-100">
-                        {['Room', 'Building', 'Block', 'Floor', 'Department', 'Type', 'Capacity', 'Utilization', 'Scheduled Hours', 'Booked Hours', 'Years', 'Semesters', 'Sections', 'Flags'].map((column) => (
+                        {['Room', 'Building', 'Block', 'Floor', 'Department', 'Type', 'Capacity', 'Utilization', 'Scheduled Hours', 'Booked Hours', 'Years', 'Semester Types', 'Sections', 'Flags'].map((column) => (
                           <th key={column} className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">{column}</th>
                         ))}
                       </tr>
@@ -13595,7 +13595,7 @@ function ReportGeneration() {
                           <td className="py-4 text-sm text-slate-500 text-right">{item.ScheduledHours}</td>
                           <td className="py-4 text-sm text-slate-500 text-right">{item.BookedHours}</td>
                           <td className="py-4 text-sm text-slate-500">{item.Years || '-'}</td>
-                          <td className="py-4 text-sm text-slate-500">{item.Semesters || '-'}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.SemesterTypes || '-'}</td>
                           <td className="py-4 text-sm text-slate-500">{item.Sections || '-'}</td>
                           <td className="py-4 text-sm text-slate-500">{item.Flags || '-'}</td>
                         </tr>
@@ -13874,10 +13874,10 @@ function ReportGeneration() {
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Room</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Day/Date</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Year A</th>
-                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Semester A</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Semester Type A</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Entry A</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Year B</th>
-                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Semester B</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Semester Type B</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Entry B</th>
                       </tr>
                     </thead>
@@ -13984,7 +13984,7 @@ function ReportGeneration() {
                       <tr className="border-b border-slate-100">
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Exam Window</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Department</th>
-                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Semester</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">{SEMESTER_TYPE_LABEL}</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Date Range</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Days</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Affected/Week</th>
@@ -14101,12 +14101,12 @@ function ReportGeneration() {
 
             {filters.reportType === 'semester_peak_forecast' && (
               <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
-                <h3 className="text-lg font-bold text-slate-800 mb-6">Semester-wise Peak Load Forecast</h3>
+                <h3 className="text-lg font-bold text-slate-800 mb-6">Semester Type Peak Load Forecast</h3>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left">
                     <thead>
                       <tr className="border-b border-slate-100">
-                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Semester</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">{SEMESTER_TYPE_LABEL}</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Day</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Peak Band</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Peak Slots</th>
