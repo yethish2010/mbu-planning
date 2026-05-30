@@ -2,6 +2,7 @@
 import fs from "fs";
 import path, { dirname } from "path";
 import { fileURLToPath } from "url";
+import { spawn } from "child_process";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import cookieParser from "cookie-parser";
@@ -18,6 +19,36 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const JWT_SECRET = process.env.JWT_SECRET || "smart-campus-secret-key";
+const OPENPYXL_RENDERER_PATH = path.resolve(__dirname, "../scripts/openpyxl_workbook_renderer.py");
+
+const renderWorkbookWithOpenPyxl = async (payload: any) => {
+  await fs.promises.access(OPENPYXL_RENDERER_PATH, fs.constants.R_OK);
+
+  return await new Promise<Buffer>((resolve, reject) => {
+    const child = spawn("python", [OPENPYXL_RENDERER_PATH], {
+      cwd: path.resolve(__dirname, ".."),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+
+    child.stdout.on("data", (chunk) => stdoutChunks.push(Buffer.from(chunk)));
+    child.stderr.on("data", (chunk) => stderrChunks.push(Buffer.from(chunk)));
+    child.on("error", (error) => reject(error));
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve(Buffer.concat(stdoutChunks));
+        return;
+      }
+      const stderrText = Buffer.concat(stderrChunks).toString("utf8").trim();
+      reject(new Error(stderrText || `openpyxl renderer exited with code ${code}`));
+    });
+
+    child.stdin.write(JSON.stringify(payload || {}));
+    child.stdin.end();
+  });
+};
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const isProduction = process.env.NODE_ENV === "production";
 const isVercelRuntime = process.env.VERCEL === "1";
@@ -1814,6 +1845,30 @@ app.get("/api/auth/me", (req, res) => {
     res.json({ user: decoded });
   } catch (err) {
     res.status(401).json({ error: "Invalid token" });
+  }
+});
+
+app.post("/api/excel/render", authenticate, async (req, res) => {
+  try {
+    const requestedSheets = Array.isArray(req.body?.sheets) ? req.body.sheets : [];
+    if (requestedSheets.length === 0) {
+      return res.status(400).json({ error: "At least one worksheet is required." });
+    }
+
+    const sanitizedSheets = requestedSheets.map((sheet: any, index: number) => ({
+      name: (sheet?.name?.toString().trim() || `Sheet${index + 1}`).slice(0, 31),
+      rows: Array.isArray(sheet?.rows) ? sheet.rows : [],
+      widths: Array.isArray(sheet?.widths) ? sheet.widths : [],
+    }));
+
+    const fileNameBase = req.body?.fileName?.toString().trim() || "export.xlsx";
+    const fileName = fileNameBase.toLowerCase().endsWith(".xlsx") ? fileNameBase : `${fileNameBase}.xlsx`;
+    const buffer = await renderWorkbookWithOpenPyxl({ sheets: sanitizedSheets });
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName.replace(/"/g, "")}"`);
+    res.send(buffer);
+  } catch (err: any) {
+    res.status(503).json({ error: err?.message || "openpyxl workbook rendering is unavailable." });
   }
 });
 

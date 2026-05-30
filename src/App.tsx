@@ -1325,6 +1325,51 @@ const apiJson = async (url: string, options?: RequestInit) => {
   return data;
 };
 
+const estimateWorkbookColumnWidths = (rows: any[][]) => {
+  const columnCount = rows.reduce((max, row) => Math.max(max, row.length), 0);
+  return Array.from({ length: columnCount }, (_, index) => {
+    const longest = rows.reduce((max, row) => {
+      const value = row[index];
+      const text = value === undefined || value === null ? '' : value.toString();
+      return Math.max(max, text.length);
+    }, 0);
+    return Math.min(Math.max(longest + 2, 12), 42);
+  });
+};
+
+const downloadWorkbookViaOpenPyxl = async (
+  fileName: string,
+  sheets: Array<{ name: string; rows: any[][]; widths?: number[] }>,
+) => {
+  const response = await fetch('/api/excel/render', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      fileName,
+      sheets: sheets.map(sheet => ({
+        ...sheet,
+        widths: sheet.widths?.length ? sheet.widths : estimateWorkbookColumnWidths(sheet.rows),
+      })),
+    }),
+  });
+
+  if (!response.ok) {
+    const errorPayload = await response.json().catch(() => ({}));
+    throw new Error(errorPayload?.error || 'openpyxl workbook rendering failed');
+  }
+
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = objectUrl;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(objectUrl);
+};
+
 const upsertImportRecord = async (apiPath: string, payload: any, uniqueFieldGroups: string[][]) => {
   const records = await apiJson(apiPath);
   const existing = findMatchingImportRecord(Array.isArray(records) ? records : [], payload, uniqueFieldGroups);
@@ -3992,26 +4037,35 @@ function GenericCRUD({
   });
   const sanitizeExcelName = (value: string) => value.replace(/[\\/?*[\]:]/g, '').slice(0, 31) || 'Export';
 
-  const downloadTemplate = () => {
+  const downloadTemplate = async () => {
     const templateConfig = IMPORT_TEMPLATE_CONFIG[type];
     const headers = templateConfig?.headers || formFields.map(f => f.label);
     const exampleRows = templateConfig?.exampleRows || [];
-    const ws = XLSX.utils.aoa_to_sheet([
+    const templateRows = [
       headers,
       ...exampleRows.map((row) => headers.map((header) => row[header] ?? '')),
-    ]);
-    const noteSheet = XLSX.utils.aoa_to_sheet([
+    ];
+    const instructionRows = [
       ['Instructions'],
       ['Keep the header row unchanged. Replace or delete the example row(s) before importing the file.'],
       ...((templateConfig?.instructions || []).map((instruction) => [instruction])),
-    ]);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Template");
-    XLSX.utils.book_append_sheet(wb, noteSheet, "Instructions");
-    XLSX.writeFile(wb, `${type}_Template.xlsx`);
+    ];
+    try {
+      await downloadWorkbookViaOpenPyxl(`${type}_Template.xlsx`, [
+        { name: 'Template', rows: templateRows },
+        { name: 'Instructions', rows: instructionRows },
+      ]);
+    } catch {
+      const ws = XLSX.utils.aoa_to_sheet(templateRows);
+      const noteSheet = XLSX.utils.aoa_to_sheet(instructionRows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Template");
+      XLSX.utils.book_append_sheet(wb, noteSheet, "Instructions");
+      XLSX.writeFile(wb, `${type}_Template.xlsx`);
+    }
   };
 
-  const downloadExport = () => {
+  const downloadExport = async () => {
     const exportData = exportBuilder
       ? exportBuilder(filteredData)
       : {
@@ -4023,18 +4077,24 @@ function GenericCRUD({
             })
           ),
         };
-    const worksheet = XLSX.utils.aoa_to_sheet([exportData.headers, ...exportData.rows]);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, sanitizeExcelName(`${type} Data`));
-    XLSX.writeFile(workbook, `${type}_Export.xlsx`);
+    const exportRows = [exportData.headers, ...exportData.rows];
+    try {
+      await downloadWorkbookViaOpenPyxl(`${type}_Export.xlsx`, [
+        { name: sanitizeExcelName(`${type} Data`), rows: exportRows },
+      ]);
+    } catch {
+      const worksheet = XLSX.utils.aoa_to_sheet(exportRows);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, sanitizeExcelName(`${type} Data`));
+      XLSX.writeFile(workbook, `${type}_Export.xlsx`);
+    }
   };
 
-  const downloadImportAudit = () => {
+  const downloadImportAudit = async () => {
     if (!lastImportAudit?.auditRows?.length) return;
     const headers = lastImportAudit.auditHeaders?.length
       ? lastImportAudit.auditHeaders
       : Array.from(new Set(lastImportAudit.auditRows.flatMap((row) => Object.keys(row || {}))));
-    const workbook = XLSX.utils.book_new();
     const summaryRows = [
       ['Metric', 'Value'],
       ['Audit Title', lastImportAudit.auditTitle || `${type} Import Audit`],
@@ -4047,9 +4107,17 @@ function GenericCRUD({
       ['Message', lastImportAudit.message || ''],
     ];
     const auditRows = lastImportAudit.auditRows.map((row) => headers.map((header) => row?.[header] ?? ''));
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(summaryRows), 'Summary');
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([headers, ...auditRows]), sanitizeExcelName(lastImportAudit.auditTitle || `${type} Audit`));
-    XLSX.writeFile(workbook, `${type}_Import_Audit.xlsx`);
+    try {
+      await downloadWorkbookViaOpenPyxl(`${type}_Import_Audit.xlsx`, [
+        { name: 'Summary', rows: summaryRows },
+        { name: sanitizeExcelName(lastImportAudit.auditTitle || `${type} Audit`), rows: [headers, ...auditRows] },
+      ]);
+    } catch {
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(summaryRows), 'Summary');
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([headers, ...auditRows]), sanitizeExcelName(lastImportAudit.auditTitle || `${type} Audit`));
+      XLSX.writeFile(workbook, `${type}_Import_Audit.xlsx`);
+    }
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
