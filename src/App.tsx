@@ -1314,6 +1314,64 @@ const getScheduleAcademicStageLabel = (schedule: any, departments: any[]) => {
   return [departmentName, program, yearLabel !== '-' ? yearLabel : '', semester].filter(Boolean).join(' • ');
 };
 
+const getScheduleAudienceLabel = (schedule: any, departments: any[] = []) => {
+  const departmentName = schedule?.department_name
+    || departments.find((department: any) => idsMatch(department.id, schedule?.department_id))?.name
+    || schedule?.department
+    || '';
+  const program = normalizeProgramValue(schedule?.program);
+  const specialization = schedule?.specialization?.toString().trim() || '';
+  const section = schedule?.section?.toString().trim() || '';
+  const specificAudience = [specialization, section ? `Section ${section}` : ''].filter(Boolean);
+  if (specificAudience.length > 0) return specificAudience.join(' • ');
+  return [departmentName, program].filter(Boolean).join(' • ') || 'Academic Group';
+};
+
+const isCombinedClassScheduleSet = (schedules: any[]) => {
+  if (!Array.isArray(schedules) || schedules.length <= 1) return false;
+  const [firstSchedule] = schedules;
+  const baseCourseName = normalizeLookupValue(firstSchedule?.course_name);
+  const baseFaculty = normalizeLookupValue(firstSchedule?.faculty);
+  const baseCourseCode = normalizeLookupValue(firstSchedule?.course_code);
+  if (!baseCourseName || !baseFaculty) return false;
+
+  return schedules.every((schedule: any) => {
+    if (normalizeLookupValue(schedule?.course_name) !== baseCourseName) return false;
+    if (normalizeLookupValue(schedule?.faculty) !== baseFaculty) return false;
+    const scheduleCourseCode = normalizeLookupValue(schedule?.course_code);
+    if (baseCourseCode && scheduleCourseCode && scheduleCourseCode !== baseCourseCode) return false;
+    return true;
+  });
+};
+
+const getScheduleOverlapState = (schedules: any[]) => {
+  if (!Array.isArray(schedules) || schedules.length === 0) return 'vacant';
+  if (schedules.length === 1) return 'scheduled';
+  return isCombinedClassScheduleSet(schedules) ? 'combined' : 'multi';
+};
+
+const getCombinedClassAudienceSummary = (schedules: any[], departments: any[] = []) =>
+  Array.from(new Set(
+    (Array.isArray(schedules) ? schedules : [])
+      .map((schedule: any) => getScheduleAudienceLabel(schedule, departments))
+      .filter(Boolean),
+  )).join(' + ');
+
+const getCombinedClassStageSummary = (schedules: any[], departments: any[] = []) => {
+  const stages = Array.from(new Set(
+    (Array.isArray(schedules) ? schedules : [])
+      .map((schedule: any) => getScheduleAcademicStageLabel(schedule, departments))
+      .filter(Boolean),
+  ));
+  if (stages.length === 1) return stages[0];
+  const groupCount = new Set(
+    (Array.isArray(schedules) ? schedules : [])
+      .map((schedule: any) => getScheduleAcademicContextKey(schedule))
+      .filter(Boolean),
+  ).size;
+  return `${groupCount || schedules.length} academic groups`;
+};
+
 const deduplicateScheduleRows = (rows: any[]) => {
   const seen = new Set<string>();
   return rows.filter((row) => {
@@ -2240,7 +2298,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Start Time': '09:00',
         'End Time': '10:00',
         'Import Status': 'Linked',
-        'Review Note': 'Example 4: same room and time as another row, but a different branch, so the timetable can show Multiple Classes.',
+        'Review Note': 'Example 4: same room and time as another row, but a different branch, so the timetable can classify it as a Combined Class when subject and faculty also match.',
       },
     ],
     instructions: [
@@ -15529,12 +15587,13 @@ function TimetableBuilder() {
       .map(slot => {
         const coveringSchedules = daySchedules.filter(schedule => scheduleCoversSlot(schedule, slot));
         const coveringSuppressedSchedules = suppressedSchedules.filter(schedule => scheduleCoversSlot(schedule, slot));
+        const overlapState = getScheduleOverlapState(coveringSchedules);
         return {
           ...slot,
           key: getTimeSlotKey(slot),
           schedules: coveringSchedules,
-          state: coveringSchedules.length > 1
-            ? 'multi'
+          state: overlapState !== 'vacant'
+            ? overlapState
             : coveringSchedules.length === 1
               ? 'scheduled'
               : coveringSuppressedSchedules.length > 0
@@ -15692,6 +15751,10 @@ function TimetableBuilder() {
             <div className="h-2.5 w-2.5 rounded-full bg-emerald-500"></div>
             <span className="text-[11px] font-bold text-emerald-700">Scheduled</span>
           </div>
+          <div className="inline-flex items-center gap-2 rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1">
+            <div className="h-2.5 w-2.5 rounded-full bg-cyan-500"></div>
+            <span className="text-[11px] font-bold text-cyan-700">Combined Class</span>
+          </div>
           <div className="inline-flex items-center gap-2 rounded-full border border-rose-200 bg-rose-50 px-3 py-1">
             <div className="h-2.5 w-2.5 rounded-full bg-rose-500"></div>
             <span className="text-[11px] font-bold text-rose-700">Multiple Classes</span>
@@ -15753,6 +15816,8 @@ function TimetableBuilder() {
                       "rounded-xl border p-4 transition-all",
                       slot.state === 'multi'
                         ? "bg-rose-100 border-rose-300 shadow-sm hover:shadow-md"
+                        : slot.state === 'combined'
+                        ? "bg-cyan-100 border-cyan-300 shadow-sm hover:shadow-md"
                         : slot.state === 'scheduled'
                         ? "bg-emerald-100 border-emerald-300 shadow-sm hover:shadow-md"
                         : slot.state === 'exam'
@@ -15765,13 +15830,29 @@ function TimetableBuilder() {
                         <div
                           className={cn(
                             "w-2.5 h-2.5 rounded-full",
-                            slot.state === 'multi' ? "bg-rose-600" : slot.state === 'scheduled' ? "bg-emerald-600" : slot.state === 'exam' ? "bg-amber-600" : "border-2 border-slate-500 bg-white",
+                            slot.state === 'multi'
+                              ? "bg-rose-600"
+                              : slot.state === 'combined'
+                              ? "bg-cyan-600"
+                              : slot.state === 'scheduled'
+                              ? "bg-emerald-600"
+                              : slot.state === 'exam'
+                              ? "bg-amber-600"
+                              : "border-2 border-slate-500 bg-white",
                           )}
                         ></div>
                         <span
                           className={cn(
                             "text-[10px] font-bold uppercase tracking-wider",
-                            slot.state === 'multi' ? "text-rose-800" : slot.state === 'scheduled' ? "text-emerald-800" : slot.state === 'exam' ? "text-amber-800" : "text-slate-600",
+                            slot.state === 'multi'
+                              ? "text-rose-800"
+                              : slot.state === 'combined'
+                              ? "text-cyan-800"
+                              : slot.state === 'scheduled'
+                              ? "text-emerald-800"
+                              : slot.state === 'exam'
+                              ? "text-amber-800"
+                              : "text-slate-600",
                           )}
                         >
                           {slot.start_time} - {slot.end_time}
@@ -15782,6 +15863,8 @@ function TimetableBuilder() {
                           "rounded-full px-2.5 py-1 text-[9px] font-bold uppercase tracking-widest border",
                           slot.state === 'multi'
                             ? "border-rose-300 bg-rose-200 text-rose-800"
+                            : slot.state === 'combined'
+                            ? "border-cyan-300 bg-cyan-200 text-cyan-800"
                             : slot.state === 'scheduled'
                             ? "border-emerald-300 bg-emerald-200 text-emerald-800"
                             : slot.state === 'exam'
@@ -15789,38 +15872,71 @@ function TimetableBuilder() {
                               : "border-slate-300 bg-slate-200 text-slate-600",
                         )}
                       >
-                        {slot.state === 'multi' ? 'Multiple' : slot.state === 'scheduled' ? 'Scheduled' : slot.state === 'exam' ? 'Blocked' : 'Vacant'}
+                        {slot.state === 'multi'
+                          ? 'Multiple'
+                          : slot.state === 'combined'
+                          ? 'Combined'
+                          : slot.state === 'scheduled'
+                          ? 'Scheduled'
+                          : slot.state === 'exam'
+                          ? 'Blocked'
+                          : 'Vacant'}
                       </span>
                     </div>
                     {slot.schedules.length > 0 ? (
                       <div className="space-y-3">
-                        {slot.schedules.map((s: any) => (
+                        {(slot.state === 'combined'
+                          ? (() => {
+                              const [primarySchedule] = slot.schedules;
+                              const totalStudents = slot.schedules.reduce((sum: number, schedule: any) => {
+                                const count = Number(schedule?.student_count || 0);
+                                return sum + (Number.isFinite(count) ? count : 0);
+                              }, 0);
+                              return [{
+                                ...primarySchedule,
+                                display_id: `combined-${slot.key}`,
+                                isCombinedSummary: true,
+                                combinedAudience: getCombinedClassAudienceSummary(slot.schedules, departments),
+                                combinedStage: getCombinedClassStageSummary(slot.schedules, departments),
+                                student_count: totalStudents > 0 ? totalStudents : null,
+                              }];
+                            })()
+                          : slot.schedules
+                        ).map((s: any) => (
                           <div
                             key={s.display_id ?? s.id}
                             className={cn(
                               "group relative rounded-lg bg-white p-3 shadow-sm",
                               slot.state === 'multi'
                                 ? "border border-rose-200 ring-1 ring-rose-100"
+                                : slot.state === 'combined'
+                                ? "border border-cyan-200 ring-1 ring-cyan-100"
                                 : "border border-emerald-200 ring-1 ring-emerald-100"
                             )}
                           >
-                            <button
-                              onClick={() => handleDelete(s.id)}
-                              className="absolute top-2 right-2 p-1 text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                            >
-                              <X size={14} />
-                            </button>
+                            {!s.isCombinedSummary && (
+                              <button
+                                onClick={() => handleDelete(s.id)}
+                                className="absolute top-2 right-2 p-1 text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                              >
+                                <X size={14} />
+                              </button>
+                            )}
                             <h5 className="pr-6 text-sm font-bold text-slate-800 mb-1 line-clamp-1">{s.course_name}</h5>
                             <p className="text-[10px] text-slate-500 font-medium mb-2">
-                              {[s.specialization || '', s.section ? `Section ${s.section}` : '', s.course_code, s.faculty].filter(Boolean).join(' | ')}
+                              {s.isCombinedSummary
+                                ? [s.combinedAudience, s.course_code, s.faculty].filter(Boolean).join(' | ')
+                                : [s.specialization || '', s.section ? `Section ${s.section}` : '', s.course_code, s.faculty].filter(Boolean).join(' | ')}
                             </p>
                             <div className="flex items-center justify-between pt-2 border-t border-slate-50">
                               <span className="text-[10px] font-bold text-slate-400">
-                                {getScheduleAcademicStageLabel(s, departments) || 'Academic context not set'}
+                                {s.isCombinedSummary
+                                  ? (s.combinedStage || 'Academic context not set')
+                                  : (getScheduleAcademicStageLabel(s, departments) || 'Academic context not set')}
                               </span>
                               <div className="flex items-center gap-1 text-[10px] font-bold text-slate-600">
                                 <Users size={10} />
-                                {s.student_count}
+                                {s.student_count ?? '-'}
                               </div>
                             </div>
                           </div>
@@ -16370,19 +16486,19 @@ function DigitalTwin() {
     return map;
   }, [roomSchedulesByRoomId, currentDayName, currentDate, academicCalendars, batchRoomAllocations]);
 
-  const roomCurrentScheduleByRoomId = useMemo(() => {
-    const map = new Map<string, any | null>();
+  const roomCurrentSchedulesByRoomId = useMemo(() => {
+    const map = new Map<string, any[]>();
     rooms.forEach((room: any) => {
       const roomKey = toKey(room?.id);
       const current = (effectiveTodaySchedulesByRoomId.get(roomKey) || [])
-        .find((schedule: any) => schedule.start_time <= currentTime && schedule.end_time > currentTime) || null;
+        .filter((schedule: any) => schedule.start_time <= currentTime && schedule.end_time > currentTime);
       map.set(roomKey, current);
     });
     return map;
   }, [rooms, effectiveTodaySchedulesByRoomId, currentTime]);
 
-  const roomNextScheduleByRoomId = useMemo(() => {
-    const map = new Map<string, any | null>();
+  const roomNextSchedulesByRoomId = useMemo(() => {
+    const map = new Map<string, any[]>();
     const dateEntries = Array.from({ length: 7 }, (_, offset) => {
       const date = new Date(`${currentDate}T00:00:00`);
       date.setDate(date.getDate() + offset);
@@ -16394,16 +16510,23 @@ function DigitalTwin() {
     rooms.forEach((room: any) => {
       const roomKey = toKey(room?.id);
       const roomSchedules = roomSchedulesByRoomId.get(roomKey) || [];
-      let next: any = null;
+      let next: any[] = [];
       for (const { offset, dateKey, dayName } of dateEntries) {
         const dateSchedules = roomSchedules
           .filter(schedule => schedule.day_of_week === dayName)
-          .filter(schedule => !isScheduleSuppressedForDate(schedule, dateKey, academicCalendars, batchRoomAllocations));
+          .filter(schedule => !isScheduleSuppressedForDate(schedule, dateKey, academicCalendars, batchRoomAllocations))
+          .sort((left: any, right: any) => (left.start_time || '').localeCompare(right.start_time || '') || (left.end_time || '').localeCompare(right.end_time || ''));
         const upcoming = offset === 0
           ? dateSchedules.filter(schedule => schedule.start_time > currentTime)
           : dateSchedules;
         if (upcoming.length > 0) {
-          next = { ...upcoming[0], effective_date: dateKey };
+          const [firstUpcoming] = upcoming;
+          next = upcoming
+            .filter((schedule: any) =>
+              schedule.start_time === firstUpcoming.start_time &&
+              schedule.end_time === firstUpcoming.end_time,
+            )
+            .map((schedule: any) => ({ ...schedule, effective_date: dateKey }));
           break;
         }
       }
@@ -16432,14 +16555,14 @@ function DigitalTwin() {
         map.set(roomKey, 'Maintenance');
       } else if (nowBookedRoomIds.has(roomKey)) {
         map.set(roomKey, 'Booked');
-      } else if (roomCurrentScheduleByRoomId.get(roomKey)) {
+      } else if ((roomCurrentSchedulesByRoomId.get(roomKey)?.length || 0) > 0) {
         map.set(roomKey, 'Scheduled');
       } else {
         map.set(roomKey, room?.status || 'Available');
       }
     });
     return map;
-  }, [rooms, bookings, currentDate, currentTime, activeMaintenanceByRoomId, roomCurrentScheduleByRoomId]);
+  }, [rooms, bookings, currentDate, currentTime, activeMaintenanceByRoomId, roomCurrentSchedulesByRoomId]);
 
   const roomSearchTextByRoomId = useMemo(() => {
     const map = new Map<string, string>();
@@ -16519,11 +16642,17 @@ function DigitalTwin() {
       .filter(schedule => schedule.day_of_week === new Date(`${date}T00:00:00`).toLocaleDateString('en-US', { weekday: 'long' }))
       .filter(schedule => !isScheduleSuppressedForDate(schedule, date, academicCalendars, batchRoomAllocations));
 
+  const getCurrentScheduleSet = (room: any) =>
+    roomCurrentSchedulesByRoomId.get(toKey(room?.id)) || [];
+
   const getCurrentSchedule = (room: any) =>
-    roomCurrentScheduleByRoomId.get(toKey(room?.id)) || null;
+    getCurrentScheduleSet(room)[0] || null;
+
+  const getNextScheduleSet = (room: any) =>
+    roomNextSchedulesByRoomId.get(toKey(room?.id)) || [];
 
   const getNextSchedule = (room: any) =>
-    roomNextScheduleByRoomId.get(toKey(room?.id)) || null;
+    getNextScheduleSet(room)[0] || null;
 
   const getRoomLiveStatus = (room: any) => {
     return roomLiveStatusByRoomId.get(toKey(room?.id)) || room?.status || 'Available';
@@ -17016,8 +17145,12 @@ function DigitalTwin() {
               const equipmentLabels = getRoomEquipmentLabels(r);
               const departmentLabel = getRoomDepartmentLabel(r);
               const roomSchedules = getRoomSchedules(r);
-              const currentSchedule = getCurrentSchedule(r);
-              const nextSchedule = currentSchedule ? null : getNextSchedule(r);
+              const currentSchedules = getCurrentScheduleSet(r);
+              const currentSchedule = currentSchedules[0] || null;
+              const currentScheduleState = getScheduleOverlapState(currentSchedules);
+              const nextSchedules = currentSchedule ? [] : getNextScheduleSet(r);
+              const nextSchedule = nextSchedules[0] || null;
+              const nextScheduleState = getScheduleOverlapState(nextSchedules);
               const linkContextSchedule = getRoomLinkContextSchedule(r);
               const roomContextCount = getRoomContextCount(r);
               const statusClass =
@@ -17052,16 +17185,34 @@ function DigitalTwin() {
                 )}
                 {currentSchedule ? (
                   <div className="mt-3 rounded-xl border border-rose-500/20 bg-rose-500/10 p-3">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-rose-300">Current Class</p>
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-rose-300">
+                      {currentScheduleState === 'combined' ? 'Combined Class' : currentScheduleState === 'multi' ? 'Multiple Classes' : 'Current Class'}
+                    </p>
                     <p className="mt-1 text-xs font-bold text-white line-clamp-1">{currentSchedule.course_name}</p>
-                    <p className="text-[10px] text-slate-500">{getScheduleAcademicContextLabel(currentSchedule, departments) || 'Academic context not set'}</p>
+                    <p className="text-[10px] text-slate-500">
+                      {currentScheduleState === 'combined'
+                        ? getCombinedClassStageSummary(currentSchedules, departments)
+                        : getScheduleAcademicContextLabel(currentSchedule, departments) || 'Academic context not set'}
+                    </p>
+                    {currentScheduleState === 'combined' && (
+                      <p className="text-[10px] text-slate-400">{getCombinedClassAudienceSummary(currentSchedules, departments)}</p>
+                    )}
                     <p className="text-[10px] text-slate-400">{currentSchedule.start_time} - {currentSchedule.end_time} • {currentSchedule.faculty || 'Faculty not set'}</p>
                   </div>
                 ) : nextSchedule ? (
                   <div className="mt-3 rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-300">Next Class</p>
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-300">
+                      {nextScheduleState === 'combined' ? 'Next Combined Class' : nextScheduleState === 'multi' ? 'Next Multiple Classes' : 'Next Class'}
+                    </p>
                     <p className="mt-1 text-xs font-bold text-white line-clamp-1">{nextSchedule.course_name}</p>
-                    <p className="text-[10px] text-slate-500">{getScheduleAcademicContextLabel(nextSchedule, departments) || 'Academic context not set'}</p>
+                    <p className="text-[10px] text-slate-500">
+                      {nextScheduleState === 'combined'
+                        ? getCombinedClassStageSummary(nextSchedules, departments)
+                        : getScheduleAcademicContextLabel(nextSchedule, departments) || 'Academic context not set'}
+                    </p>
+                    {nextScheduleState === 'combined' && (
+                      <p className="text-[10px] text-slate-400">{getCombinedClassAudienceSummary(nextSchedules, departments)}</p>
+                    )}
                     <p className="text-[10px] text-slate-400">{nextSchedule.day_of_week} • {nextSchedule.start_time} - {nextSchedule.end_time}</p>
                   </div>
                 ) : (
