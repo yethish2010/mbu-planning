@@ -1303,6 +1303,17 @@ const getScheduleAcademicContextLabel = (schedule: any, departments: any[]) => {
   return [departmentName, semester, section ? `Section ${section}` : ''].filter(Boolean).join(' • ');
 };
 
+const getScheduleAcademicStageLabel = (schedule: any, departments: any[]) => {
+  const departmentName = schedule?.department_name
+    || departments.find((department: any) => idsMatch(department.id, schedule?.department_id))?.name
+    || schedule?.department
+    || '';
+  const program = normalizeProgramValue(schedule?.program);
+  const yearLabel = getYearDisplayLabel(schedule?.year_of_study, schedule?.semester);
+  const semester = normalizeExactSemesterValue(schedule?.semester, schedule?.year_of_study, '');
+  return [departmentName, program, yearLabel !== '-' ? yearLabel : '', semester].filter(Boolean).join(' • ');
+};
+
 const deduplicateScheduleRows = (rows: any[]) => {
   const seen = new Set<string>();
   return rows.filter((row) => {
@@ -15805,7 +15816,7 @@ function TimetableBuilder() {
                             </p>
                             <div className="flex items-center justify-between pt-2 border-t border-slate-50">
                               <span className="text-[10px] font-bold text-slate-400">
-                                {[s.department_name, getYearDisplayLabel(s?.year_of_study, s?.semester)].filter(value => value && value !== '-').join(' • ')}
+                                {getScheduleAcademicStageLabel(s, departments) || 'Academic context not set'}
                               </span>
                               <div className="flex items-center gap-1 text-[10px] font-bold text-slate-600">
                                 <Users size={10} />
@@ -16665,6 +16676,8 @@ function DigitalTwin() {
     if (room?.id !== undefined && room?.id !== null) params.set('roomId', room.id.toString());
     params.set('room', getRoomDisplayLabel(room, rooms));
     if (schedule?.department_id !== undefined && schedule?.department_id !== null) params.set('departmentId', schedule.department_id.toString());
+    const normalizedProgram = normalizeProgramValue(schedule?.program);
+    if (normalizedProgram) params.set('program', normalizedProgram);
     const normalizedSemester = normalizeExactSemesterValue(schedule?.semester, schedule?.year_of_study, '');
     if (normalizedSemester) params.set('semester', normalizedSemester);
     if (schedule?.section) params.set('section', schedule.section.toString());
