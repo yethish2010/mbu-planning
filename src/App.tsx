@@ -4090,6 +4090,11 @@ function GenericCRUD({
 
     return value;
   };
+  const applyFieldValueChange = (field: any, value: any) => {
+    const nextData = { ...formData, [field.key]: value };
+    field.resetKeys?.forEach((key: string) => { nextData[key] = ''; });
+    setFormData(field.onChange ? field.onChange(nextData, value, editingItem) : nextData);
+  };
   const getFormFieldLabel = (field: any) =>
     typeof field.formLabel === 'function'
       ? field.formLabel(formData, editingItem)
@@ -4488,9 +4493,7 @@ function GenericCRUD({
                           const value = f.multiple
                             ? Array.from(e.target.selectedOptions).map(option => option.value).filter(Boolean).join(',')
                             : e.target.value;
-                          const nextData = { ...formData, [f.key]: value };
-                          f.resetKeys?.forEach((key: string) => { nextData[key] = ''; });
-                          setFormData(f.onChange ? f.onChange(nextData, value, editingItem) : nextData);
+                          applyFieldValueChange(f, value);
                         }}
                         className={cn(
                           "w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500",
@@ -4511,7 +4514,7 @@ function GenericCRUD({
                             type={visiblePasswordFields[f.key] ? 'text' : 'password'}
                             required={f.required !== false}
                             value={formData[f.key] || ''}
-                            onChange={e => setFormData({ ...formData, [f.key]: e.target.value })}
+                            onChange={e => applyFieldValueChange(f, e.target.value)}
                             className="w-full px-3 py-2 pr-16 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
                             placeholder={editingItem ? 'Enter new password' : `Enter ${getFormFieldLabel(f)}`}
                           />
@@ -4538,7 +4541,7 @@ function GenericCRUD({
                         type={f.type || 'text'}
                         required={f.required !== false}
                         value={formData[f.key] || ''}
-                        onChange={e => setFormData({ ...formData, [f.key]: e.target.value })}
+                        onChange={e => applyFieldValueChange(f, e.target.value)}
                         className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
                         placeholder={`Enter ${getFormFieldLabel(f)}`}
                       />
@@ -7775,8 +7778,8 @@ function SchedulingManagement() {
       tableOnly: true,
       render: (schedule: any) => getYearDisplayLabel(schedule?.year_of_study, schedule?.semester),
     },
-    { key: 'specialization', label: SPECIALIZATION_BRANCH_LABEL, required: false },
-    { key: 'section', label: 'Section' },
+    { key: 'specialization', label: SPECIALIZATION_BRANCH_LABEL, required: false, render: (schedule: any) => schedule?.specialization || '-' },
+    { key: 'section', label: 'Section', required: false, render: (schedule: any) => schedule?.section || '-' },
     {
       key: 'semester',
       label: EXACT_SEMESTER_LABEL,
@@ -7835,6 +7838,7 @@ function SchedulingManagement() {
       ? getYearDisplayLabel(item?.year_of_study, item?.semester)
       : '',
     specialization: item?.specialization || '',
+    section: item?.section || '',
     semester: normalizeExactSemesterValue(item?.semester, item?.year_of_study, item?.semester || ''),
     import_status: item?.import_status || '',
     review_note: item?.review_note || '',
@@ -7850,6 +7854,7 @@ function SchedulingManagement() {
       ...data,
       room_id: data.room_id || null,
       specialization: data.specialization?.toString().trim() || null,
+      section: data.section?.toString().trim() || null,
       semester: normalizedSemester || data.semester,
       year_of_study: derivedYearNumber ? derivedYearNumber.toString() : normalizeYearOfStudyValue(data.year_of_study) || null,
       import_status: normalizeScheduleImportStatus(data.import_status) || inferredImportStatus,

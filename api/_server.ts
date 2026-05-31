@@ -1176,7 +1176,6 @@ const normalizeScheduleSpecializationValue = (value: any) => {
   if (!raw) return null;
   const normalized = raw.replace(/\s+/g, " ").trim();
   if (!normalized) return null;
-  if (/^b\.?\s*pt$/i.test(normalized) || /^bpt$/i.test(normalized)) return null;
   return normalized.toUpperCase();
 };
 
