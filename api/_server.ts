@@ -270,6 +270,7 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
     CREATE TABLE IF NOT EXISTS schedules (
       id ${idDefinition},
       schedule_id TEXT UNIQUE NOT NULL,
+      schedule_code TEXT,
       department_id INTEGER,
       specialization TEXT,
       section TEXT,
@@ -398,6 +399,7 @@ await ensureColumn("schedules", "semester", "TEXT");
 await ensureColumn("schedules", "year_of_study", "TEXT");
 await ensureColumn("schedules", "import_status", "TEXT");
 await ensureColumn("schedules", "review_note", "TEXT");
+await ensureColumn("schedules", "schedule_code", "TEXT");
 await ensureColumn("schedules", "source_file", "TEXT");
 await ensureColumn("users", "responsibilities", "TEXT");
 await ensureColumn("users", "access_limits", "TEXT");
@@ -1184,6 +1186,64 @@ const normalizeSchedulePayload = (payload: any) => ({
   specialization: normalizeScheduleSpecializationValue(payload?.specialization || payload?.branch),
   section: payload?.section?.toString().trim() || null,
 });
+
+const buildDepartmentScheduleCodeSegment = (department: any) => {
+  const raw = department?.department_id?.toString().trim() || department?.name?.toString().trim() || "GEN";
+  const compact = raw.replace(/[^a-z0-9]+/gi, " ").trim();
+  if (!compact) return "GEN";
+  if (department?.department_id) {
+    return compact.replace(/\s+/g, "-").toUpperCase();
+  }
+  const acronym = compact
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part: string) => part[0])
+    .join("")
+    .toUpperCase();
+  return acronym || compact.replace(/\s+/g, "-").toUpperCase();
+};
+
+const buildScheduleCodePrefix = (department: any, specialization: any) => {
+  const departmentSegment = buildDepartmentScheduleCodeSegment(department);
+  const specializationSegment = normalizeScheduleSpecializationValue(specialization);
+  return ["SCH", departmentSegment, specializationSegment].filter(Boolean).join("-");
+};
+
+const assignScheduleCode = async (payload: any, existingId?: any, existingItem?: any) => {
+  const mergedPayload = { ...(existingItem || {}), ...(payload || {}) };
+  const department = mergedPayload?.department_id
+    ? await db.prepare("SELECT id, department_id, name FROM departments WHERE id = ?").get(mergedPayload.department_id) as any
+    : null;
+  const prefix = buildScheduleCodePrefix(department, mergedPayload.specialization);
+  const existingCode = existingItem?.schedule_code?.toString().trim() || "";
+  if (existingCode && existingCode.startsWith(`${prefix}-`)) {
+    return existingCode;
+  }
+
+  const rows = await db.prepare("SELECT id, schedule_code FROM schedules WHERE schedule_code IS NOT NULL").all() as any[];
+  let maxSequence = 0;
+  rows.forEach((row: any) => {
+    if (existingId && idsEqual(row?.id, existingId)) return;
+    const code = row?.schedule_code?.toString().trim() || "";
+    if (!code.startsWith(`${prefix}-`)) return;
+    const sequence = parseInt(code.slice(prefix.length + 1), 10);
+    if (Number.isFinite(sequence)) {
+      maxSequence = Math.max(maxSequence, sequence);
+    }
+  });
+  return `${prefix}-${String(maxSequence + 1).padStart(3, "0")}`;
+};
+
+const backfillMissingScheduleCodes = async (rows: any[]) => {
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (row?.schedule_code?.toString().trim()) continue;
+    if (!row?.id) continue;
+    const scheduleCode = await assignScheduleCode(row, row.id, row);
+    await db.prepare("UPDATE schedules SET schedule_code = ? WHERE id = ?").run(scheduleCode, row.id);
+    row.schedule_code = scheduleCode;
+  }
+  return rows;
+};
 
 const normalizeYearOfStudyKey = (value: any) => {
   const normalized = value?.toString().trim().toLowerCase() || "";
@@ -2476,7 +2536,8 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
 
       const items = await db.prepare(`SELECT * FROM ${tableName}`).all();
       if (tableName === "schedules") {
-        const deduplicatedItems = deduplicateSchedules(items as any[]).kept;
+        const hydratedItems = await backfillMissingScheduleCodes(items as any[]);
+        const deduplicatedItems = deduplicateSchedules(hydratedItems as any[]).kept;
         const requestedDate = normalizeIsoDate(req.query.date);
         if (requestedDate) {
           return res.json(await filterSchedulesByAcademicCalendar(deduplicatedItems, requestedDate));
@@ -2568,6 +2629,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       if (tableName === "schedules") {
         const bookableError = await getBookableRoomError(req.body.room_id);
         if (bookableError) return res.status(400).json({ error: bookableError });
+        req.body.schedule_code = await assignScheduleCode(req.body);
       }
 
       if (tableName === "bookings") {
@@ -2709,6 +2771,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         const nextSchedule = { ...existingItem, ...req.body };
         const bookableError = await getBookableRoomError(nextSchedule.room_id);
         if (bookableError) return res.status(400).json({ error: bookableError });
+        req.body.schedule_code = await assignScheduleCode(req.body, req.params.id, existingItem);
       }
 
       if (tableName === "bookings") {

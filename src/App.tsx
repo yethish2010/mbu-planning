@@ -7532,6 +7532,7 @@ function SchedulingManagement() {
   const scheduleDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const scheduleYearOptions = ['I Year', 'II Year', 'III Year', 'IV Year'];
   const scheduleImportStatusOptions = ['Linked', 'Unmatched Room', 'Room Missing'];
+  const scheduleDayOrder = new Map(scheduleDays.map((day, index) => [day, index]));
 
   const getScheduleRoomLocation = (room: any) => {
     const floor = floors.find(item => idsMatch(item.id, room?.floor_id));
@@ -7611,6 +7612,31 @@ function SchedulingManagement() {
     }
 
     return true;
+  };
+
+  const parseScheduleTimeToMinutes = (value: unknown) => {
+    const raw = value?.toString().trim() || '';
+    if (!raw.includes(':')) return Number.MAX_SAFE_INTEGER;
+    const [hour, minute] = raw.split(':').map(Number);
+    if (Number.isNaN(hour) || Number.isNaN(minute)) return Number.MAX_SAFE_INTEGER;
+    return (hour * 60) + minute;
+  };
+
+  const scheduleDataSorter = (left: any, right: any) => {
+    const dayCompare = (scheduleDayOrder.get(left?.day_of_week) ?? Number.MAX_SAFE_INTEGER) - (scheduleDayOrder.get(right?.day_of_week) ?? Number.MAX_SAFE_INTEGER);
+    if (dayCompare !== 0) return dayCompare;
+    const startCompare = parseScheduleTimeToMinutes(left?.start_time) - parseScheduleTimeToMinutes(right?.start_time);
+    if (startCompare !== 0) return startCompare;
+    const departmentCompare = compareNaturalSortValues(
+      departments.find(item => idsMatch(item.id, left?.department_id))?.name || '',
+      departments.find(item => idsMatch(item.id, right?.department_id))?.name || '',
+    );
+    if (departmentCompare !== 0) return departmentCompare;
+    const specializationCompare = compareNaturalSortValues(left?.specialization, right?.specialization);
+    if (specializationCompare !== 0) return specializationCompare;
+    const sectionCompare = compareNaturalSortValues(left?.section, right?.section);
+    if (sectionCompare !== 0) return sectionCompare;
+    return compareNaturalSortValues(left?.schedule_code || left?.schedule_id, right?.schedule_code || right?.schedule_id);
   };
 
   const hasActiveScheduleFilters = Object.values(scheduleFilters).some(Boolean);
@@ -7764,7 +7790,7 @@ function SchedulingManagement() {
   );
 
   const fields = [
-    { key: 'schedule_id', label: 'Schedule ID' },
+    { key: 'schedule_id', label: 'Schedule ID', render: (schedule: any) => schedule?.schedule_code || schedule?.schedule_id || '-' },
     { key: 'department_id', label: 'Department', type: 'select', options: departments.map(d => ({ value: d.id, label: d.name })) },
     {
       key: 'year_of_study',
@@ -8165,6 +8191,7 @@ function SchedulingManagement() {
         prepareSubmitData={prepareScheduleSubmitData}
         dataFilter={scheduleMatchesFilters}
         filterControls={scheduleFilterControls}
+        dataSorter={scheduleDataSorter}
       />
     </div>
   );
@@ -8463,6 +8490,7 @@ function BookingManagement() {
     if (searchCriteria.section && (schedule.section?.toString().trim() || '') !== searchCriteria.section.trim()) return false;
     return true;
   };
+
   const filterAndSortRooms = (roomList: any[]) => {
     const requestedCapacity = parseInt(searchCriteria.members, 10) || 0;
     return roomList.filter(room => {
