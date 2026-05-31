@@ -272,6 +272,7 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       schedule_id TEXT UNIQUE NOT NULL,
       schedule_code TEXT,
       department_id INTEGER,
+      program TEXT,
       specialization TEXT,
       section TEXT,
       course_code TEXT,
@@ -395,6 +396,7 @@ await ensureColumn("rooms", "restroom_type", "TEXT");
 await ensureColumn("schedules", "room_label", "TEXT");
 await ensureColumn("schedules", "section", "TEXT");
 await ensureColumn("schedules", "specialization", "TEXT");
+await ensureColumn("schedules", "program", "TEXT");
 await ensureColumn("schedules", "semester", "TEXT");
 await ensureColumn("schedules", "year_of_study", "TEXT");
 await ensureColumn("schedules", "import_status", "TEXT");
@@ -1181,8 +1183,35 @@ const normalizeScheduleSpecializationValue = (value: any) => {
   return normalized.toUpperCase();
 };
 
+const normalizeScheduleProgramValue = (value: any) => {
+  const raw = value?.toString().trim();
+  if (!raw) return null;
+  const normalized = raw.replace(/\s+/g, " ").trim();
+  if (!normalized) return null;
+
+  const aliases: Record<string, string> = {
+    "bsc": "B.Sc",
+    "b.sc": "B.Sc",
+    "b.sc.": "B.Sc",
+    "bpt": "BPT",
+    "b pt": "BPT",
+    "btech": "B.Tech",
+    "b tech": "B.Tech",
+    "b.tech": "B.Tech",
+    "mtech": "M.Tech",
+    "m tech": "M.Tech",
+    "m.tech": "M.Tech",
+    "bpharm": "B.Pharm",
+    "b pharm": "B.Pharm",
+    "b.pharm": "B.Pharm",
+  };
+
+  return aliases[normalized.toLowerCase()] || normalized;
+};
+
 const normalizeSchedulePayload = (payload: any) => ({
   ...payload,
+  program: normalizeScheduleProgramValue(payload?.program),
   specialization: normalizeScheduleSpecializationValue(payload?.specialization || payload?.branch),
   section: payload?.section?.toString().trim() || null,
 });
@@ -1203,10 +1232,17 @@ const buildDepartmentScheduleCodeSegment = (department: any) => {
   return acronym || compact.replace(/\s+/g, "-").toUpperCase();
 };
 
-const buildScheduleCodePrefix = (department: any, specialization: any) => {
+const buildScheduleProgramCodeSegment = (program: any) => {
+  const normalizedProgram = normalizeScheduleProgramValue(program);
+  if (!normalizedProgram) return "";
+  return normalizedProgram.replace(/[^a-z0-9]+/gi, "").toUpperCase();
+};
+
+const buildScheduleCodePrefix = (department: any, program: any, specialization: any) => {
   const departmentSegment = buildDepartmentScheduleCodeSegment(department);
+  const programSegment = buildScheduleProgramCodeSegment(program);
   const specializationSegment = normalizeScheduleSpecializationValue(specialization);
-  return ["SCH", departmentSegment, specializationSegment].filter(Boolean).join("-");
+  return ["SCH", departmentSegment, programSegment, specializationSegment].filter(Boolean).join("-");
 };
 
 const assignScheduleCode = async (payload: any, existingId?: any, existingItem?: any) => {
@@ -1214,7 +1250,7 @@ const assignScheduleCode = async (payload: any, existingId?: any, existingItem?:
   const department = mergedPayload?.department_id
     ? await db.prepare("SELECT id, department_id, name FROM departments WHERE id = ?").get(mergedPayload.department_id) as any
     : null;
-  const prefix = buildScheduleCodePrefix(department, mergedPayload.specialization);
+  const prefix = buildScheduleCodePrefix(department, mergedPayload.program, mergedPayload.specialization);
   const existingCode = existingItem?.schedule_code?.toString().trim() || "";
   if (existingCode && existingCode.startsWith(`${prefix}-`)) {
     return existingCode;
@@ -1236,9 +1272,10 @@ const assignScheduleCode = async (payload: any, existingId?: any, existingItem?:
 
 const backfillMissingScheduleCodes = async (rows: any[]) => {
   for (const row of Array.isArray(rows) ? rows : []) {
-    if (row?.schedule_code?.toString().trim()) continue;
     if (!row?.id) continue;
+    const existingCode = row?.schedule_code?.toString().trim() || "";
     const scheduleCode = await assignScheduleCode(row, row.id, row);
+    if (existingCode === scheduleCode) continue;
     await db.prepare("UPDATE schedules SET schedule_code = ? WHERE id = ?").run(scheduleCode, row.id);
     row.schedule_code = scheduleCode;
   }
@@ -1307,6 +1344,16 @@ const scheduleMatchesCalendarOverride = (schedule: any, calendar: any, activeBat
   const scheduleYear = normalizeYearOfStudyKey(schedule.year_of_study);
   const calendarYear = normalizeYearOfStudyKey(calendar.year_of_study);
   if (calendarYear && scheduleYear && calendarYear !== scheduleYear) return false;
+  if (
+    calendar?.program &&
+    schedule?.program &&
+    normalizeAcademicContextText(calendar.program) !== normalizeAcademicContextText(schedule.program)
+  ) return false;
+  if (
+    calendar?.specialization &&
+    schedule?.specialization &&
+    normalizeAcademicContextText(calendar.specialization) !== normalizeAcademicContextText(schedule.specialization)
+  ) return false;
 
   const calendarHasSpecificContext = Boolean(
     calendar?.program || calendar?.batch || calendar?.specialization || calendar?.academic_year || calendar?.year_of_study,
@@ -1319,6 +1366,18 @@ const scheduleMatchesCalendarOverride = (schedule: any, calendar: any, activeBat
 
     const allocationSemester = normalizeSemesterKey(allocation.semester);
     if (scheduleSemester && allocationSemester && allocationSemester !== scheduleSemester) return false;
+    if (
+      schedule?.program &&
+      allocation?.program &&
+      normalizeAcademicContextText(allocation.program) !== normalizeAcademicContextText(schedule.program)
+    ) return false;
+    if (
+      schedule?.specialization &&
+      allocation?.specialization &&
+      normalizeAcademicContextText(allocation.specialization) !== normalizeAcademicContextText(schedule.specialization)
+    ) return false;
+    const allocationYear = normalizeYearOfStudyKey(allocation.year_of_study);
+    if (scheduleYear && allocationYear && allocationYear !== scheduleYear) return false;
 
     if (date && allocation?.start_date && allocation?.end_date) {
       const allocationStart = normalizeIsoDate(allocation.start_date);
@@ -1760,6 +1819,16 @@ const normalizeExtractedSpecializationValue = (value: any) => {
   return normalizeScheduleSpecializationValue(raw) || "";
 };
 
+const normalizeExtractedProgramValue = (value: any) => {
+  const raw = value?.toString().trim();
+  if (!raw) return "";
+  const directMatch = raw.match(/\b(b\.?\s*sc|bpt|b\.?\s*pharm|b\.?\s*tech|m\.?\s*tech)\b/i);
+  if (directMatch?.[1]) {
+    return normalizeScheduleProgramValue(directMatch[1]) || "";
+  }
+  return normalizeScheduleProgramValue(raw) || "";
+};
+
 const normalizeExtractedRoomValue = (value: any) => {
   const raw = value?.toString().trim();
   if (!raw) return "";
@@ -1772,20 +1841,21 @@ const normalizeExtractedRoomValue = (value: any) => {
 const mergeExtractedSchedulesWithHeaderRooms = (schedules: any[], sectionRoomMaps: any[]) => {
   if (!Array.isArray(schedules) || schedules.length === 0) return [];
 
-  const fallbackBySection = new Map<string, { room: string; semester: any; department: any; year_of_study: any; specialization: any }>();
-  const fallbackBySpecialization = new Map<string, { room: string; semester: any; department: any; year_of_study: any; specialization: any }>();
+  const fallbackBySection = new Map<string, { room: string; semester: any; department: any; program: any; year_of_study: any; specialization: any }>();
+  const fallbackBySpecialization = new Map<string, { room: string; semester: any; department: any; program: any; year_of_study: any; specialization: any }>();
   for (const item of Array.isArray(sectionRoomMaps) ? sectionRoomMaps : []) {
     const section = normalizeExtractedSectionValue(item?.section);
     const room = normalizeExtractedRoomValue(item?.room);
     const semester = item?.semester || null;
     const department = item?.department || null;
+    const program = normalizeExtractedProgramValue(item?.program || item?.program_context || item?.title || item?.header) || null;
     const year_of_study = normalizeYearOfStudyKey(item?.year_of_study || item?.year) || null;
     const specialization = normalizeExtractedSpecializationValue(item?.specialization || item?.branch || item?.title || item?.header) || null;
-    if (section && (room || semester || department || year_of_study || specialization) && !fallbackBySection.has(section)) {
-      fallbackBySection.set(section, { room, semester, department, year_of_study, specialization });
+    if (section && (room || semester || department || program || year_of_study || specialization) && !fallbackBySection.has(section)) {
+      fallbackBySection.set(section, { room, semester, department, program, year_of_study, specialization });
     }
-    if (specialization && (room || semester || department || year_of_study) && !fallbackBySpecialization.has(specialization)) {
-      fallbackBySpecialization.set(specialization, { room, semester, department, year_of_study, specialization });
+    if (specialization && (room || semester || department || program || year_of_study) && !fallbackBySpecialization.has(specialization)) {
+      fallbackBySpecialization.set(specialization, { room, semester, department, program, year_of_study, specialization });
     }
   }
 
@@ -1796,6 +1866,7 @@ const mergeExtractedSchedulesWithHeaderRooms = (schedules: any[], sectionRoomMap
           room: normalizeExtractedRoomValue(item?.room),
           semester: item?.semester || null,
           department: item?.department || null,
+          program: normalizeExtractedProgramValue(item?.program || item?.program_context || item?.title || item?.header) || null,
           year_of_study: normalizeYearOfStudyKey(item?.year_of_study || item?.year) || null,
           specialization: normalizeExtractedSpecializationValue(item?.specialization || item?.branch || item?.title || item?.header) || null,
         };
@@ -1804,6 +1875,7 @@ const mergeExtractedSchedulesWithHeaderRooms = (schedules: any[], sectionRoomMap
 
   return schedules.map(schedule => {
     const normalizedSection = normalizeExtractedSectionValue(schedule?.section);
+    const normalizedProgram = normalizeExtractedProgramValue(schedule?.program || schedule?.program_context || schedule?.header) || null;
     const normalizedSpecialization = normalizeExtractedSpecializationValue(schedule?.specialization || schedule?.branch || schedule?.program_context || schedule?.header) || null;
     const explicitRoom = normalizeExtractedRoomValue(schedule?.room);
     const inheritedDefaults =
@@ -1821,6 +1893,7 @@ const mergeExtractedSchedulesWithHeaderRooms = (schedules: any[], sectionRoomMap
       ...schedule,
       section: normalizedSection || schedule?.section || null,
       department: schedule?.department || inheritedDefaults?.department || null,
+      program: normalizedProgram || inheritedDefaults?.program || null,
       specialization: normalizedSpecialization || inheritedDefaults?.specialization || null,
       semester: schedule?.semester || inheritedDefaults?.semester || null,
       year_of_study: scheduleYear || inheritedYear || derivedYearFromSemester || null,
@@ -2060,11 +2133,13 @@ Return a single JSON object with exactly these keys:
 - sectionRoomMaps: array of objects with fields:
   - section
   - room
+  - program
   - year_of_study
   - semester
   - department
 - schedules: array of objects with fields:
   - department (e.g., "Computer Science and Engineering")
+  - program (e.g., "B.Sc", "BPT", "B.Tech")
   - section (e.g., "A1", "A2", "A10" from headers like SECTION-A1)
   - year_of_study (Roman or numeric year if available, e.g., "II", "2", "IV Year")
   - semester (prefer the exact semester if available, e.g., "IV", "6", or "VI Semester"; use Odd/Even only if the file truly provides no exact semester)
@@ -2079,6 +2154,7 @@ Return a single JSON object with exactly these keys:
 
 Ensure sectionRoomMaps captures the default Room No and academic context from the header of each section timetable.
 Ensure you capture the Section mentioned in the header of each timetable and repeat it for every extracted row from that section.
+Also capture the Program from the timetable heading, such as B.Sc or BPT, and repeat it for every extracted row in that timetable even when Section is blank.
 Also capture any Specialization / Branch from the timetable heading, such as AOTT, CVT, OPT, or BPT, and repeat it for every extracted row in that branch timetable even when Section is blank.
 For normal theory slots, use the section header Room No as the room.
 Only use a different room when that specific slot explicitly overrides it with text like (R.No.610) or Room No: 610 inside the timetable grid.
@@ -2089,8 +2165,8 @@ If a slot has multiple subjects or is a lab, create separate entries if needed o
 
 Example response:
 {
-  "sectionRoomMaps": [{"section":"A4","specialization":"CVT","room":"331","year_of_study":"II","semester":"IV Semester","department":"Computer Science and Engineering"}],
-  "schedules": [{"department":"Computer Science and Engineering","specialization":"CVT","section":"A4","year_of_study":"II","semester":"IV Semester","course_code":"22ME101703M","course_name":"Management Science","faculty":"MOOC","room":"331","day_of_week":"Monday","start_time":"09:00","end_time":"09:55","student_count":null}]
+  "sectionRoomMaps": [{"section":"A4","program":"B.Sc","specialization":"CVT","room":"331","year_of_study":"II","semester":"IV Semester","department":"Computer Science and Engineering"}],
+  "schedules": [{"department":"Computer Science and Engineering","program":"B.Sc","specialization":"CVT","section":"A4","year_of_study":"II","semester":"IV Semester","course_code":"22ME101703M","course_name":"Management Science","faculty":"MOOC","room":"331","day_of_week":"Monday","start_time":"09:00","end_time":"09:55","student_count":null}]
 }` });
 
     const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
@@ -2230,7 +2306,7 @@ const duplicateRules: Record<string, Array<{ fields: string[]; label: string }>>
   ],
   schedules: [
     { fields: ["schedule_id"], label: "Schedule ID" },
-    { fields: ["room_id", "specialization", "section", "day_of_week", "start_time", "end_time"], label: "Schedule slot for this room, branch, and section" },
+    { fields: ["room_id", "program", "specialization", "section", "day_of_week", "start_time", "end_time"], label: "Schedule slot for this room, program, branch, and section" },
   ],
   bookings: [
     { fields: ["request_id"], label: "Request ID" },
@@ -2283,17 +2359,18 @@ const getScheduleIdentityVariants = (schedule: any) => {
   const day = normalizeDuplicateValue(schedule?.day_of_week)?.toString() || "";
   const start = normalizeDuplicateValue(schedule?.start_time)?.toString() || "";
   const end = normalizeDuplicateValue(schedule?.end_time)?.toString() || "";
+  const program = normalizeDuplicateValue(normalizeScheduleProgramValue(schedule?.program))?.toString() || "";
   const specialization = normalizeDuplicateValue(normalizeScheduleSpecializationValue(schedule?.specialization))?.toString() || "";
   const section = normalizeDuplicateValue(schedule?.section)?.toString() || "";
   const variants: string[] = [];
 
   if (schedule?.room_id !== undefined && schedule?.room_id !== null && schedule.room_id !== "") {
-    variants.push(`room|${schedule.room_id.toString()}|${specialization}|${section}|${day}|${start}|${end}`);
+    variants.push(`room|${schedule.room_id.toString()}|${program}|${specialization}|${section}|${day}|${start}|${end}`);
   }
 
   const normalizedRoomLabel = normalizeDuplicateValue(schedule?.room_label)?.toString() || "";
   if (normalizedRoomLabel) {
-    variants.push(`label|${normalizedRoomLabel}|${specialization}|${section}|${day}|${start}|${end}`);
+    variants.push(`label|${normalizedRoomLabel}|${program}|${specialization}|${section}|${day}|${start}|${end}`);
   }
 
   if (variants.length === 0) {
@@ -2377,7 +2454,7 @@ const checkDuplicateRecord = async (tableName: string, data: any, excludeId?: st
 
   if (tableName === "schedules" && data?.day_of_week && data?.start_time && data?.end_time) {
     const candidates = await db.prepare(`
-      SELECT id, schedule_id, room_id, room_label, specialization, section, day_of_week, start_time, end_time
+      SELECT id, schedule_id, program, room_id, room_label, specialization, section, day_of_week, start_time, end_time
       FROM schedules
       WHERE LOWER(TRIM(day_of_week)) = ?
       AND LOWER(TRIM(start_time)) = ?
@@ -2392,7 +2469,7 @@ const checkDuplicateRecord = async (tableName: string, data: any, excludeId?: st
 
     const conflictingSchedule = candidates.find(candidate => schedulesConflict(candidate, data));
     if (conflictingSchedule) {
-      return "Schedule slot for this room already exists. Duplicate records are not allowed.";
+      return "Schedule slot for this room, program, branch, and section already exists. Duplicate records are not allowed.";
     }
   }
 
