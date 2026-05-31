@@ -4095,10 +4095,12 @@ function GenericCRUD({
     field.resetKeys?.forEach((key: string) => { nextData[key] = ''; });
     setFormData(field.onChange ? field.onChange(nextData, value, editingItem) : nextData);
   };
-  const getFormFieldLabel = (field: any) =>
-    typeof field.formLabel === 'function'
+  const getFormFieldLabel = (field: any) => {
+    const baseLabel = typeof field.formLabel === 'function'
       ? field.formLabel(formData, editingItem)
       : (field.formLabel || field.label);
+    return field.required === false ? `${baseLabel} (Optional)` : baseLabel;
+  };
 
   const defaultDataSorter = (left: any, right: any) => {
     for (const field of tableFields) {
@@ -7778,15 +7780,16 @@ function SchedulingManagement() {
       tableOnly: true,
       render: (schedule: any) => getYearDisplayLabel(schedule?.year_of_study, schedule?.semester),
     },
-    { key: 'specialization', label: SPECIALIZATION_BRANCH_LABEL, required: false, render: (schedule: any) => schedule?.specialization || '-' },
-    { key: 'section', label: 'Section', required: false, render: (schedule: any) => schedule?.section || '-' },
     {
       key: 'semester',
       label: EXACT_SEMESTER_LABEL,
+      formLabel: 'Semester',
       type: 'select',
       options: (formData: any) => getScheduleSemesterOptions(formData.year_of_study),
       render: (schedule: any) => normalizeExactSemesterValue(schedule?.semester, schedule?.year_of_study, schedule?.semester || '-') || '-',
     },
+    { key: 'specialization', label: SPECIALIZATION_BRANCH_LABEL, required: false, render: (schedule: any) => schedule?.specialization || '-' },
+    { key: 'section', label: 'Section', required: false, render: (schedule: any) => schedule?.section || '-' },
     { key: 'course_code', label: 'Course Code' },
     { key: 'course_name', label: 'Course Name' },
     { key: 'faculty', label: 'Faculty' },
