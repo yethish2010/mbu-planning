@@ -6962,9 +6962,20 @@ function BatchRoomAllocationManagement() {
 
   const prepareFormData = (item: any) => {
     const room = rooms.find(r => idsMatch(r.id, item.room_id));
+    const linkedCalendar = calendars.find(calendar => idsMatch(calendar.id, item.academic_calendar_id));
     const { floor, block, building } = getRoomPath(room);
     return {
       ...item,
+      school_id: linkedCalendar?.school_id?.toString() || item.school_id || '',
+      department_id: linkedCalendar?.department_id?.toString() || item.department_id || '',
+      program: linkedCalendar?.program || item.program || '',
+      batch: linkedCalendar?.batch || item.batch || '',
+      specialization: linkedCalendar?.specialization || item.specialization || '',
+      academic_year: linkedCalendar?.academic_year || item.academic_year || '',
+      semester: linkedCalendar?.semester || item.semester || '',
+      year_of_study: linkedCalendar?.year_of_study || item.year_of_study || '',
+      start_date: linkedCalendar?.start_date || item.start_date || '',
+      end_date: linkedCalendar?.end_date || item.end_date || '',
       building_id: building?.id || '',
       block_id: block && !isImplicitBuildingBlock(block, building) ? block.id : '',
       floor_id: floor?.id || '',
@@ -6976,9 +6987,25 @@ function BatchRoomAllocationManagement() {
     const room = rooms.find(r => idsMatch(r.id, payload.room_id));
     const department = departments.find(item => idsMatch(item.id, payload.department_id));
     const calendar = calendars.find(item => idsMatch(item.id, payload.academic_calendar_id));
+
+    if (calendar) {
+      payload.academic_calendar_id = calendar.id;
+      payload.school_id = calendar.school_id?.toString() || payload.school_id;
+      payload.department_id = calendar.department_id?.toString() || payload.department_id;
+      payload.program = calendar.program || payload.program;
+      payload.batch = calendar.batch || payload.batch;
+      payload.specialization = calendar.specialization || payload.specialization;
+      payload.academic_year = calendar.academic_year || payload.academic_year;
+      payload.semester = calendar.semester || payload.semester;
+      payload.year_of_study = calendar.year_of_study || payload.year_of_study;
+      payload.start_date = calendar.start_date || payload.start_date;
+      payload.end_date = calendar.end_date || payload.end_date;
+    }
+
+    const refreshedDepartment = departments.find(item => idsMatch(item.id, payload.department_id));
     const requiredCapacity = parseInt(payload.capacity, 10) || 0;
 
-    if (!department) throw new Error('Please select a valid department.');
+    if (!refreshedDepartment) throw new Error('Please select a valid department.');
     if (!room) throw new Error('Please select a valid room.');
     if (!payload.start_date || !payload.end_date) throw new Error('Start date and end date are required.');
     if (payload.start_date > payload.end_date) throw new Error('Start date cannot be after end date.');
@@ -6986,10 +7013,10 @@ function BatchRoomAllocationManagement() {
     if (requiredCapacity > room.capacity) throw new Error(`Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${requiredCapacity}.`);
     const normalizedSemester = normalizeSemesterValue(payload.semester, '');
     if (!isRoomLinkedToDepartment(payload.room_id, payload.department_id, normalizedSemester)) {
-      throw new Error(`Room ${room.room_number} is not mapped to ${department.name} in Department Allocation for ${normalizedSemester || 'the selected semester'}. Create the department allocation first.`);
+      throw new Error(`Room ${room.room_number} is not mapped to ${refreshedDepartment.name} in Department Allocation for ${normalizedSemester || 'the selected semester'}. Create the department allocation first.`);
     }
 
-    payload.school_id = department.school_id;
+    payload.school_id = refreshedDepartment.school_id;
     payload.program = normalizeProgramValue(payload.program);
     payload.specialization = payload.specialization?.toString().trim() || null;
     payload.year_of_study = normalizeYearOfStudyValue(payload.year_of_study);
@@ -6997,9 +7024,7 @@ function BatchRoomAllocationManagement() {
     payload.allocation_mode = BATCH_ALLOCATION_MODE_OPTIONS.includes(payload.allocation_mode) ? payload.allocation_mode : 'Shared';
     payload.room_type = room.room_type;
     payload.status = getRangeLifecycleStatus(payload.start_date, payload.end_date, 'Released', 'Planned');
-    if (calendar) {
-      payload.academic_calendar_id = calendar.id;
-    } else {
+    if (!calendar) {
       payload.academic_calendar_id = null;
     }
 
