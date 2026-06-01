@@ -4656,7 +4656,9 @@ function GenericCRUD({
                       <input
                         type={f.type || 'text'}
                         required={f.required !== false}
-                        value={formData[f.key] || ''}
+                        value={(f.type || 'text') === 'date'
+                          ? normalizeComparableDateValue(formData[f.key]) || ''
+                          : (formData[f.key] || '')}
                         onChange={e => applyFieldValueChange(f, e.target.value)}
                         {...((f.type || 'text') === 'date' ? getDateFieldConstraint(f.key, formData) : {})}
                         className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
