@@ -6885,8 +6885,8 @@ function BatchRoomAllocationManagement() {
     { key: 'room_capacity', label: 'Room Capacity', tableOnly: true, render: getRoomCapacity },
     { key: 'room_type', label: 'Room Type', tableOnly: true, render: (item: any) => item.room_type || rooms.find(room => idsMatch(room.id, item.room_id))?.room_type || 'Unknown' },
     { key: 'capacity', label: 'Required Capacity', type: 'number' },
-    { key: 'start_date', label: 'Start Date', type: 'date' },
-    { key: 'end_date', label: 'End Date', type: 'date' },
+    { key: 'start_date', label: 'Start Date', type: 'date', render: (item: any) => formatDisplayDate(item.start_date) || '-' },
+    { key: 'end_date', label: 'End Date', type: 'date', render: (item: any) => formatDisplayDate(item.end_date) || '-' },
     {
       key: 'status',
       label: 'Status',
@@ -7112,8 +7112,8 @@ function BatchRoomAllocationManagement() {
                     <td className="px-4 py-3 text-sm text-slate-600">{getBlockDisplayLabel(block, building)}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{floor ? getFloorName(floor.floor_number) : 'Unknown'}</td>
                     <td className="px-4 py-3 text-sm font-bold text-slate-800">{room ? getRoomDisplayLabel(room, rooms) : 'Unknown'}</td>
-                    <td className="px-4 py-3 text-sm text-slate-600">{allocation.start_date}</td>
-                    <td className="px-4 py-3 text-sm text-slate-600">{allocation.end_date}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{formatDisplayDate(allocation.start_date) || '-'}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{formatDisplayDate(allocation.end_date) || '-'}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{status}</td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-2">
