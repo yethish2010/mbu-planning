@@ -1175,6 +1175,23 @@ const getDepartmentAllocationLinkError = async (roomId: any, departmentId: any, 
   return `Room ${room?.room_number || roomId} is not mapped to ${department?.name || "the selected department"}${semesterLabel} in Department Allocation. Create the department allocation first.`;
 };
 
+const countDependentBatchRoomAllocations = async (roomId: any, departmentId: any, semester?: any) => {
+  const numericRoomId = Number(roomId || 0) || null;
+  const numericDepartmentId = Number(departmentId || 0) || null;
+  if (!numericRoomId || !numericDepartmentId) return 0;
+
+  const matches = await db.prepare(`
+    SELECT id, semester
+    FROM batch_room_allocations
+    WHERE room_id = ? AND department_id = ?
+  `).all(numericRoomId, numericDepartmentId) as any[];
+
+  const normalizedSemester = normalizeSemesterKey(semester);
+  if (!normalizedSemester) return matches.length;
+
+  return matches.filter(match => normalizeSemesterKey(match?.semester) === normalizedSemester).length;
+};
+
 const normalizeScheduleSpecializationValue = (value: any) => {
   const raw = value?.toString().trim();
   if (!raw) return null;
@@ -2965,12 +2982,12 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     try {
       const existingItem = await db.prepare(`SELECT * FROM ${tableName} WHERE ${idField} = ?`).get(req.params.id) as any;
       if (tableName === "department_allocations" && existingItem) {
-        const dependentBatchAllocations = await db.prepare(`
-          SELECT COUNT(*) as total
-          FROM batch_room_allocations
-          WHERE room_id = ? AND department_id = ?
-        `).get(existingItem.room_id, existingItem.department_id) as any;
-        if ((Number(dependentBatchAllocations?.total) || 0) > 0) {
+        const dependentBatchAllocations = await countDependentBatchRoomAllocations(
+          existingItem.room_id,
+          existingItem.department_id,
+          existingItem.semester,
+        );
+        if (dependentBatchAllocations > 0) {
           return res.status(400).json({ error: "This Department Allocation is still used by Batch Room Allocations. Remove or reassign those batch allocations first." });
         }
       }
@@ -2988,6 +3005,53 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     }
   });
 };
+
+app.delete("/api/department_allocations/cleanup/odd", authenticate, async (_req, res) => {
+  try {
+    const allocations = await db.prepare(`
+      SELECT id, room_id, department_id, semester
+      FROM department_allocations
+      ORDER BY id ASC
+    `).all() as any[];
+
+    const oddAllocations = allocations.filter(allocation => normalizeSemesterKey(allocation?.semester) === "odd");
+
+    if (oddAllocations.length === 0) {
+      return res.json({ success: true, deletedCount: 0, skippedCount: 0, skipped: [] });
+    }
+
+    const skipped: Array<{ id: any; reason: string }> = [];
+    let deletedCount = 0;
+
+    for (const allocation of oddAllocations) {
+      const dependentBatchAllocations = await countDependentBatchRoomAllocations(
+        allocation.room_id,
+        allocation.department_id,
+        allocation.semester,
+      );
+
+      if (dependentBatchAllocations > 0) {
+        skipped.push({
+          id: allocation.id,
+          reason: "Batch Room Allocations still depend on this Odd semester mapping.",
+        });
+        continue;
+      }
+
+      await db.prepare("DELETE FROM department_allocations WHERE id = ?").run(allocation.id);
+      deletedCount += 1;
+    }
+
+    res.json({
+      success: true,
+      deletedCount,
+      skippedCount: skipped.length,
+      skipped,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
 
 createCrudRoutes("users");
 createCrudRoutes("campuses");

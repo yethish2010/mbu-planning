@@ -7096,6 +7096,7 @@ function DepartmentAllocationManagement() {
   const [buildings, setBuildings] = useState<any[]>([]);
   const [allocations, setAllocations] = useState<any[]>([]);
   const [lookupFilters, setLookupFilters] = useState({ school_id: '', department_id: '', semester: '' });
+  const [isDeletingOddSemesterMappings, setIsDeletingOddSemesterMappings] = useState(false);
   const semesterOptions = ['Odd', 'Even'];
 
   const normalizeSemester = (value: unknown) => {
@@ -7110,6 +7111,42 @@ function DepartmentAllocationManagement() {
     const res = await fetch('/api/department_allocations', { credentials: 'include' });
     const data = await res.json();
     setAllocations(Array.isArray(data) ? data : []);
+  };
+
+  const handleDeleteOddSemesterMappings = async () => {
+    const oddMappingsCount = allocations.filter(allocation => normalizeSemester(allocation?.semester) === 'Odd').length;
+    if (oddMappingsCount === 0) {
+      alert(`No Odd ${SEMESTER_TYPE_LABEL.toLowerCase()} room mappings were found.`);
+      return;
+    }
+
+    const shouldDelete = window.confirm(
+      `Delete all removable Odd ${SEMESTER_TYPE_LABEL.toLowerCase()} department room mappings?\n\n` +
+      `This will try to remove ${oddMappingsCount} Odd mapping(s) and skip any rows still used by Batch Room Allocation.`
+    );
+    if (!shouldDelete) return;
+
+    try {
+      setIsDeletingOddSemesterMappings(true);
+      const res = await fetch('/api/department_allocations/cleanup/odd', {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || `Failed to delete Odd ${SEMESTER_TYPE_LABEL.toLowerCase()} mappings.`);
+
+      await refreshAllocations();
+      setLookupFilters(current => current.semester === 'Odd' ? { ...current, semester: '' } : current);
+
+      const skippedSummary = Array.isArray(result.skipped) && result.skipped.length > 0
+        ? `\nSkipped ${result.skippedCount} mapping(s) because Batch Room Allocation still depends on them.`
+        : '';
+      alert(`Deleted ${result.deletedCount} Odd ${SEMESTER_TYPE_LABEL.toLowerCase()} mapping(s).${skippedSummary}`);
+    } catch (error: any) {
+      alert(error.message || `Failed to delete Odd ${SEMESTER_TYPE_LABEL.toLowerCase()} mappings.`);
+    } finally {
+      setIsDeletingOddSemesterMappings(false);
+    }
   };
 
   useEffect(() => {
@@ -7411,12 +7448,21 @@ function DepartmentAllocationManagement() {
             <h3 className="text-lg font-bold text-slate-800">Find Allocated Rooms</h3>
             <p className="text-sm text-slate-500">Search by school and department to see every mapped room.</p>
           </div>
-          <button
-            onClick={() => setLookupFilters({ school_id: '', department_id: '', semester: '' })}
-            className="px-4 py-2 bg-slate-50 text-slate-600 border border-slate-200 rounded-lg font-bold hover:bg-slate-100"
-          >
-            Clear
-          </button>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={handleDeleteOddSemesterMappings}
+              disabled={isDeletingOddSemesterMappings}
+              className="px-4 py-2 bg-rose-50 text-rose-700 border border-rose-200 rounded-lg font-bold hover:bg-rose-100 disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {isDeletingOddSemesterMappings ? `Deleting Odd ${SEMESTER_TYPE_LABEL}s...` : `Delete Odd ${SEMESTER_TYPE_LABEL}s`}
+            </button>
+            <button
+              onClick={() => setLookupFilters({ school_id: '', department_id: '', semester: '' })}
+              className="px-4 py-2 bg-slate-50 text-slate-600 border border-slate-200 rounded-lg font-bold hover:bg-slate-100"
+            >
+              Clear
+            </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
