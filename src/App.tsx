@@ -3779,9 +3779,12 @@ function DashboardHome() {
     const roomReports = Array.isArray(utilizationReport?.roomReports) ? utilizationReport.roomReports : [];
 
     const getSchoolRoomTypeUtilization = (schoolName: string, roomType: string) => {
+      const includedRoomTypes = roomType === 'Classroom'
+        ? new Set(['Classroom', 'Seminar Hall'])
+        : new Set([roomType]);
       const matchingRooms = roomReports.filter((room: any) =>
         room?.school === schoolName &&
-        normalizeRoomTypeValue(room?.room_type) === roomType
+        includedRoomTypes.has(normalizeRoomTypeValue(room?.room_type))
       );
       if (matchingRooms.length === 0) return 0;
       const totalUtilization = matchingRooms.reduce((sum: number, room: any) => sum + (Number(room?.utilization) || 0), 0);
