@@ -3776,6 +3776,18 @@ function DashboardHome() {
 
   const schoolUsageItems = useMemo(() => {
     const colorClasses = ['bg-emerald-500', 'bg-blue-500', 'bg-amber-500', 'bg-rose-500', 'bg-indigo-500'];
+    const roomReports = Array.isArray(utilizationReport?.roomReports) ? utilizationReport.roomReports : [];
+
+    const getSchoolRoomTypeUtilization = (schoolName: string, roomType: string) => {
+      const matchingRooms = roomReports.filter((room: any) =>
+        room?.school === schoolName &&
+        normalizeRoomTypeValue(room?.room_type) === roomType
+      );
+      if (matchingRooms.length === 0) return 0;
+      const totalUtilization = matchingRooms.reduce((sum: number, room: any) => sum + (Number(room?.utilization) || 0), 0);
+      return Math.round(totalUtilization / matchingRooms.length);
+    };
+
     return (Array.isArray(schoolUsage) ? schoolUsage : [])
       .filter((school: any) => school?.name)
       .sort((a: any, b: any) => (Number(b?.avgUtilization) || 0) - (Number(a?.avgUtilization) || 0))
@@ -3783,9 +3795,11 @@ function DashboardHome() {
         name: school.name,
         value: Number(school.avgUtilization) || 0,
         deptCount: Number(school.deptCount) || 0,
+        classroomUtilization: getSchoolRoomTypeUtilization(school.name, 'Classroom'),
+        labUtilization: getSchoolRoomTypeUtilization(school.name, 'Lab'),
         color: colorClasses[index % colorClasses.length],
       }));
-  }, [schoolUsage]);
+  }, [schoolUsage, utilizationReport]);
 
   const topBusyRooms = useMemo(() => {
     const roomReports = Array.isArray(utilizationReport?.roomReports) ? utilizationReport.roomReports : [];
@@ -3983,6 +3997,10 @@ function DashboardHome() {
                     </div>
                     <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
                       <div className={cn("h-full rounded-full", school.color)} style={{ width: `${school.value}%` }} />
+                    </div>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-medium text-slate-500">
+                      <span>Classrooms: {school.classroomUtilization}%</span>
+                      <span>Labs: {school.labUtilization}%</span>
                     </div>
                   </div>
                 ))}
