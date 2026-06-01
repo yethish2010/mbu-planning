@@ -2399,6 +2399,40 @@ const normalizeComparableDateValue = (value?: string | Date | null) => {
   return text;
 };
 
+const isDateRangeInvalid = (start?: string | Date | null, end?: string | Date | null) => {
+  const normalizedStart = normalizeComparableDateValue(start);
+  const normalizedEnd = normalizeComparableDateValue(end);
+  if (!normalizedStart || !normalizedEnd) return false;
+  return normalizedEnd < normalizedStart;
+};
+
+const validateDateRangeOrThrow = (
+  start?: string | Date | null,
+  end?: string | Date | null,
+  startLabel = 'Start date',
+  endLabel = 'End date',
+) => {
+  if (isDateRangeInvalid(start, end)) {
+    throw new Error(`${endLabel} cannot be before ${startLabel.toLowerCase()}.`);
+  }
+};
+
+const getDateFieldConstraint = (
+  fieldKey: string,
+  formData: Record<string, any>,
+): { min?: string; max?: string } => {
+  const normalizedKey = fieldKey.replace(/[\s-]+/g, '_');
+  if (normalizedKey === 'start_date' || normalizedKey === 'dateFrom') {
+    const max = normalizeComparableDateValue(formData?.end_date || formData?.dateTo);
+    return max ? { max } : {};
+  }
+  if (normalizedKey === 'end_date' || normalizedKey === 'dateTo') {
+    const min = normalizeComparableDateValue(formData?.start_date || formData?.dateFrom);
+    return min ? { min } : {};
+  }
+  return {};
+};
+
 const formatDisplayDate = (value?: string | Date | null) => {
   const normalized = normalizeComparableDateValue(value);
   if (!normalized) return '';
@@ -4313,6 +4347,8 @@ function GenericCRUD({
     let payload = formData;
     try {
       payload = prepareSubmitData ? await prepareSubmitData(formData, editingItem) : formData;
+      validateDateRangeOrThrow(payload?.start_date, payload?.end_date, 'Start date', 'End date');
+      validateDateRangeOrThrow(payload?.dateFrom, payload?.dateTo, 'From date', 'To date');
     } catch (err: any) {
       alert(`Error: ${err.message || 'Operation failed'}`);
       return;
@@ -4622,6 +4658,7 @@ function GenericCRUD({
                         required={f.required !== false}
                         value={formData[f.key] || ''}
                         onChange={e => applyFieldValueChange(f, e.target.value)}
+                        {...((f.type || 'text') === 'date' ? getDateFieldConstraint(f.key, formData) : {})}
                         className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
                         placeholder={`Enter ${getFormFieldLabel(f)}`}
                       />
@@ -10180,8 +10217,8 @@ function AnalyticsDashboard() {
           </button>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-3">
-          <input type="date" value={analyticsFilters.dateFrom} onChange={e => setAnalyticsFilters({ ...analyticsFilters, dateFrom: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500" />
-          <input type="date" value={analyticsFilters.dateTo} onChange={e => setAnalyticsFilters({ ...analyticsFilters, dateTo: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500" />
+          <input type="date" value={analyticsFilters.dateFrom} max={normalizeComparableDateValue(analyticsFilters.dateTo) || undefined} onChange={e => setAnalyticsFilters({ ...analyticsFilters, dateFrom: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500" />
+          <input type="date" value={analyticsFilters.dateTo} min={normalizeComparableDateValue(analyticsFilters.dateFrom) || undefined} onChange={e => setAnalyticsFilters({ ...analyticsFilters, dateTo: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500" />
           <select value={analyticsFilters.building} onChange={e => setAnalyticsFilters({ ...analyticsFilters, building: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500">
             <option value="">All Buildings</option>
             {buildingOptions.map((building: any) => <option key={building} value={building}>{building}</option>)}
@@ -13821,8 +13858,8 @@ function ReportGeneration() {
               <option key={option.value} value={option.value}>{option.label}</option>
             ))}
           </select>
-          <input type="date" value={filters.dateFrom} onChange={e => setFilters({ ...filters, dateFrom: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500" />
-          <input type="date" value={filters.dateTo} onChange={e => setFilters({ ...filters, dateTo: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500" />
+          <input type="date" value={filters.dateFrom} max={normalizeComparableDateValue(filters.dateTo) || undefined} onChange={e => setFilters({ ...filters, dateFrom: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500" />
+          <input type="date" value={filters.dateTo} min={normalizeComparableDateValue(filters.dateFrom) || undefined} onChange={e => setFilters({ ...filters, dateTo: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500" />
           <select value={filters.campus} onChange={e => setFilters({ ...filters, campus: e.target.value, building: '', block: '', floor: '' })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500">
             <option value="">All Campuses</option>
             {campusOptions.map((campus: any) => <option key={campus} value={campus}>{campus}</option>)}
