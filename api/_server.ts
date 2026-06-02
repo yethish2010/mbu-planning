@@ -245,6 +245,8 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       start_date DATE NOT NULL,
       end_date DATE NOT NULL,
       allocation_mode TEXT DEFAULT 'Shared',
+      allocation_pattern TEXT DEFAULT 'Single Room',
+      split_group_id TEXT,
       room_type TEXT,
       capacity INTEGER,
       status TEXT DEFAULT 'Planned',
@@ -410,6 +412,8 @@ await ensureColumn("users", "access_limits", "TEXT");
 await ensureColumn("users", "access_paths", "TEXT");
 await ensureColumn("users", "force_password_change", "INTEGER DEFAULT 0");
 await ensureColumn("batch_room_allocations", "allocation_mode", "TEXT DEFAULT 'Shared'");
+await ensureColumn("batch_room_allocations", "allocation_pattern", "TEXT DEFAULT 'Single Room'");
+await ensureColumn("batch_room_allocations", "split_group_id", "TEXT");
 await ensureColumn("academic_calendars", "timing_profile_id", "INTEGER");
 await ensureColumn("timing_profiles", "specialization", "TEXT");
 await ensureColumn("academic_calendars", "specialization", "TEXT");
@@ -992,6 +996,20 @@ const normalizeAcademicCalendarPayload = async (payload: any) => {
 
 const normalizeBatchRoomAllocationPayload = async (payload: any) => {
   const nextPayload = { ...payload };
+  const buildSplitAllocationGroupId = (value: any) => {
+    const slugify = (input: unknown) => input?.toString().trim().toUpperCase().replace(/[^A-Z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "";
+    const parts = [
+      slugify(value?.department_id),
+      slugify(value?.program),
+      slugify(value?.batch),
+      slugify(value?.specialization),
+      slugify(value?.year_of_study),
+      slugify(value?.semester),
+      slugify(value?.start_date),
+      slugify(value?.end_date),
+    ].filter(Boolean);
+    return parts.length ? `SPLIT-${parts.join("-")}` : null;
+  };
   const calendarId = nextPayload.academic_calendar_id ? Number(nextPayload.academic_calendar_id) : null;
   const linkedCalendar = calendarId
     ? await db.prepare(`
@@ -1045,6 +1063,12 @@ const normalizeBatchRoomAllocationPayload = async (payload: any) => {
   nextPayload.allocation_mode = ["exclusive", "shared"].includes((nextPayload.allocation_mode || "").toString().trim().toLowerCase())
     ? ((nextPayload.allocation_mode || "").toString().trim().toLowerCase() === "exclusive" ? "Exclusive" : "Shared")
     : "Shared";
+  nextPayload.allocation_pattern = ["split room", "split"].includes((nextPayload.allocation_pattern || "").toString().trim().toLowerCase())
+    ? "Split Room"
+    : "Single Room";
+  nextPayload.split_group_id = nextPayload.allocation_pattern === "Split Room"
+    ? (nextPayload.split_group_id?.toString().trim() || buildSplitAllocationGroupId(nextPayload))
+    : null;
   nextPayload.room_type = room.room_type;
   nextPayload.capacity = parseInt(nextPayload.capacity, 10) || 0;
   nextPayload.status = deriveBatchAllocationStatus(startDate, endDate, nextPayload.status);
@@ -1055,6 +1079,9 @@ const normalizeBatchRoomAllocationPayload = async (payload: any) => {
   }
   if (nextPayload.capacity > room.capacity) {
     throw new Error(`Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${nextPayload.capacity}.`);
+  }
+  if (nextPayload.allocation_pattern === "Split Room" && !nextPayload.split_group_id) {
+    throw new Error("Split Room allocations need a split allocation group.");
   }
   const departmentAllocationError = await getDepartmentAllocationLinkError(nextPayload.room_id, nextPayload.department_id, nextPayload.semester);
   if (departmentAllocationError) {

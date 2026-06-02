@@ -568,6 +568,9 @@ const isExaminationCalendarEvent = (calendar: any) => {
 
 const normalizeAcademicContextText = (value: unknown) => normalizeLookupValue(value);
 
+const normalizeBatchAllocationPatternValue = (value: unknown) =>
+  ['split room', 'split'].includes(normalizeLookupValue(value)) ? 'Split Room' : 'Single Room';
+
 const doesAllocationMatchCalendarContext = (allocation: any, calendar: any) => {
   if (calendar?.id && allocation?.academic_calendar_id && idsMatch(allocation.academic_calendar_id, calendar.id)) return true;
   if (!idsMatch(allocation?.department_id, calendar?.department_id)) return false;
@@ -1740,6 +1743,7 @@ const SPECIALIZATION_BRANCH_LABEL = 'Specialization / Branch';
 const ACADEMIC_CALENDAR_EVENT_TYPES = ['Semester Period', 'Class Work', 'Examinations', 'Holiday', 'Vacation', 'Orientation', 'Registration', 'Project Review', 'Internship'];
 const ALLOCATION_STATUS_OPTIONS = ['Planned', 'Active', 'Released'];
 const BATCH_ALLOCATION_MODE_OPTIONS = ['Shared', 'Exclusive'];
+const BATCH_ALLOCATION_PATTERN_OPTIONS = ['Single Room', 'Split Room'];
 const ACADEMIC_CALENDAR_TITLE_OPTIONS_BY_EVENT: Record<string, string[]> = {
   'Semester Period': ['Odd Semester', 'Even Semester', 'Teaching Period', 'Semester Duration'],
   'Class Work': ['Class Work', 'Instruction Period', 'Teaching Days'],
@@ -2273,7 +2277,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   'Batch Room Allocation': {
-    headers: ['Allocation ID', 'Academic Calendar', 'Department', 'Program', 'Batch', 'Specialization / Branch', 'Academic Year', 'Semester Type', 'Year / Semester', 'Building', 'Block', 'Floor', 'Room', 'Allocation Mode', 'Room Type', 'Required Capacity', 'Start Date', 'End Date', 'Notes'],
+    headers: ['Allocation ID', 'Academic Calendar', 'Department', 'Program', 'Batch', 'Specialization / Branch', 'Academic Year', 'Semester Type', 'Year / Semester', 'Building', 'Block', 'Floor', 'Room', 'Allocation Mode', 'Allocation Pattern', 'Split Allocation Group', 'Room Type', 'Required Capacity', 'Start Date', 'End Date', 'Notes'],
     exampleRows: [
       {
         'Allocation ID': 'ALLOC-MTECH2-322',
@@ -2290,6 +2294,8 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Floor: 'Third Floor',
         Room: '322',
         'Allocation Mode': 'Shared',
+        'Allocation Pattern': 'Single Room',
+        'Split Allocation Group': '',
         'Room Type': 'Classroom',
         'Required Capacity': 36,
         'Start Date': '2026-01-02',
@@ -2311,6 +2317,8 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Floor: 'Third Floor',
         Room: '331',
         'Allocation Mode': 'Shared',
+        'Allocation Pattern': 'Single Room',
+        'Split Allocation Group': '',
         'Room Type': 'Classroom',
         'Required Capacity': 60,
         'Start Date': '2026-01-02',
@@ -2332,11 +2340,36 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Floor: 'Third Floor',
         Room: '322',
         'Allocation Mode': 'Shared',
+        'Allocation Pattern': 'Single Room',
+        'Split Allocation Group': '',
         'Room Type': 'Classroom',
         'Required Capacity': 42,
         'Start Date': '2026-01-02',
         'End Date': '2026-05-30',
         Notes: 'Shared room across departments; timetable slots must not overlap.',
+      },
+      {
+        'Allocation ID': 'ALLOC-BSC-AOTT-2102',
+        'Academic Calendar': 'SoPAHCS-0001',
+        Department: 'Department of Paramedical',
+        Program: 'B.Sc',
+        Batch: '2025-26',
+        'Specialization / Branch': 'AOTT',
+        'Academic Year': '2025-26',
+        'Semester Type': 'Even',
+        'Year / Semester': '1st Year - 2nd Semester',
+        Building: 'MNS',
+        Block: 'Direct floors',
+        Floor: 'Floor 2',
+        Room: '2102',
+        'Allocation Mode': 'Shared',
+        'Allocation Pattern': 'Split Room',
+        'Split Allocation Group': 'SPLIT-AOTT-2025-26-CLASSWORK',
+        'Room Type': 'Classroom',
+        'Required Capacity': 35,
+        'Start Date': '2026-05-21',
+        'End Date': '2026-07-07',
+        Notes: 'Use a second row with Room 2103 and the same Split Allocation Group when one class needs both rooms together.',
       },
     ],
     instructions: [
@@ -2346,6 +2379,8 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       'Semester Type accepts only Odd or Even. Keep the exact semester number in Year / Semester.',
       'Use Allocation Mode = Shared when the same room is used by multiple batches or different departments in different timetable slots during the same date range.',
       'Use Allocation Mode = Exclusive only when the room must stay reserved for one batch for that full date range.',
+      'Use Allocation Pattern = Split Room only when one academic group needs multiple rooms during the same period. Create one row per room and reuse the same Split Allocation Group across those rows.',
+      'Do not create fake combined room labels like 2102 & 2103 in Batch Room Allocation. Keep 2102 and 2103 as separate room rows and link them only through Split Allocation Group when needed.',
       'Only Exclusive allocations block overlapping date ranges. Shared allocations can overlap across departments and are separated later by timetable slots.',
       'Allocations are automatically shown as Released after the end date passes.',
     ],
@@ -6941,6 +6976,21 @@ function BatchRoomAllocationManagement() {
     return `?${params.toString()}`;
   };
 
+  const buildSplitAllocationGroupId = (value: any) => {
+    const slugify = (input: unknown) => input?.toString().trim().toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-+|-+$/g, '') || '';
+    const parts = [
+      slugify(value?.department_id),
+      slugify(value?.program),
+      slugify(value?.batch),
+      slugify(value?.specialization),
+      slugify(value?.year_of_study),
+      slugify(value?.semester),
+      slugify(value?.start_date),
+      slugify(value?.end_date),
+    ].filter(Boolean);
+    return parts.length ? `SPLIT-${parts.join('-')}` : '';
+  };
+
   const fields = [
     { key: 'allocation_id', label: 'Allocation ID' },
     {
@@ -6996,6 +7046,20 @@ function BatchRoomAllocationManagement() {
       render: (item: any) => getStudyPeriodDisplay(item.year_of_study, item.semester, item.program),
     },
     { key: 'allocation_mode', label: 'Allocation Mode', type: 'select', options: BATCH_ALLOCATION_MODE_OPTIONS, required: false },
+    {
+      key: 'allocation_pattern',
+      label: 'Allocation Pattern',
+      type: 'select',
+      options: BATCH_ALLOCATION_PATTERN_OPTIONS,
+      required: false,
+    },
+    {
+      key: 'split_group_id',
+      label: 'Split Allocation Group',
+      required: false,
+      show: (formData: any) => normalizeBatchAllocationPatternValue(formData.allocation_pattern) === 'Split Room',
+      render: (item: any) => item.split_group_id || '-',
+    },
     {
       key: 'building_id',
       label: 'Building',
@@ -7104,6 +7168,8 @@ function BatchRoomAllocationManagement() {
         year_of_study: normalizeYearOfStudyValue(getImportValue(row, ['Year / Semester', 'Year of Study'])) || calendar?.year_of_study,
         semester: normalizeSemesterValue(getImportValue(row, [SEMESTER_TYPE_LABEL, 'Semester']), '') || calendar?.semester,
         allocation_mode: getImportValue(row, ['Allocation Mode'])?.toString() || 'Shared',
+        allocation_pattern: normalizeBatchAllocationPatternValue(getImportValue(row, ['Allocation Pattern', 'Pattern'])),
+        split_group_id: getImportValue(row, ['Split Allocation Group', 'Split Group'])?.toString().trim() || null,
         room_type: row['Room Type'] || room?.room_type,
         capacity: parseInt(getImportValue(row, ['Required Capacity', 'Capacity'])?.toString() || '0', 10) || 0,
         start_date: startDate,
@@ -7134,6 +7200,8 @@ function BatchRoomAllocationManagement() {
       academic_year: linkedCalendar?.academic_year || item.academic_year || '',
       semester: linkedCalendar?.semester || item.semester || '',
       year_of_study: linkedCalendar?.year_of_study || item.year_of_study || '',
+      allocation_pattern: normalizeBatchAllocationPatternValue(item.allocation_pattern),
+      split_group_id: item.split_group_id || '',
       start_date: linkedCalendar?.start_date || item.start_date || '',
       end_date: linkedCalendar?.end_date || item.end_date || '',
       building_id: building?.id || '',
@@ -7182,6 +7250,10 @@ function BatchRoomAllocationManagement() {
     payload.year_of_study = normalizeYearOfStudyValue(payload.year_of_study);
     payload.semester = normalizedSemester || payload.semester;
     payload.allocation_mode = BATCH_ALLOCATION_MODE_OPTIONS.includes(payload.allocation_mode) ? payload.allocation_mode : 'Shared';
+    payload.allocation_pattern = normalizeBatchAllocationPatternValue(payload.allocation_pattern);
+    payload.split_group_id = payload.allocation_pattern === 'Split Room'
+      ? (payload.split_group_id?.toString().trim() || buildSplitAllocationGroupId(payload) || null)
+      : null;
     payload.room_type = room.room_type;
     payload.status = getRangeLifecycleStatus(payload.start_date, payload.end_date, 'Released', 'Planned');
     if (!calendar) {
@@ -7251,7 +7323,7 @@ function BatchRoomAllocationManagement() {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-100">
-                {['Department', 'Program', 'Batch', 'Year / Semester', SEMESTER_TYPE_LABEL, 'Mode', 'Building', 'Block', 'Floor', 'Room', 'From', 'To', 'Status', 'Open'].map(header => (
+                {['Department', 'Program', 'Batch', 'Year / Semester', SEMESTER_TYPE_LABEL, 'Mode', 'Pattern', 'Split Group', 'Building', 'Block', 'Floor', 'Room', 'From', 'To', 'Status', 'Open'].map(header => (
                   <th key={header} className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{header}</th>
                 ))}
               </tr>
@@ -7268,6 +7340,8 @@ function BatchRoomAllocationManagement() {
                     <td className="px-4 py-3 text-sm text-slate-600">{getStudyPeriodDisplay(allocation.year_of_study, allocation.semester, allocation.program)}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{allocation.semester || '-'}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{allocation.allocation_mode || 'Shared'}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{allocation.allocation_pattern || 'Single Room'}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{allocation.split_group_id || '-'}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{building?.name || 'Unknown'}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{getBlockDisplayLabel(block, building)}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{floor ? getFloorName(floor.floor_number) : 'Unknown'}</td>
@@ -7286,7 +7360,7 @@ function BatchRoomAllocationManagement() {
               })}
               {lookupResults.length === 0 && (
                 <tr>
-                  <td colSpan={14} className="px-4 py-8 text-center text-sm text-slate-400 italic">
+                  <td colSpan={16} className="px-4 py-8 text-center text-sm text-slate-400 italic">
                     Select a school, department, or status to view batch room allocations.
                   </td>
                 </tr>
