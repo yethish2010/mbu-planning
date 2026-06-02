@@ -1581,6 +1581,32 @@ const upsertImportRecord = async (
   return mergedRecord;
 };
 
+type BulkImportEntry = {
+  payload: any;
+  uniqueFieldGroups: string[][];
+};
+
+const upsertImportRecordsBulk = async (
+  apiPath: string,
+  entries: BulkImportEntry[],
+  chunkSize: number = 100,
+) => {
+  if (!Array.isArray(entries) || entries.length === 0) return [];
+
+  const results: Array<{ ok: boolean; record?: any; action?: 'created' | 'updated'; error?: string }> = [];
+  for (let start = 0; start < entries.length; start += chunkSize) {
+    const chunk = entries.slice(start, start + chunkSize);
+    const response = await apiJson(`${apiPath}/import-bulk`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entries: chunk }),
+    });
+    const chunkResults = Array.isArray(response?.results) ? response.results : [];
+    results.push(...chunkResults);
+  }
+  return results;
+};
+
 type ExcelWorkbook = import('exceljs').Workbook;
 type ExcelWorksheet = import('exceljs').Worksheet;
 type StyledWorkbookSheet = {
@@ -4936,8 +4962,7 @@ function UserManagement() {
   };
 
   const handleImport = async (data: any[]) => {
-    const importCache = createImportUpsertCache();
-    for (const row of data) {
+    const entries = data.map((row) => {
       const payload = {
         full_name: row['Full Name'],
         employee_id: row['Employee ID']?.toString(),
@@ -4946,9 +4971,11 @@ function UserManagement() {
         department: row['Department'],
         password: getImportValue(row, ['Password', 'Password / Admin Reset'])?.toString() || 'Welcome123'
       };
-      if (!payload.email || !payload.employee_id) continue;
-      await upsertImportRecord('/api/users', payload, [['employee_id'], ['email']], importCache);
-    }
+      return !payload.email || !payload.employee_id
+        ? null
+        : { payload, uniqueFieldGroups: [['employee_id'], ['email']] };
+    }).filter(Boolean) as BulkImportEntry[];
+    await upsertImportRecordsBulk('/api/users', entries);
   };
 
   return <GenericCRUD type="User" fields={fields} apiPath="/api/users" onImport={handleImport} prepareFormData={prepareFormData} prepareSubmitData={prepareSubmitData} />;
@@ -4963,17 +4990,18 @@ function CampusManagement() {
   ];
 
   const handleImport = async (data: any[]) => {
-    const importCache = createImportUpsertCache();
-    for (const row of data) {
+    const entries = data.map((row) => {
       const payload = {
         campus_id: row['Campus ID']?.toString(),
         name: row['Campus Name'],
         location: row['Location'],
         description: row['Description']
       };
-      if (!payload.campus_id || !payload.name) continue;
-      await upsertImportRecord('/api/campuses', payload, [['campus_id'], ['name']], importCache);
-    }
+      return !payload.campus_id || !payload.name
+        ? null
+        : { payload, uniqueFieldGroups: [['campus_id'], ['name']] };
+    }).filter(Boolean) as BulkImportEntry[];
+    await upsertImportRecordsBulk('/api/campuses', entries);
   };
 
   return <GenericCRUD type="Campus" fields={fields} apiPath="/api/campuses" onImport={handleImport} />;
@@ -5060,9 +5088,9 @@ function BuildingManagement() {
   };
 
   const handleImport = async (data: any[]) => {
-    const importCache = createImportUpsertCache();
     let importedCount = 0;
     const skippedRows: string[] = [];
+    const entries: BulkImportEntry[] = [];
 
     for (const [index, row] of data.entries()) {
       const campus = findCampusForImport(campuses, row);
@@ -5079,9 +5107,11 @@ function BuildingManagement() {
         skippedRows.push(`row ${index + 2}`);
         continue;
       }
-      await upsertImportRecord('/api/buildings', payload, [['building_id'], ['campus_id', 'name']], importCache);
-      importedCount += 1;
+      entries.push({ payload, uniqueFieldGroups: [['building_id'], ['campus_id', 'name']] });
     }
+
+    const results = await upsertImportRecordsBulk('/api/buildings', entries);
+    importedCount = results.filter(result => result?.ok).length;
 
     if (importedCount === 0) {
       throw new Error(`No buildings were imported. Check that the Campus column matches an existing campus name or campus ID. Skipped ${skippedRows.join(', ') || 'all rows'}.`);
@@ -5133,9 +5163,9 @@ function BlockManagement() {
   };
 
   const handleImport = async (data: any[]) => {
-    const importCache = createImportUpsertCache();
     let importedCount = 0;
     const skippedRows: string[] = [];
+    const entries: BulkImportEntry[] = [];
 
     for (const [index, row] of data.entries()) {
       const blockId = row['Block ID']?.toString();
@@ -5150,9 +5180,11 @@ function BlockManagement() {
         skippedRows.push(`row ${index + 2}`);
         continue;
       }
-      await upsertImportRecord('/api/blocks', payload, [['block_id'], ['building_id', 'name']], importCache);
-      importedCount += 1;
+      entries.push({ payload, uniqueFieldGroups: [['block_id'], ['building_id', 'name']] });
     }
+
+    const results = await upsertImportRecordsBulk('/api/blocks', entries);
+    importedCount = results.filter(result => result?.ok).length;
 
     if (importedCount === 0) {
       throw new Error(`No blocks were imported. Check the Building column or use the building ID, for example BLDG-001. Skipped ${skippedRows.join(', ') || 'all rows'}.`);
@@ -6345,17 +6377,18 @@ function SchoolManagement() {
   ];
 
   const handleImport = async (data: any[]) => {
-    const importCache = createImportUpsertCache();
-    for (const row of data) {
+    const entries = data.map((row) => {
       const payload = {
         school_id: row['School ID']?.toString(),
         name: row['School Name'],
         type: normalizeSchoolTypeValue(row['Type']),
         description: row['Description']
       };
-      if (!payload.school_id || !payload.name) continue;
-      await upsertImportRecord('/api/schools', payload, [['school_id'], ['name']], importCache);
-    }
+      return !payload.school_id || !payload.name
+        ? null
+        : { payload, uniqueFieldGroups: [['school_id'], ['name']] };
+    }).filter(Boolean) as BulkImportEntry[];
+    await upsertImportRecordsBulk('/api/schools', entries);
   };
 
   return <GenericCRUD type="School" fields={fields} apiPath="/api/schools" onImport={handleImport} />;
@@ -6381,8 +6414,7 @@ function DepartmentManagement() {
   ];
 
   const handleImport = async (data: any[]) => {
-    const importCache = createImportUpsertCache();
-    for (const row of data) {
+    const entries = data.map((row) => {
       const school = schools.find(s =>
         normalizeLookupValue(s.name) === normalizeLookupValue(row['School']) ||
         normalizeLookupValue(s.school_id) === normalizeLookupValue(row['School'])
@@ -6394,9 +6426,11 @@ function DepartmentManagement() {
         type: row['Type'],
         description: row['Description']
       };
-      if (!payload.department_id || !payload.name || !payload.school_id) continue;
-      await upsertImportRecord('/api/departments', payload, [['department_id'], ['school_id', 'name']], importCache);
-    }
+      return !payload.department_id || !payload.name || !payload.school_id
+        ? null
+        : { payload, uniqueFieldGroups: [['department_id'], ['school_id', 'name']] };
+    }).filter(Boolean) as BulkImportEntry[];
+    await upsertImportRecordsBulk('/api/departments', entries);
   };
 
   return <GenericCRUD type="Department" fields={fields} apiPath="/api/departments" onImport={handleImport} />;
@@ -6490,15 +6524,7 @@ function TimingProfileManagement() {
   };
 
   const handleImport = async (data: any[]) => {
-    const importCache = createImportUpsertCache();
-    const auditRows: ImportAuditRow[] = [];
-    let created = 0;
-    let updated = 0;
-    let skipped = 0;
-    let failed = 0;
-
-    for (const row of data) {
-      const sourceLabel = `${row.__sheetName || 'Sheet'} row ${row.__rowNumber || '?'}`;
+    const entries = data.map((row) => {
       const school = schools.find(item =>
         normalizeLookupValue(item.name) === normalizeLookupValue(row['School']) ||
         normalizeLookupValue(item.school_id) === normalizeLookupValue(row['School'])
@@ -6527,9 +6553,11 @@ function TimingProfileManagement() {
         notes: row['Notes']?.toString() || null,
       };
 
-      if (!payload.profile_id || !payload.profile_name || !payload.slot_pattern) continue;
-      await upsertImportRecord('/api/timing_profiles', payload, [['profile_id']], importCache);
-    }
+      return !payload.profile_id || !payload.profile_name || !payload.slot_pattern
+        ? null
+        : { payload, uniqueFieldGroups: [['profile_id']] };
+    }).filter(Boolean) as BulkImportEntry[];
+    await upsertImportRecordsBulk('/api/timing_profiles', entries);
   };
 
   return (
@@ -6675,12 +6703,12 @@ function AcademicCalendarManagement() {
   };
 
   const handleImport = async (data: any[]) => {
-    const importCache = createImportUpsertCache();
     const auditRows: ImportAuditRow[] = [];
     let created = 0;
     let updated = 0;
     let skipped = 0;
     let failed = 0;
+    const bulkEntries: Array<BulkImportEntry & { row: any; sourceLabel: string; schoolLabel: string; departmentLabel: string; calendarId: string }> = [];
 
     for (const row of data) {
       const sourceLabel = `${row.__sheetName || 'Sheet'} row ${row.__rowNumber || '?'}`;
@@ -6744,36 +6772,54 @@ function AcademicCalendarManagement() {
         notes: row['Notes'],
       };
 
-      try {
-        const savedRecord: any = await upsertImportRecord('/api/academic_calendars', payload, [
+      bulkEntries.push({
+        payload,
+        uniqueFieldGroups: [
           ['calendar_id'],
           ['department_id', 'program', 'batch', 'specialization', 'year_of_study', 'semester', 'event_type', 'title', 'start_date', 'end_date'],
-        ], importCache);
-        if (savedRecord?.__importAction === 'updated') {
+        ],
+        row,
+        sourceLabel,
+        schoolLabel: row['School'] || '',
+        departmentLabel: row['Department'] || '',
+        calendarId: payload.calendar_id,
+      });
+    }
+
+    const results = await upsertImportRecordsBulk('/api/academic_calendars', bulkEntries.map(entry => ({
+      payload: entry.payload,
+      uniqueFieldGroups: entry.uniqueFieldGroups,
+    })));
+
+    bulkEntries.forEach((entry, index) => {
+      const result = results[index];
+      if (result?.ok) {
+        if (result.action === 'updated') {
           updated += 1;
         } else {
           created += 1;
         }
         auditRows.push({
-          Source: sourceLabel,
-          'Calendar ID': payload.calendar_id,
-          School: row['School'] || '',
-          Department: row['Department'] || '',
-          Status: savedRecord?.__importAction === 'updated' ? 'Updated' : 'Created',
+          Source: entry.sourceLabel,
+          'Calendar ID': entry.calendarId,
+          School: entry.schoolLabel,
+          Department: entry.departmentLabel,
+          Status: result.action === 'updated' ? 'Updated' : 'Created',
           Reason: '',
         });
-      } catch (err: any) {
-        failed += 1;
-        auditRows.push({
-          Source: sourceLabel,
-          'Calendar ID': payload.calendar_id,
-          School: row['School'] || '',
-          Department: row['Department'] || '',
-          Status: 'Failed',
-          Reason: err?.message || 'Import failed.',
-        });
+        return;
       }
-    }
+
+      failed += 1;
+      auditRows.push({
+        Source: entry.sourceLabel,
+        'Calendar ID': entry.calendarId,
+        School: entry.schoolLabel,
+        Department: entry.departmentLabel,
+        Status: 'Failed',
+        Reason: result?.error || 'Import failed.',
+      });
+    });
 
     const validRows = created + updated + failed;
     const totalRowsRead = data.length;
@@ -7154,8 +7200,7 @@ function BatchRoomAllocationManagement() {
   ];
 
   const handleImport = async (data: any[]) => {
-    const importCache = createImportUpsertCache();
-    for (const row of data) {
+    const entries = data.map((row) => {
       const calendar = calendars.find(item =>
         normalizeLookupValue(item.calendar_id) === normalizeLookupValue(getImportValue(row, ['Academic Calendar', 'Calendar ID'])) ||
         normalizeLookupValue(item.title) === normalizeLookupValue(getImportValue(row, ['Academic Calendar', 'Title']))
@@ -7212,12 +7257,17 @@ function BatchRoomAllocationManagement() {
         notes: row['Notes'] || null,
       };
 
-      if (!payload.allocation_id || !payload.department_id || !payload.room_id || !payload.start_date || !payload.end_date || payload.capacity <= 0) continue;
-      await upsertImportRecord('/api/batch_room_allocations', payload, [
-        ['allocation_id'],
-        ['room_id', 'department_id', 'program', 'batch', 'specialization', 'year_of_study', 'semester', 'start_date', 'end_date'],
-      ], importCache);
-    }
+      return !payload.allocation_id || !payload.department_id || !payload.room_id || !payload.start_date || !payload.end_date || payload.capacity <= 0
+        ? null
+        : {
+            payload,
+            uniqueFieldGroups: [
+              ['allocation_id'],
+              ['room_id', 'department_id', 'program', 'batch', 'specialization', 'year_of_study', 'semester', 'start_date', 'end_date'],
+            ],
+          };
+    }).filter(Boolean) as BulkImportEntry[];
+    await upsertImportRecordsBulk('/api/batch_room_allocations', entries);
   };
 
   const prepareFormData = (item: any) => {
@@ -7678,8 +7728,7 @@ function DepartmentAllocationManagement() {
   ];
 
   const handleImport = async (data: any[]) => {
-    const importCache = createImportUpsertCache();
-    for (const row of data) {
+    const entries = data.map((row) => {
       const school = schools.find(s =>
         normalizeLookupValue(s.name) === normalizeLookupValue(row['School']) ||
         normalizeLookupValue(s.school_id) === normalizeLookupValue(row['School'])
@@ -7721,17 +7770,21 @@ function DepartmentAllocationManagement() {
         capacity: parseInt(getImportValue(row, ['Required Capacity', 'Capacity'])?.toString() || '0', 10) || 0
       };
       
-      if (room && payload.capacity > room.capacity) continue;
+      if (room && payload.capacity > room.capacity) return null;
 
       if (
         !payload.school_id ||
         !payload.department_id ||
         !payload.room_id ||
         !semesterOptions.includes(payload.semester)
-      ) continue;
+      ) return null;
       
-      await upsertImportRecord('/api/department_allocations', payload, [['room_id', 'department_id', 'semester']], importCache);
-    }
+      return {
+        payload,
+        uniqueFieldGroups: [['room_id', 'department_id', 'semester']],
+      };
+    }).filter(Boolean) as BulkImportEntry[];
+    await upsertImportRecordsBulk('/api/department_allocations', entries);
   };
 
   const prepareFormData = (item: any) => {
@@ -7920,8 +7973,7 @@ function EquipmentManagement() {
   ];
 
   const handleImport = async (data: any[]) => {
-    const importCache = createImportUpsertCache();
-    for (const row of data) {
+    const entries = data.map((row) => {
       const roomValue = getImportValue(row, ['Room Number', 'Room']);
       const room = findRoomByImportLabel(rooms, roomValue);
       const payload = {
@@ -7931,9 +7983,11 @@ function EquipmentManagement() {
         room_id: room?.id,
         condition: row['Condition']
       };
-      if (!payload.equipment_id || !payload.name || !payload.room_id) continue;
-      await upsertImportRecord('/api/equipment', payload, [['equipment_id'], ['room_id', 'name']], importCache);
-    }
+      return !payload.equipment_id || !payload.name || !payload.room_id
+        ? null
+        : { payload, uniqueFieldGroups: [['equipment_id'], ['room_id', 'name']] };
+    }).filter(Boolean) as BulkImportEntry[];
+    await upsertImportRecordsBulk('/api/equipment', entries);
   };
 
   return <GenericCRUD type="Equipment" fields={fields} apiPath="/api/equipment" onImport={handleImport} initialSearchTerm={roomSearchTerm} />;
@@ -8400,12 +8454,13 @@ function SchedulingManagement() {
   };
 
   const handleImport = async (data: any[]) => {
-    const importCache = createImportUpsertCache();
     let importedCount = 0;
     let linkedCount = 0;
     let unmatchedRoomCount = 0;
     let ambiguousRoomCount = 0;
     let skippedCount = 0;
+    const scheduleEntries: Array<BulkImportEntry & { roomLinked: boolean; ambiguous: boolean }> = [];
+    const allocationEntryMap = new Map<string, BulkImportEntry>();
 
     for (const row of data) {
       const scheduleId = row['Schedule ID']?.toString().trim();
@@ -8471,16 +8526,55 @@ function SchedulingManagement() {
           session_group_id: sessionGroupId,
         };
 
-        await upsertImportRecord('/api/schedules', payload, [['schedule_id'], ['room_id', 'program', 'specialization', 'section', 'day_of_week', 'start_time', 'end_time'], ['room_label', 'program', 'specialization', 'section', 'day_of_week', 'start_time', 'end_time']], importCache);
-        importedCount += 1;
-        if (room) linkedCount += 1;
-        else {
-          unmatchedRoomCount += 1;
-          if (roomResolution.reason === 'ambiguous') ambiguousRoomCount += 1;
+        scheduleEntries.push({
+          payload,
+          uniqueFieldGroups: [['schedule_id'], ['room_id', 'program', 'specialization', 'section', 'day_of_week', 'start_time', 'end_time'], ['room_label', 'program', 'specialization', 'section', 'day_of_week', 'start_time', 'end_time']],
+          roomLinked: !!room,
+          ambiguous: !room && roomResolution.reason === 'ambiguous',
+        });
+
+        if (room && dept?.id && dept?.school_id) {
+          const allocationPayload = {
+            school_id: dept.school_id,
+            department_id: dept.id,
+            room_id: room.id,
+            semester: normalizeSemesterValue(normalizedSemester || getImportValue(row, [EXACT_SEMESTER_LABEL, 'Semester', 'Term'])),
+            room_type: room.room_type,
+            capacity: room.capacity || 1,
+          };
+          const allocationKey = [
+            allocationPayload.room_id,
+            allocationPayload.department_id,
+            allocationPayload.semester,
+          ].join('|');
+          if (!allocationEntryMap.has(allocationKey)) {
+            allocationEntryMap.set(allocationKey, {
+              payload: allocationPayload,
+              uniqueFieldGroups: [['room_id', 'department_id', 'semester']],
+            });
+          }
         }
-        await ensureAllocationFromSchedule(room, dept, normalizedSemester || getImportValue(row, [EXACT_SEMESTER_LABEL, 'Semester', 'Term']), importCache);
       }
     }
+
+    const results = await upsertImportRecordsBulk('/api/schedules', scheduleEntries.map(entry => ({
+      payload: entry.payload,
+      uniqueFieldGroups: entry.uniqueFieldGroups,
+    })));
+    results.forEach((result, index) => {
+      if (!result?.ok) return;
+      importedCount += 1;
+      if (scheduleEntries[index]?.roomLinked) linkedCount += 1;
+      else {
+        unmatchedRoomCount += 1;
+        if (scheduleEntries[index]?.ambiguous) ambiguousRoomCount += 1;
+      }
+    });
+
+    if (allocationEntryMap.size > 0) {
+      await upsertImportRecordsBulk('/api/department_allocations', Array.from(allocationEntryMap.values()));
+    }
+
     setRefreshKey(prev => prev + 1);
     await refreshSchedulingLookups();
 
@@ -8531,12 +8625,12 @@ function SchedulingManagement() {
         const validSchedules = extractedSchedules
           .map(sanitizeExtractedSchedule)
           .filter(Boolean);
-        const importCache = createImportUpsertCache();
-
         let importedCount = 0;
         let linkedCount = 0;
         let unmatchedRoomCount = 0;
         let ambiguousRoomCount = 0;
+        const scheduleEntries: Array<BulkImportEntry & { roomLinked: boolean; ambiguous: boolean }> = [];
+        const allocationEntryMap = new Map<string, BulkImportEntry>();
 
         for (const schedule of validSchedules) {
           const roomResolution = resolveRoomSetForImport(rooms, schedule.room);
@@ -8578,21 +8672,60 @@ function SchedulingManagement() {
               session_group_id: sessionGroupId,
             };
 
-            await upsertImportRecord('/api/schedules', payload, [
-              ['schedule_id'],
-              ['room_id', 'program', 'specialization', 'section', 'day_of_week', 'start_time', 'end_time'],
-              ['room_label', 'program', 'specialization', 'section', 'day_of_week', 'start_time', 'end_time'],
-            ], importCache);
-            importedCount += 1;
-            if (room) {
-              linkedCount += 1;
-              await ensureAllocationFromSchedule(room, dept, schedule.semester, importCache);
-            } else {
-              unmatchedRoomCount += 1;
-              if (roomResolution.reason === 'ambiguous') ambiguousRoomCount += 1;
+            scheduleEntries.push({
+              payload,
+              uniqueFieldGroups: [
+                ['schedule_id'],
+                ['room_id', 'program', 'specialization', 'section', 'day_of_week', 'start_time', 'end_time'],
+                ['room_label', 'program', 'specialization', 'section', 'day_of_week', 'start_time', 'end_time'],
+              ],
+              roomLinked: !!room,
+              ambiguous: !room && roomResolution.reason === 'ambiguous',
+            });
+
+            if (room && dept?.id && dept?.school_id) {
+              const allocationPayload = {
+                school_id: dept.school_id,
+                department_id: dept.id,
+                room_id: room.id,
+                semester: normalizeSemesterValue(schedule.semester),
+                room_type: room.room_type,
+                capacity: room.capacity || 1,
+              };
+              const allocationKey = [
+                allocationPayload.room_id,
+                allocationPayload.department_id,
+                allocationPayload.semester,
+              ].join('|');
+              if (!allocationEntryMap.has(allocationKey)) {
+                allocationEntryMap.set(allocationKey, {
+                  payload: allocationPayload,
+                  uniqueFieldGroups: [['room_id', 'department_id', 'semester']],
+                });
+              }
             }
           }
         }
+
+        const results = await upsertImportRecordsBulk('/api/schedules', scheduleEntries.map(entry => ({
+          payload: entry.payload,
+          uniqueFieldGroups: entry.uniqueFieldGroups,
+        })));
+        results.forEach((result, index) => {
+          if (!result?.ok) return;
+          importedCount += 1;
+          if (scheduleEntries[index]?.roomLinked) {
+            linkedCount += 1;
+          } else {
+            unmatchedRoomCount += 1;
+            if (scheduleEntries[index]?.ambiguous) ambiguousRoomCount += 1;
+          }
+        });
+
+        if (allocationEntryMap.size > 0) {
+          await upsertImportRecordsBulk('/api/department_allocations', Array.from(allocationEntryMap.values()));
+        }
+
         setRefreshKey(prev => prev + 1);
         await refreshSchedulingLookups();
 
@@ -9945,8 +10078,7 @@ function MaintenanceManagement() {
   ];
 
   const handleImport = async (data: any[]) => {
-    const importCache = createImportUpsertCache();
-    for (const row of data) {
+    const entries = data.map((row) => {
       const roomValue = getImportValue(row, ['Room Number', 'Room']);
       const room = findRoomByImportLabel(rooms, roomValue);
       const payload = {
@@ -9955,9 +10087,11 @@ function MaintenanceManagement() {
         equipment_name: row['Equipment'],
         status: row['Status'] || 'Pending'
       };
-      if (!payload.maintenance_id || !payload.room_id) continue;
-      await upsertImportRecord('/api/maintenance', payload, [['maintenance_id']], importCache);
-    }
+      return !payload.maintenance_id || !payload.room_id
+        ? null
+        : { payload, uniqueFieldGroups: [['maintenance_id']] };
+    }).filter(Boolean) as BulkImportEntry[];
+    await upsertImportRecordsBulk('/api/maintenance', entries);
   };
 
   const maintenanceMatchesFilter = (item: any) => {

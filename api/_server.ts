@@ -2548,6 +2548,143 @@ const checkDuplicateRecord = async (tableName: string, data: any, excludeId?: st
   return null;
 };
 
+const BULK_IMPORT_SUPPORTED_TABLES = new Set([
+  "users",
+  "campuses",
+  "buildings",
+  "blocks",
+  "floors",
+  "rooms",
+  "schools",
+  "departments",
+  "department_allocations",
+  "timing_profiles",
+  "academic_calendars",
+  "batch_room_allocations",
+  "equipment",
+  "schedules",
+  "maintenance",
+]);
+
+const hasImportMatchValue = (value: any) => value !== undefined && value !== null && value !== "";
+
+const normalizeImportMatchValue = (value: any) =>
+  value?.toString().trim().toLowerCase().replace(/\s+/g, " ") || "";
+
+const findMatchingImportRecord = (records: any[], payload: any, uniqueFieldGroups: string[][]) => {
+  for (const fields of Array.isArray(uniqueFieldGroups) ? uniqueFieldGroups : []) {
+    if (!Array.isArray(fields) || fields.some(field => !hasImportMatchValue(payload?.[field]))) continue;
+
+    const existing = records.find(record =>
+      fields.every(field =>
+        hasImportMatchValue(record?.[field]) &&
+        normalizeImportMatchValue(record[field]) === normalizeImportMatchValue(payload[field])
+      )
+    );
+
+    if (existing) return existing;
+  }
+
+  return null;
+};
+
+const normalizeBulkImportPayload = async (tableName: string, payload: any, existingItem?: any) => {
+  let nextPayload = { ...(payload || {}) };
+
+  if (tableName === "users") {
+    if (existingItem && !nextPayload.password) delete nextPayload.password;
+    if (!existingItem && !nextPayload.password) nextPayload.password = "Welcome123";
+    if (nextPayload.password) nextPayload.force_password_change = 1;
+  }
+
+  if (tableName === "rooms") {
+    nextPayload = normalizeRoomPayload(nextPayload);
+  }
+  if (tableName === "academic_calendars") {
+    nextPayload = await normalizeAcademicCalendarPayload(existingItem ? { ...existingItem, ...nextPayload } : nextPayload);
+  }
+  if (tableName === "timing_profiles") {
+    nextPayload = await normalizeTimingProfilePayload(existingItem ? { ...existingItem, ...nextPayload } : nextPayload);
+  }
+  if (tableName === "batch_room_allocations") {
+    nextPayload = await normalizeBatchRoomAllocationPayload(existingItem ? { ...existingItem, ...nextPayload } : nextPayload);
+  }
+  if (tableName === "schedules") {
+    nextPayload = normalizeSchedulePayload(existingItem ? { ...existingItem, ...nextPayload } : nextPayload);
+  }
+
+  return nextPayload;
+};
+
+const validateBulkImportPayload = async (tableName: string, payload: any, existingItem?: any) => {
+  const nextRecord = existingItem ? { ...existingItem, ...payload } : payload;
+  const duplicateError = await checkDuplicateRecord(tableName, nextRecord, existingItem?.id);
+  if (duplicateError) throw new Error(duplicateError);
+
+  if (tableName === "rooms") {
+    const hierarchyError = await validateRoomHierarchy(nextRecord, existingItem?.id);
+    if (hierarchyError) throw new Error(hierarchyError);
+    const restroomValidationError = await getRestroomValidationError(nextRecord);
+    if (restroomValidationError) throw new Error(restroomValidationError);
+  }
+
+  if (tableName === "department_allocations") {
+    const room = await db.prepare("SELECT room_number, capacity, room_type, is_bookable FROM rooms WHERE id = ?").get(nextRecord.room_id) as any;
+    if (!room) throw new Error("Please select a valid room.");
+    const bookableError = await getBookableRoomError(nextRecord.room_id);
+    if (bookableError) throw new Error(bookableError);
+    if ((parseInt(nextRecord.capacity, 10) || 0) > room.capacity) {
+      throw new Error(`Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${nextRecord.capacity}.`);
+    }
+    payload.room_type = room.room_type;
+  }
+
+  if (tableName === "batch_room_allocations") {
+    const bookableError = await getBookableRoomError(nextRecord.room_id);
+    if (bookableError) throw new Error(bookableError);
+    const departmentAllocationError = await getDepartmentAllocationLinkError(nextRecord.room_id, nextRecord.department_id, nextRecord.semester);
+    if (departmentAllocationError) throw new Error(departmentAllocationError);
+    const overlapError = await getBatchAllocationOverlapError(nextRecord, existingItem?.id);
+    if (overlapError) throw new Error(overlapError);
+  }
+
+  if (tableName === "schedules") {
+    const bookableError = await getBookableRoomError(nextRecord.room_id);
+    if (bookableError) throw new Error(bookableError);
+    payload.schedule_code = await assignScheduleCode(payload, existingItem?.id, existingItem);
+  }
+};
+
+const persistBulkImportRecord = async (tableName: string, payload: any, existingItem?: any) => {
+  const normalizedPayload = await normalizeBulkImportPayload(tableName, payload, existingItem);
+  await validateBulkImportPayload(tableName, normalizedPayload, existingItem);
+
+  const fields = Object.keys(normalizedPayload);
+  if (fields.length === 0) {
+    throw new Error("Import payload is empty.");
+  }
+
+  if (existingItem?.id) {
+    const setClause = fields.map(field => `${field} = ?`).join(", ");
+    const values = [...Object.values(normalizedPayload), existingItem.id];
+    if (tableName === "users" && normalizedPayload.password) {
+      const passwordIndex = fields.indexOf("password");
+      values[passwordIndex] = bcrypt.hashSync(normalizedPayload.password, 10);
+    }
+    await db.prepare(`UPDATE ${tableName} SET ${setClause} WHERE id = ?`).run(...values);
+    return { ...existingItem, ...normalizedPayload, id: existingItem.id, __importAction: "updated" as const };
+  }
+
+  const placeholders = fields.map(() => "?").join(", ");
+  const values = [...Object.values(normalizedPayload)];
+  if (tableName === "users" && normalizedPayload.password) {
+    const passwordIndex = fields.indexOf("password");
+    values[passwordIndex] = bcrypt.hashSync(normalizedPayload.password, 10);
+  }
+  const info = await db.prepare(`INSERT INTO ${tableName} (${fields.join(", ")}) VALUES (${placeholders})`).run(...values);
+  return { id: info.lastInsertRowid, ...normalizedPayload, __importAction: "created" as const };
+};
+
 await cleanupDuplicateSchedules();
 await syncBatchAllocationStatuses();
 
@@ -2671,6 +2808,55 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       res.json(items);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post(`/api/${tableName}/import-bulk`, authenticate, async (req, res) => {
+    if (!BULK_IMPORT_SUPPORTED_TABLES.has(tableName)) {
+      return res.status(404).json({ error: "Bulk import is not supported for this module." });
+    }
+    if (tableName === "users" && (req as any).user?.role !== "Administrator") {
+      return res.status(403).json({ error: "Only Administrator can manage users and passwords." });
+    }
+
+    try {
+      const entries = Array.isArray(req.body?.entries) ? req.body.entries : [];
+      if (entries.length === 0) {
+        return res.json({ results: [] });
+      }
+
+      const records = await db.prepare(`SELECT * FROM ${tableName}`).all() as any[];
+      const results: Array<{ ok: boolean; record?: any; action?: "created" | "updated"; error?: string }> = [];
+
+      for (const entry of entries) {
+        const payload = entry?.payload ?? entry;
+        const uniqueFieldGroups = Array.isArray(entry?.uniqueFieldGroups) ? entry.uniqueFieldGroups : [];
+
+        try {
+          const existingItem = findMatchingImportRecord(records, payload, uniqueFieldGroups);
+          const savedRecord = await persistBulkImportRecord(tableName, payload, existingItem);
+          const existingIndex = records.findIndex(record => idsEqual(record?.id, savedRecord?.id));
+          if (existingIndex >= 0) {
+            records[existingIndex] = { ...records[existingIndex], ...savedRecord };
+          } else {
+            records.push(savedRecord);
+          }
+          results.push({
+            ok: true,
+            record: savedRecord,
+            action: savedRecord.__importAction,
+          });
+        } catch (err: any) {
+          results.push({
+            ok: false,
+            error: err?.message || "Import failed.",
+          });
+        }
+      }
+
+      res.json({ results });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
     }
   });
 

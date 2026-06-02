@@ -333,6 +333,7 @@ var getPrimarySchemaSql = (dialect) => {
       school_id INTEGER,
       department_id INTEGER,
       program TEXT,
+      specialization TEXT,
       academic_year TEXT,
       year_of_study TEXT,
       semester TEXT,
@@ -351,6 +352,7 @@ var getPrimarySchemaSql = (dialect) => {
       department_id INTEGER NOT NULL,
       program TEXT,
       batch TEXT,
+      specialization TEXT,
       academic_year TEXT,
       year_of_study TEXT,
       semester TEXT,
@@ -375,12 +377,15 @@ var getPrimarySchemaSql = (dialect) => {
       room_id INTEGER NOT NULL,
       program TEXT,
       batch TEXT,
+      specialization TEXT,
       academic_year TEXT,
       year_of_study TEXT,
       semester TEXT,
       start_date DATE NOT NULL,
       end_date DATE NOT NULL,
       allocation_mode TEXT DEFAULT 'Shared',
+      allocation_pattern TEXT DEFAULT 'Single Room',
+      split_group_id TEXT,
       room_type TEXT,
       capacity INTEGER,
       status TEXT DEFAULT 'Planned',
@@ -406,7 +411,11 @@ var getPrimarySchemaSql = (dialect) => {
     CREATE TABLE IF NOT EXISTS schedules (
       id ${idDefinition},
       schedule_id TEXT UNIQUE NOT NULL,
+      schedule_code TEXT,
+      session_group_id TEXT,
       department_id INTEGER,
+      program TEXT,
+      specialization TEXT,
       section TEXT,
       course_code TEXT,
       course_name TEXT,
@@ -520,17 +529,26 @@ await ensureColumn("rooms", "lab_name", "TEXT");
 await ensureColumn("rooms", "restroom_type", "TEXT");
 await ensureColumn("schedules", "room_label", "TEXT");
 await ensureColumn("schedules", "section", "TEXT");
+await ensureColumn("schedules", "specialization", "TEXT");
+await ensureColumn("schedules", "program", "TEXT");
 await ensureColumn("schedules", "semester", "TEXT");
 await ensureColumn("schedules", "year_of_study", "TEXT");
 await ensureColumn("schedules", "import_status", "TEXT");
 await ensureColumn("schedules", "review_note", "TEXT");
+await ensureColumn("schedules", "schedule_code", "TEXT");
 await ensureColumn("schedules", "source_file", "TEXT");
+await ensureColumn("schedules", "session_group_id", "TEXT");
 await ensureColumn("users", "responsibilities", "TEXT");
 await ensureColumn("users", "access_limits", "TEXT");
 await ensureColumn("users", "access_paths", "TEXT");
 await ensureColumn("users", "force_password_change", "INTEGER DEFAULT 0");
 await ensureColumn("batch_room_allocations", "allocation_mode", "TEXT DEFAULT 'Shared'");
+await ensureColumn("batch_room_allocations", "allocation_pattern", "TEXT DEFAULT 'Single Room'");
+await ensureColumn("batch_room_allocations", "split_group_id", "TEXT");
 await ensureColumn("academic_calendars", "timing_profile_id", "INTEGER");
+await ensureColumn("timing_profiles", "specialization", "TEXT");
+await ensureColumn("academic_calendars", "specialization", "TEXT");
+await ensureColumn("batch_room_allocations", "specialization", "TEXT");
 var ROOM_TYPE_MATCH_ORDER = [
   "Admin Office",
   "Auditorium",
@@ -733,13 +751,27 @@ var isNonCapacityRoomType = (roomType) => NON_CAPACITY_ROOM_TYPE_VALUES.includes
 var CAPACITY_ROOM_TYPE_VALUES = [
   "Classroom",
   "Smart Classroom",
+  "Lecture Hall",
+  "Tutorial Room",
+  "Seminar Hall",
+  "Conference Room",
+  "Auditorium",
+  "Exam Hall",
+  "Multipurpose Room",
   "Multipurpose Classroom",
+  "Multipurpose Lecture Hall",
   "Classroom Lab",
   "Multipurpose Lab",
   "Lab",
   "Computer Lab",
   "Research Lab",
-  "Language Lab"
+  "Language Lab",
+  "Workshop",
+  "Studio",
+  "Meeting Room",
+  "Board Room",
+  "Sports Room",
+  "Gym"
 ];
 var isCapacityRoomType = (roomType) => CAPACITY_ROOM_TYPE_VALUES.includes(normalizeRoomTypeValue(roomType));
 var BOOKABLE_ROOM_TYPE_VALUES = [
@@ -840,7 +872,7 @@ var normalizeRoomPayload = (payload) => {
     nextPayload.room_name = nextPayload.room_section_name;
   }
   if (isCapacityRoomType(nextPayload.room_type) && nextPayload.capacity <= 0) {
-    throw new Error("Capacity is required for classroom and lab room types.");
+    throw new Error("Capacity is required for all bookable teaching, event, meeting, sports, and lab room types.");
   }
   return nextPayload;
 };
@@ -890,6 +922,17 @@ var normalizeIsoDate = (value) => {
   const trimmed = value?.toString().trim();
   if (!trimmed) return "";
   if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  const dayFirstMatch = trimmed.match(/^(\d{1,2})[-\/\s](\d{1,2})[-\/\s](\d{4})$/);
+  if (dayFirstMatch) {
+    const [, dayRaw, monthRaw, year] = dayFirstMatch;
+    const day = dayRaw.padStart(2, "0");
+    const month = monthRaw.padStart(2, "0");
+    const isoValue = `${year}-${month}-${day}`;
+    const parsedDayFirst = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+    if (!Number.isNaN(parsedDayFirst.getTime()) && parsedDayFirst.getUTCFullYear().toString() === year && (parsedDayFirst.getUTCMonth() + 1).toString().padStart(2, "0") === month && parsedDayFirst.getUTCDate().toString().padStart(2, "0") === day) {
+      return isoValue;
+    }
+  }
   const parsed = new Date(trimmed);
   if (Number.isNaN(parsed.getTime())) return "";
   return parsed.toISOString().slice(0, 10);
@@ -938,6 +981,7 @@ var normalizeTimingProfilePayload = async (payload) => {
   nextPayload.profile_id = nextPayload.profile_id?.toString().trim() || null;
   nextPayload.profile_name = nextPayload.profile_name?.toString().trim() || nextPayload.profile_id || null;
   nextPayload.program = nextPayload.program?.toString().trim() || null;
+  nextPayload.specialization = nextPayload.specialization?.toString().trim() || null;
   nextPayload.academic_year = nextPayload.academic_year?.toString().trim() || null;
   nextPayload.year_of_study = nextPayload.year_of_study?.toString().trim() || null;
   nextPayload.semester = nextPayload.semester?.toString().trim() || null;
@@ -972,7 +1016,7 @@ var normalizeAcademicCalendarPayload = async (payload) => {
     throw new Error("Academic calendar start date cannot be after the end date.");
   }
   const timingProfileId = nextPayload.timing_profile_id ? Number(nextPayload.timing_profile_id) : null;
-  const timingProfile = timingProfileId ? await db.prepare("SELECT id, school_id, department_id FROM timing_profiles WHERE id = ?").get(timingProfileId) : null;
+  const timingProfile = timingProfileId ? await db.prepare("SELECT id, school_id, department_id, specialization FROM timing_profiles WHERE id = ?").get(timingProfileId) : null;
   if (timingProfileId && !timingProfile) {
     throw new Error("Please select a valid timing profile.");
   }
@@ -982,10 +1026,14 @@ var normalizeAcademicCalendarPayload = async (payload) => {
   if (timingProfile?.school_id && timingProfile.school_id.toString() !== department.school_id.toString()) {
     throw new Error("Selected timing profile does not belong to the selected school.");
   }
+  if (timingProfile?.specialization && normalizeAcademicContextText(timingProfile.specialization) !== normalizeAcademicContextText(nextPayload.specialization)) {
+    throw new Error("Selected timing profile does not belong to the selected specialization / branch.");
+  }
   nextPayload.department_id = department.id;
   nextPayload.school_id = department.school_id;
   nextPayload.program = nextPayload.program?.toString().trim() || null;
   nextPayload.batch = nextPayload.batch?.toString().trim() || null;
+  nextPayload.specialization = nextPayload.specialization?.toString().trim() || timingProfile?.specialization || null;
   nextPayload.academic_year = nextPayload.academic_year?.toString().trim() || null;
   nextPayload.year_of_study = nextPayload.year_of_study?.toString().trim() || null;
   nextPayload.semester = nextPayload.semester?.toString().trim() || null;
@@ -1000,9 +1048,23 @@ var normalizeAcademicCalendarPayload = async (payload) => {
 };
 var normalizeBatchRoomAllocationPayload = async (payload) => {
   const nextPayload = { ...payload };
+  const buildSplitAllocationGroupId = (value) => {
+    const slugify = (input) => input?.toString().trim().toUpperCase().replace(/[^A-Z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "";
+    const parts = [
+      slugify(value?.department_id),
+      slugify(value?.program),
+      slugify(value?.batch),
+      slugify(value?.specialization),
+      slugify(value?.year_of_study),
+      slugify(value?.semester),
+      slugify(value?.start_date),
+      slugify(value?.end_date)
+    ].filter(Boolean);
+    return parts.length ? `SPLIT-${parts.join("-")}` : null;
+  };
   const calendarId = nextPayload.academic_calendar_id ? Number(nextPayload.academic_calendar_id) : null;
   const linkedCalendar = calendarId ? await db.prepare(`
-      SELECT id, school_id, department_id, program, batch, academic_year, year_of_study, semester, start_date, end_date
+      SELECT id, school_id, department_id, program, batch, specialization, academic_year, year_of_study, semester, start_date, end_date
       FROM academic_calendars
       WHERE id = ?
     `).get(calendarId) : null;
@@ -1033,12 +1095,15 @@ var normalizeBatchRoomAllocationPayload = async (payload) => {
   nextPayload.room_id = room.id;
   nextPayload.program = nextPayload.program?.toString().trim() || linkedCalendar?.program || null;
   nextPayload.batch = nextPayload.batch?.toString().trim() || linkedCalendar?.batch || null;
+  nextPayload.specialization = nextPayload.specialization?.toString().trim() || linkedCalendar?.specialization || null;
   nextPayload.academic_year = nextPayload.academic_year?.toString().trim() || linkedCalendar?.academic_year || null;
   nextPayload.year_of_study = nextPayload.year_of_study?.toString().trim() || linkedCalendar?.year_of_study || null;
   nextPayload.semester = nextPayload.semester?.toString().trim() || linkedCalendar?.semester || null;
   nextPayload.start_date = startDate;
   nextPayload.end_date = endDate;
   nextPayload.allocation_mode = ["exclusive", "shared"].includes((nextPayload.allocation_mode || "").toString().trim().toLowerCase()) ? (nextPayload.allocation_mode || "").toString().trim().toLowerCase() === "exclusive" ? "Exclusive" : "Shared" : "Shared";
+  nextPayload.allocation_pattern = ["split room", "split"].includes((nextPayload.allocation_pattern || "").toString().trim().toLowerCase()) ? "Split Room" : "Single Room";
+  nextPayload.split_group_id = nextPayload.allocation_pattern === "Split Room" ? nextPayload.split_group_id?.toString().trim() || buildSplitAllocationGroupId(nextPayload) : null;
   nextPayload.room_type = room.room_type;
   nextPayload.capacity = parseInt(nextPayload.capacity, 10) || 0;
   nextPayload.status = deriveBatchAllocationStatus(startDate, endDate, nextPayload.status);
@@ -1048,6 +1113,13 @@ var normalizeBatchRoomAllocationPayload = async (payload) => {
   }
   if (nextPayload.capacity > room.capacity) {
     throw new Error(`Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${nextPayload.capacity}.`);
+  }
+  if (nextPayload.allocation_pattern === "Split Room" && !nextPayload.split_group_id) {
+    throw new Error("Split Room allocations need a split allocation group.");
+  }
+  const departmentAllocationError = await getDepartmentAllocationLinkError(nextPayload.room_id, nextPayload.department_id, nextPayload.semester);
+  if (departmentAllocationError) {
+    throw new Error(departmentAllocationError);
   }
   return nextPayload;
 };
@@ -1119,6 +1191,133 @@ var isExaminationCalendarEvent = (calendar) => {
   return eventType.includes("exam") || eventType.includes("ciat") || title.includes("exam") || title.includes("ciat");
 };
 var normalizeAcademicContextText = (value) => normalizeDuplicateValue(value)?.toString() || "";
+var getDepartmentAllocationLink = async (roomId, departmentId, semester) => {
+  const numericRoomId = Number(roomId || 0) || null;
+  const numericDepartmentId = Number(departmentId || 0) || null;
+  if (!numericRoomId || !numericDepartmentId) return null;
+  const matches = await db.prepare(`
+    SELECT id, room_id, department_id, school_id, semester
+    FROM department_allocations
+    WHERE room_id = ? AND department_id = ?
+    ORDER BY id DESC
+  `).all(numericRoomId, numericDepartmentId);
+  if (matches.length === 0) return null;
+  const normalizedSemester = normalizeSemesterKey(semester);
+  if (!normalizedSemester) return matches[0];
+  return matches.find((match) => normalizeSemesterKey(match.semester) === normalizedSemester) || null;
+};
+var getDepartmentAllocationLinkError = async (roomId, departmentId, semester) => {
+  if (!roomId || !departmentId) return "Please select both department and room.";
+  const linkedAllocation = await getDepartmentAllocationLink(roomId, departmentId, semester);
+  if (linkedAllocation) return null;
+  const room = await db.prepare("SELECT room_number FROM rooms WHERE id = ?").get(roomId);
+  const department = await db.prepare("SELECT name FROM departments WHERE id = ?").get(departmentId);
+  const semesterLabel = normalizeSemesterKey(semester) ? ` for ${semester}` : "";
+  return `Room ${room?.room_number || roomId} is not mapped to ${department?.name || "the selected department"}${semesterLabel} in Department Allocation. Create the department allocation first.`;
+};
+var countDependentBatchRoomAllocations = async (roomId, departmentId, semester) => {
+  const numericRoomId = Number(roomId || 0) || null;
+  const numericDepartmentId = Number(departmentId || 0) || null;
+  if (!numericRoomId || !numericDepartmentId) return 0;
+  const matches = await db.prepare(`
+    SELECT id, semester
+    FROM batch_room_allocations
+    WHERE room_id = ? AND department_id = ?
+  `).all(numericRoomId, numericDepartmentId);
+  const normalizedSemester = normalizeSemesterKey(semester);
+  if (!normalizedSemester) return matches.length;
+  return matches.filter((match) => normalizeSemesterKey(match?.semester) === normalizedSemester).length;
+};
+var normalizeScheduleSpecializationValue = (value) => {
+  const raw = value?.toString().trim();
+  if (!raw) return null;
+  const normalized = raw.replace(/\s+/g, " ").trim();
+  if (!normalized) return null;
+  return normalized.toUpperCase();
+};
+var normalizeScheduleProgramValue = (value) => {
+  const raw = value?.toString().trim();
+  if (!raw) return null;
+  const normalized = raw.replace(/\s+/g, " ").trim();
+  if (!normalized) return null;
+  const aliases = {
+    "bsc": "B.Sc",
+    "b.sc": "B.Sc",
+    "b.sc.": "B.Sc",
+    "bpt": "BPT",
+    "b pt": "BPT",
+    "btech": "B.Tech",
+    "b tech": "B.Tech",
+    "b.tech": "B.Tech",
+    "mtech": "M.Tech",
+    "m tech": "M.Tech",
+    "m.tech": "M.Tech",
+    "bpharm": "B.Pharm",
+    "b pharm": "B.Pharm",
+    "b.pharm": "B.Pharm"
+  };
+  return aliases[normalized.toLowerCase()] || normalized;
+};
+var normalizeSchedulePayload = (payload) => ({
+  ...payload,
+  program: normalizeScheduleProgramValue(payload?.program),
+  specialization: normalizeScheduleSpecializationValue(payload?.specialization || payload?.branch),
+  section: payload?.section?.toString().trim() || null,
+  session_group_id: payload?.session_group_id?.toString().trim() || null
+});
+var buildDepartmentScheduleCodeSegment = (department) => {
+  const raw = department?.department_id?.toString().trim() || department?.name?.toString().trim() || "GEN";
+  const compact = raw.replace(/[^a-z0-9]+/gi, " ").trim();
+  if (!compact) return "GEN";
+  if (department?.department_id) {
+    return compact.replace(/\s+/g, "-").toUpperCase();
+  }
+  const acronym = compact.split(/\s+/).filter(Boolean).map((part) => part[0]).join("").toUpperCase();
+  return acronym || compact.replace(/\s+/g, "-").toUpperCase();
+};
+var buildScheduleProgramCodeSegment = (program) => {
+  const normalizedProgram = normalizeScheduleProgramValue(program);
+  if (!normalizedProgram) return "";
+  return normalizedProgram.replace(/[^a-z0-9]+/gi, "").toUpperCase();
+};
+var buildScheduleCodePrefix = (department, program, specialization) => {
+  const departmentSegment = buildDepartmentScheduleCodeSegment(department);
+  const programSegment = buildScheduleProgramCodeSegment(program);
+  const specializationSegment = normalizeScheduleSpecializationValue(specialization);
+  return ["SCH", departmentSegment, programSegment, specializationSegment].filter(Boolean).join("-");
+};
+var assignScheduleCode = async (payload, existingId, existingItem) => {
+  const mergedPayload = { ...existingItem || {}, ...payload || {} };
+  const department = mergedPayload?.department_id ? await db.prepare("SELECT id, department_id, name FROM departments WHERE id = ?").get(mergedPayload.department_id) : null;
+  const prefix = buildScheduleCodePrefix(department, mergedPayload.program, mergedPayload.specialization);
+  const existingCode = existingItem?.schedule_code?.toString().trim() || "";
+  if (existingCode && existingCode.startsWith(`${prefix}-`)) {
+    return existingCode;
+  }
+  const rows = await db.prepare("SELECT id, schedule_code FROM schedules WHERE schedule_code IS NOT NULL").all();
+  let maxSequence = 0;
+  rows.forEach((row) => {
+    if (existingId && idsEqual(row?.id, existingId)) return;
+    const code = row?.schedule_code?.toString().trim() || "";
+    if (!code.startsWith(`${prefix}-`)) return;
+    const sequence = parseInt(code.slice(prefix.length + 1), 10);
+    if (Number.isFinite(sequence)) {
+      maxSequence = Math.max(maxSequence, sequence);
+    }
+  });
+  return `${prefix}-${String(maxSequence + 1).padStart(3, "0")}`;
+};
+var backfillMissingScheduleCodes = async (rows) => {
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!row?.id) continue;
+    const existingCode = row?.schedule_code?.toString().trim() || "";
+    const scheduleCode = await assignScheduleCode(row, row.id, row);
+    if (existingCode === scheduleCode) continue;
+    await db.prepare("UPDATE schedules SET schedule_code = ? WHERE id = ?").run(scheduleCode, row.id);
+    row.schedule_code = scheduleCode;
+  }
+  return rows;
+};
 var normalizeYearOfStudyKey = (value) => {
   const normalized = value?.toString().trim().toLowerCase() || "";
   if (!normalized) return "";
@@ -1149,6 +1348,7 @@ var allocationMatchesCalendarContext = (allocation, calendar) => {
   if (allocationSemester && calendarSemester && allocationSemester !== calendarSemester) return false;
   if (calendar?.program && normalizeAcademicContextText(allocation.program) !== normalizeAcademicContextText(calendar.program)) return false;
   if (calendar?.batch && normalizeAcademicContextText(allocation.batch) !== normalizeAcademicContextText(calendar.batch)) return false;
+  if (calendar?.specialization && normalizeAcademicContextText(allocation.specialization) !== normalizeAcademicContextText(calendar.specialization)) return false;
   if (calendar?.academic_year && normalizeAcademicContextText(allocation.academic_year) !== normalizeAcademicContextText(calendar.academic_year)) return false;
   const allocationYear = normalizeYearOfStudyKey(allocation.year_of_study);
   const calendarYear = normalizeYearOfStudyKey(calendar.year_of_study);
@@ -1164,8 +1364,10 @@ var scheduleMatchesCalendarOverride = (schedule, calendar, activeBatchAllocation
   const scheduleYear = normalizeYearOfStudyKey(schedule.year_of_study);
   const calendarYear = normalizeYearOfStudyKey(calendar.year_of_study);
   if (calendarYear && scheduleYear && calendarYear !== scheduleYear) return false;
+  if (calendar?.program && schedule?.program && normalizeAcademicContextText(calendar.program) !== normalizeAcademicContextText(schedule.program)) return false;
+  if (calendar?.specialization && schedule?.specialization && normalizeAcademicContextText(calendar.specialization) !== normalizeAcademicContextText(schedule.specialization)) return false;
   const calendarHasSpecificContext = Boolean(
-    calendar?.program || calendar?.batch || calendar?.academic_year || calendar?.year_of_study
+    calendar?.program || calendar?.batch || calendar?.specialization || calendar?.academic_year || calendar?.year_of_study
   );
   if (!calendarHasSpecificContext) return true;
   const relevantAllocations = activeBatchAllocations.filter((allocation) => {
@@ -1173,6 +1375,10 @@ var scheduleMatchesCalendarOverride = (schedule, calendar, activeBatchAllocation
     if (!allocation?.department_id || allocation.department_id.toString() !== schedule.department_id.toString()) return false;
     const allocationSemester = normalizeSemesterKey(allocation.semester);
     if (scheduleSemester && allocationSemester && allocationSemester !== scheduleSemester) return false;
+    if (schedule?.program && allocation?.program && normalizeAcademicContextText(allocation.program) !== normalizeAcademicContextText(schedule.program)) return false;
+    if (schedule?.specialization && allocation?.specialization && normalizeAcademicContextText(allocation.specialization) !== normalizeAcademicContextText(schedule.specialization)) return false;
+    const allocationYear = normalizeYearOfStudyKey(allocation.year_of_study);
+    if (scheduleYear && allocationYear && allocationYear !== scheduleYear) return false;
     if (date && allocation?.start_date && allocation?.end_date) {
       const allocationStart = normalizeIsoDate(allocation.start_date);
       const allocationEnd = normalizeIsoDate(allocation.end_date);
@@ -1187,14 +1393,14 @@ var filterSchedulesByAcademicCalendar = async (schedules, date) => {
   const normalizedDate = normalizeIsoDate(date);
   if (!normalizedDate || !Array.isArray(schedules) || schedules.length === 0) return schedules;
   const activeExamCalendars = await db.prepare(`
-    SELECT id, department_id, program, batch, academic_year, year_of_study, semester, event_type, title, start_date, end_date
+    SELECT id, department_id, program, batch, specialization, academic_year, year_of_study, semester, event_type, title, start_date, end_date
     FROM academic_calendars
     WHERE start_date <= ? AND end_date >= ?
   `).all(normalizedDate, normalizedDate);
   const examinationCalendars = activeExamCalendars.filter(isExaminationCalendarEvent);
   if (examinationCalendars.length === 0) return schedules;
   const activeBatchAllocations = await db.prepare(`
-    SELECT id, academic_calendar_id, room_id, department_id, program, batch, academic_year, year_of_study, semester, start_date, end_date, status
+    SELECT id, academic_calendar_id, room_id, department_id, program, batch, specialization, academic_year, year_of_study, semester, start_date, end_date, status
     FROM batch_room_allocations
     WHERE start_date <= ? AND end_date >= ? AND status != ?
   `).all(normalizedDate, normalizedDate, "Released");
@@ -1499,6 +1705,32 @@ var normalizeExtractedSectionValue = (value) => {
   const match = raw.match(/section[\s:-]*([a-z0-9]+)/i) || raw.match(/^([a-z]+\d+)$/i);
   return (match?.[1] || raw).toUpperCase();
 };
+var normalizeExtractedSpecializationValue = (value) => {
+  const raw = value?.toString().trim();
+  if (!raw) return "";
+  const explicitMatch = raw.match(/(?:specialization|branch)[\s:-]*([a-z0-9&/ -]+)/i);
+  if (explicitMatch?.[1]) {
+    return normalizeScheduleSpecializationValue(explicitMatch[1]) || "";
+  }
+  const singleToken = raw.match(/^(aott|emct|dt|mlt|cvt|opt|rit|rt)$/i);
+  if (singleToken?.[1]) {
+    return normalizeScheduleSpecializationValue(singleToken[1]) || "";
+  }
+  const bscHeaderMatch = raw.match(/\bb\.?\s*sc\b[\s:-]*([a-z0-9&/ -]+?)\s+(?:i|ii|iii|iv|v|vi|vii|viii|\d+(?:st|nd|rd|th)?)\s+semester\b/i);
+  if (bscHeaderMatch?.[1]) {
+    return normalizeScheduleSpecializationValue(bscHeaderMatch[1]) || "";
+  }
+  return normalizeScheduleSpecializationValue(raw) || "";
+};
+var normalizeExtractedProgramValue = (value) => {
+  const raw = value?.toString().trim();
+  if (!raw) return "";
+  const directMatch = raw.match(/\b(b\.?\s*sc|bpt|b\.?\s*pharm|b\.?\s*tech|m\.?\s*tech)\b/i);
+  if (directMatch?.[1]) {
+    return normalizeScheduleProgramValue(directMatch[1]) || "";
+  }
+  return normalizeScheduleProgramValue(raw) || "";
+};
 var normalizeExtractedRoomValue = (value) => {
   const raw = value?.toString().trim();
   if (!raw) return "";
@@ -1508,20 +1740,39 @@ var normalizeExtractedRoomValue = (value) => {
 var mergeExtractedSchedulesWithHeaderRooms = (schedules, sectionRoomMaps) => {
   if (!Array.isArray(schedules) || schedules.length === 0) return [];
   const fallbackBySection = /* @__PURE__ */ new Map();
+  const fallbackBySpecialization = /* @__PURE__ */ new Map();
   for (const item of Array.isArray(sectionRoomMaps) ? sectionRoomMaps : []) {
     const section = normalizeExtractedSectionValue(item?.section);
     const room = normalizeExtractedRoomValue(item?.room);
     const semester = item?.semester || null;
     const department = item?.department || null;
+    const program = normalizeExtractedProgramValue(item?.program || item?.program_context || item?.title || item?.header) || null;
     const year_of_study = normalizeYearOfStudyKey(item?.year_of_study || item?.year) || null;
-    if (section && (room || semester || department || year_of_study) && !fallbackBySection.has(section)) {
-      fallbackBySection.set(section, { room, semester, department, year_of_study });
+    const specialization = normalizeExtractedSpecializationValue(item?.specialization || item?.branch || item?.title || item?.header) || null;
+    if (section && (room || semester || department || program || year_of_study || specialization) && !fallbackBySection.has(section)) {
+      fallbackBySection.set(section, { room, semester, department, program, year_of_study, specialization });
+    }
+    if (specialization && (room || semester || department || program || year_of_study) && !fallbackBySpecialization.has(specialization)) {
+      fallbackBySpecialization.set(specialization, { room, semester, department, program, year_of_study, specialization });
     }
   }
+  const singleFallback = Array.isArray(sectionRoomMaps) && sectionRoomMaps.length === 1 ? (() => {
+    const item = sectionRoomMaps[0];
+    return {
+      room: normalizeExtractedRoomValue(item?.room),
+      semester: item?.semester || null,
+      department: item?.department || null,
+      program: normalizeExtractedProgramValue(item?.program || item?.program_context || item?.title || item?.header) || null,
+      year_of_study: normalizeYearOfStudyKey(item?.year_of_study || item?.year) || null,
+      specialization: normalizeExtractedSpecializationValue(item?.specialization || item?.branch || item?.title || item?.header) || null
+    };
+  })() : null;
   return schedules.map((schedule) => {
     const normalizedSection = normalizeExtractedSectionValue(schedule?.section);
+    const normalizedProgram = normalizeExtractedProgramValue(schedule?.program || schedule?.program_context || schedule?.header) || null;
+    const normalizedSpecialization = normalizeExtractedSpecializationValue(schedule?.specialization || schedule?.branch || schedule?.program_context || schedule?.header) || null;
     const explicitRoom = normalizeExtractedRoomValue(schedule?.room);
-    const inheritedDefaults = normalizedSection ? fallbackBySection.get(normalizedSection) : null;
+    const inheritedDefaults = (normalizedSection ? fallbackBySection.get(normalizedSection) : null) || (normalizedSpecialization ? fallbackBySpecialization.get(normalizedSpecialization) : null) || singleFallback;
     const inheritedRoom = inheritedDefaults?.room || "";
     const inheritedYear = inheritedDefaults?.year_of_study || "";
     const scheduleYear = normalizeYearOfStudyKey(schedule?.year_of_study || schedule?.year);
@@ -1533,6 +1784,8 @@ var mergeExtractedSchedulesWithHeaderRooms = (schedules, sectionRoomMaps) => {
       ...schedule,
       section: normalizedSection || schedule?.section || null,
       department: schedule?.department || inheritedDefaults?.department || null,
+      program: normalizedProgram || inheritedDefaults?.program || null,
+      specialization: normalizedSpecialization || inheritedDefaults?.specialization || null,
       semester: schedule?.semester || inheritedDefaults?.semester || null,
       year_of_study: scheduleYear || inheritedYear || derivedYearFromSemester || null,
       room: explicitRoom || inheritedRoom || schedule?.room || null
@@ -1734,11 +1987,13 @@ Return a single JSON object with exactly these keys:
 - sectionRoomMaps: array of objects with fields:
   - section
   - room
+  - program
   - year_of_study
   - semester
   - department
 - schedules: array of objects with fields:
   - department (e.g., "Computer Science and Engineering")
+  - program (e.g., "B.Sc", "BPT", "B.Tech")
   - section (e.g., "A1", "A2", "A10" from headers like SECTION-A1)
   - year_of_study (Roman or numeric year if available, e.g., "II", "2", "IV Year")
   - semester (prefer the exact semester if available, e.g., "IV", "6", or "VI Semester"; use Odd/Even only if the file truly provides no exact semester)
@@ -1753,6 +2008,8 @@ Return a single JSON object with exactly these keys:
 
 Ensure sectionRoomMaps captures the default Room No and academic context from the header of each section timetable.
 Ensure you capture the Section mentioned in the header of each timetable and repeat it for every extracted row from that section.
+Also capture the Program from the timetable heading, such as B.Sc or BPT, and repeat it for every extracted row in that timetable even when Section is blank.
+Also capture any Specialization / Branch from the timetable heading, such as AOTT, CVT, OPT, or BPT, and repeat it for every extracted row in that branch timetable even when Section is blank.
 For normal theory slots, use the section header Room No as the room.
 Only use a different room when that specific slot explicitly overrides it with text like (R.No.610) or Room No: 610 inside the timetable grid.
 Only extract actual class sessions.
@@ -1762,8 +2019,8 @@ If a slot has multiple subjects or is a lab, create separate entries if needed o
 
 Example response:
 {
-  "sectionRoomMaps": [{"section":"A4","room":"331","year_of_study":"II","semester":"IV Semester","department":"Computer Science and Engineering"}],
-  "schedules": [{"department":"Computer Science and Engineering","section":"A4","year_of_study":"II","semester":"IV Semester","course_code":"22ME101703M","course_name":"Management Science","faculty":"MOOC","room":"331","day_of_week":"Monday","start_time":"09:00","end_time":"09:55","student_count":null}]
+  "sectionRoomMaps": [{"section":"A4","program":"B.Sc","specialization":"CVT","room":"331","year_of_study":"II","semester":"IV Semester","department":"Computer Science and Engineering"}],
+  "schedules": [{"department":"Computer Science and Engineering","program":"B.Sc","specialization":"CVT","section":"A4","year_of_study":"II","semester":"IV Semester","course_code":"22ME101703M","course_name":"Management Science","faculty":"MOOC","room":"331","day_of_week":"Monday","start_time":"09:00","end_time":"09:55","student_count":null}]
 }` });
     const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
     const response = await ai.models.generateContent({
@@ -1865,15 +2122,15 @@ var duplicateRules = {
   ],
   academic_calendars: [
     { fields: ["calendar_id"], label: "Calendar ID" },
-    { fields: ["department_id", "program", "batch", "year_of_study", "semester", "event_type", "title", "start_date", "end_date"], label: "Academic calendar period" }
+    { fields: ["department_id", "program", "batch", "specialization", "year_of_study", "semester", "event_type", "title", "start_date", "end_date"], label: "Academic calendar period" }
   ],
   timing_profiles: [
     { fields: ["profile_id"], label: "Timing Profile ID" },
-    { fields: ["department_id", "program", "academic_year", "year_of_study", "semester", "section", "slot_pattern"], label: "Timing profile context" }
+    { fields: ["department_id", "program", "specialization", "academic_year", "year_of_study", "semester", "section", "slot_pattern"], label: "Timing profile context" }
   ],
   batch_room_allocations: [
     { fields: ["allocation_id"], label: "Allocation ID" },
-    { fields: ["room_id", "department_id", "program", "batch", "year_of_study", "semester", "start_date", "end_date"], label: "Batch room allocation period" }
+    { fields: ["room_id", "department_id", "program", "batch", "specialization", "year_of_study", "semester", "start_date", "end_date"], label: "Batch room allocation period" }
   ],
   equipment: [
     { fields: ["equipment_id"], label: "Equipment ID" },
@@ -1881,7 +2138,7 @@ var duplicateRules = {
   ],
   schedules: [
     { fields: ["schedule_id"], label: "Schedule ID" },
-    { fields: ["room_id", "section", "day_of_week", "start_time", "end_time"], label: "Schedule slot for this room and section" }
+    { fields: ["room_id", "program", "specialization", "section", "day_of_week", "start_time", "end_time"], label: "Schedule slot for this room, program, branch, and section" }
   ],
   bookings: [
     { fields: ["request_id"], label: "Request ID" }
@@ -1927,14 +2184,16 @@ var getScheduleIdentityVariants = (schedule) => {
   const day = normalizeDuplicateValue(schedule?.day_of_week)?.toString() || "";
   const start = normalizeDuplicateValue(schedule?.start_time)?.toString() || "";
   const end = normalizeDuplicateValue(schedule?.end_time)?.toString() || "";
+  const program = normalizeDuplicateValue(normalizeScheduleProgramValue(schedule?.program))?.toString() || "";
+  const specialization = normalizeDuplicateValue(normalizeScheduleSpecializationValue(schedule?.specialization))?.toString() || "";
   const section = normalizeDuplicateValue(schedule?.section)?.toString() || "";
   const variants = [];
   if (schedule?.room_id !== void 0 && schedule?.room_id !== null && schedule.room_id !== "") {
-    variants.push(`room|${schedule.room_id.toString()}|${section}|${day}|${start}|${end}`);
+    variants.push(`room|${schedule.room_id.toString()}|${program}|${specialization}|${section}|${day}|${start}|${end}`);
   }
   const normalizedRoomLabel = normalizeDuplicateValue(schedule?.room_label)?.toString() || "";
   if (normalizedRoomLabel) {
-    variants.push(`label|${normalizedRoomLabel}|${section}|${day}|${start}|${end}`);
+    variants.push(`label|${normalizedRoomLabel}|${program}|${specialization}|${section}|${day}|${start}|${end}`);
   }
   if (variants.length === 0) {
     const scheduleId = normalizeDuplicateValue(schedule?.schedule_id)?.toString() || "";
@@ -1997,7 +2256,7 @@ var checkDuplicateRecord = async (tableName, data, excludeId) => {
   }
   if (tableName === "schedules" && data?.day_of_week && data?.start_time && data?.end_time) {
     const candidates = await db.prepare(`
-      SELECT id, schedule_id, room_id, room_label, section, day_of_week, start_time, end_time
+      SELECT id, schedule_id, program, room_id, room_label, specialization, section, day_of_week, start_time, end_time
       FROM schedules
       WHERE LOWER(TRIM(day_of_week)) = ?
       AND LOWER(TRIM(start_time)) = ?
@@ -2011,7 +2270,7 @@ var checkDuplicateRecord = async (tableName, data, excludeId) => {
     );
     const conflictingSchedule = candidates.find((candidate) => schedulesConflict(candidate, data));
     if (conflictingSchedule) {
-      return "Schedule slot for this room already exists. Duplicate records are not allowed.";
+      return "Schedule slot for this room, program, branch, and section already exists. Duplicate records are not allowed.";
     }
   }
   if (tableName === "rooms") {
@@ -2036,6 +2295,121 @@ var checkDuplicateRecord = async (tableName, data, excludeId) => {
     }
   }
   return null;
+};
+var BULK_IMPORT_SUPPORTED_TABLES = /* @__PURE__ */ new Set([
+  "users",
+  "campuses",
+  "buildings",
+  "blocks",
+  "floors",
+  "rooms",
+  "schools",
+  "departments",
+  "department_allocations",
+  "timing_profiles",
+  "academic_calendars",
+  "batch_room_allocations",
+  "equipment",
+  "schedules",
+  "maintenance"
+]);
+var hasImportMatchValue = (value) => value !== void 0 && value !== null && value !== "";
+var normalizeImportMatchValue = (value) => value?.toString().trim().toLowerCase().replace(/\s+/g, " ") || "";
+var findMatchingImportRecord = (records, payload, uniqueFieldGroups) => {
+  for (const fields of Array.isArray(uniqueFieldGroups) ? uniqueFieldGroups : []) {
+    if (!Array.isArray(fields) || fields.some((field) => !hasImportMatchValue(payload?.[field]))) continue;
+    const existing = records.find(
+      (record) => fields.every(
+        (field) => hasImportMatchValue(record?.[field]) && normalizeImportMatchValue(record[field]) === normalizeImportMatchValue(payload[field])
+      )
+    );
+    if (existing) return existing;
+  }
+  return null;
+};
+var normalizeBulkImportPayload = async (tableName, payload, existingItem) => {
+  let nextPayload = { ...payload || {} };
+  if (tableName === "users") {
+    if (existingItem && !nextPayload.password) delete nextPayload.password;
+    if (!existingItem && !nextPayload.password) nextPayload.password = "Welcome123";
+    if (nextPayload.password) nextPayload.force_password_change = 1;
+  }
+  if (tableName === "rooms") {
+    nextPayload = normalizeRoomPayload(nextPayload);
+  }
+  if (tableName === "academic_calendars") {
+    nextPayload = await normalizeAcademicCalendarPayload(existingItem ? { ...existingItem, ...nextPayload } : nextPayload);
+  }
+  if (tableName === "timing_profiles") {
+    nextPayload = await normalizeTimingProfilePayload(existingItem ? { ...existingItem, ...nextPayload } : nextPayload);
+  }
+  if (tableName === "batch_room_allocations") {
+    nextPayload = await normalizeBatchRoomAllocationPayload(existingItem ? { ...existingItem, ...nextPayload } : nextPayload);
+  }
+  if (tableName === "schedules") {
+    nextPayload = normalizeSchedulePayload(existingItem ? { ...existingItem, ...nextPayload } : nextPayload);
+  }
+  return nextPayload;
+};
+var validateBulkImportPayload = async (tableName, payload, existingItem) => {
+  const nextRecord = existingItem ? { ...existingItem, ...payload } : payload;
+  const duplicateError = await checkDuplicateRecord(tableName, nextRecord, existingItem?.id);
+  if (duplicateError) throw new Error(duplicateError);
+  if (tableName === "rooms") {
+    const hierarchyError = await validateRoomHierarchy(nextRecord, existingItem?.id);
+    if (hierarchyError) throw new Error(hierarchyError);
+    const restroomValidationError = await getRestroomValidationError(nextRecord);
+    if (restroomValidationError) throw new Error(restroomValidationError);
+  }
+  if (tableName === "department_allocations") {
+    const room = await db.prepare("SELECT room_number, capacity, room_type, is_bookable FROM rooms WHERE id = ?").get(nextRecord.room_id);
+    if (!room) throw new Error("Please select a valid room.");
+    const bookableError = await getBookableRoomError(nextRecord.room_id);
+    if (bookableError) throw new Error(bookableError);
+    if ((parseInt(nextRecord.capacity, 10) || 0) > room.capacity) {
+      throw new Error(`Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${nextRecord.capacity}.`);
+    }
+    payload.room_type = room.room_type;
+  }
+  if (tableName === "batch_room_allocations") {
+    const bookableError = await getBookableRoomError(nextRecord.room_id);
+    if (bookableError) throw new Error(bookableError);
+    const departmentAllocationError = await getDepartmentAllocationLinkError(nextRecord.room_id, nextRecord.department_id, nextRecord.semester);
+    if (departmentAllocationError) throw new Error(departmentAllocationError);
+    const overlapError = await getBatchAllocationOverlapError(nextRecord, existingItem?.id);
+    if (overlapError) throw new Error(overlapError);
+  }
+  if (tableName === "schedules") {
+    const bookableError = await getBookableRoomError(nextRecord.room_id);
+    if (bookableError) throw new Error(bookableError);
+    payload.schedule_code = await assignScheduleCode(payload, existingItem?.id, existingItem);
+  }
+};
+var persistBulkImportRecord = async (tableName, payload, existingItem) => {
+  const normalizedPayload = await normalizeBulkImportPayload(tableName, payload, existingItem);
+  await validateBulkImportPayload(tableName, normalizedPayload, existingItem);
+  const fields = Object.keys(normalizedPayload);
+  if (fields.length === 0) {
+    throw new Error("Import payload is empty.");
+  }
+  if (existingItem?.id) {
+    const setClause = fields.map((field) => `${field} = ?`).join(", ");
+    const values2 = [...Object.values(normalizedPayload), existingItem.id];
+    if (tableName === "users" && normalizedPayload.password) {
+      const passwordIndex = fields.indexOf("password");
+      values2[passwordIndex] = bcrypt.hashSync(normalizedPayload.password, 10);
+    }
+    await db.prepare(`UPDATE ${tableName} SET ${setClause} WHERE id = ?`).run(...values2);
+    return { ...existingItem, ...normalizedPayload, id: existingItem.id, __importAction: "updated" };
+  }
+  const placeholders = fields.map(() => "?").join(", ");
+  const values = [...Object.values(normalizedPayload)];
+  if (tableName === "users" && normalizedPayload.password) {
+    const passwordIndex = fields.indexOf("password");
+    values[passwordIndex] = bcrypt.hashSync(normalizedPayload.password, 10);
+  }
+  const info = await db.prepare(`INSERT INTO ${tableName} (${fields.join(", ")}) VALUES (${placeholders})`).run(...values);
+  return { id: info.lastInsertRowid, ...normalizedPayload, __importAction: "created" };
 };
 await cleanupDuplicateSchedules();
 await syncBatchAllocationStatuses();
@@ -2138,7 +2512,8 @@ var createCrudRoutes = (tableName, idField = "id") => {
       }
       const items = await db.prepare(`SELECT * FROM ${tableName}`).all();
       if (tableName === "schedules") {
-        const deduplicatedItems = deduplicateSchedules(items).kept;
+        const hydratedItems = await backfillMissingScheduleCodes(items);
+        const deduplicatedItems = deduplicateSchedules(hydratedItems).kept;
         const requestedDate = normalizeIsoDate(req.query.date);
         if (requestedDate) {
           return res.json(await filterSchedulesByAcademicCalendar(deduplicatedItems, requestedDate));
@@ -2148,6 +2523,49 @@ var createCrudRoutes = (tableName, idField = "id") => {
       res.json(items);
     } catch (err) {
       res.status(500).json({ error: err.message });
+    }
+  });
+  app.post(`/api/${tableName}/import-bulk`, authenticate, async (req, res) => {
+    if (!BULK_IMPORT_SUPPORTED_TABLES.has(tableName)) {
+      return res.status(404).json({ error: "Bulk import is not supported for this module." });
+    }
+    if (tableName === "users" && req.user?.role !== "Administrator") {
+      return res.status(403).json({ error: "Only Administrator can manage users and passwords." });
+    }
+    try {
+      const entries = Array.isArray(req.body?.entries) ? req.body.entries : [];
+      if (entries.length === 0) {
+        return res.json({ results: [] });
+      }
+      const records = await db.prepare(`SELECT * FROM ${tableName}`).all();
+      const results = [];
+      for (const entry of entries) {
+        const payload = entry?.payload ?? entry;
+        const uniqueFieldGroups = Array.isArray(entry?.uniqueFieldGroups) ? entry.uniqueFieldGroups : [];
+        try {
+          const existingItem = findMatchingImportRecord(records, payload, uniqueFieldGroups);
+          const savedRecord = await persistBulkImportRecord(tableName, payload, existingItem);
+          const existingIndex = records.findIndex((record) => idsEqual(record?.id, savedRecord?.id));
+          if (existingIndex >= 0) {
+            records[existingIndex] = { ...records[existingIndex], ...savedRecord };
+          } else {
+            records.push(savedRecord);
+          }
+          results.push({
+            ok: true,
+            record: savedRecord,
+            action: savedRecord.__importAction
+          });
+        } catch (err) {
+          results.push({
+            ok: false,
+            error: err?.message || "Import failed."
+          });
+        }
+      }
+      res.json({ results });
+    } catch (err) {
+      res.status(400).json({ error: err.message });
     }
   });
   app.post(`/api/${tableName}`, authenticate, async (req, res) => {
@@ -2175,6 +2593,9 @@ var createCrudRoutes = (tableName, idField = "id") => {
       }
       if (tableName === "batch_room_allocations") {
         req.body = await normalizeBatchRoomAllocationPayload(req.body);
+      }
+      if (tableName === "schedules") {
+        req.body = normalizeSchedulePayload(req.body);
       }
       if (tableName === "rooms") {
         req.body = normalizeRoomPayload(req.body);
@@ -2211,12 +2632,15 @@ var createCrudRoutes = (tableName, idField = "id") => {
       if (tableName === "batch_room_allocations") {
         const bookableError = await getBookableRoomError(req.body.room_id);
         if (bookableError) return res.status(400).json({ error: bookableError });
+        const departmentAllocationError = await getDepartmentAllocationLinkError(req.body.room_id, req.body.department_id, req.body.semester);
+        if (departmentAllocationError) return res.status(400).json({ error: departmentAllocationError });
         const overlapError = await getBatchAllocationOverlapError(req.body);
         if (overlapError) return res.status(400).json({ error: overlapError });
       }
       if (tableName === "schedules") {
         const bookableError = await getBookableRoomError(req.body.room_id);
         if (bookableError) return res.status(400).json({ error: bookableError });
+        req.body.schedule_code = await assignScheduleCode(req.body);
       }
       if (tableName === "bookings") {
         if (!req.body.room_id || !req.body.date || !req.body.start_time || !req.body.end_time) {
@@ -2307,6 +2731,9 @@ var createCrudRoutes = (tableName, idField = "id") => {
       if (tableName === "batch_room_allocations") {
         req.body = await normalizeBatchRoomAllocationPayload({ ...existingItem, ...req.body });
       }
+      if (tableName === "schedules") {
+        req.body = normalizeSchedulePayload({ ...existingItem, ...req.body });
+      }
       let fields = Object.keys(req.body);
       let setClause = fields.map((f) => `${f} = ?`).join(", ");
       let values = [...Object.values(req.body), req.params.id];
@@ -2335,6 +2762,8 @@ var createCrudRoutes = (tableName, idField = "id") => {
         const nextAllocation = { ...existingItem, ...req.body };
         const bookableError = await getBookableRoomError(nextAllocation.room_id);
         if (bookableError) return res.status(400).json({ error: bookableError });
+        const departmentAllocationError = await getDepartmentAllocationLinkError(nextAllocation.room_id, nextAllocation.department_id, nextAllocation.semester);
+        if (departmentAllocationError) return res.status(400).json({ error: departmentAllocationError });
         const overlapError = await getBatchAllocationOverlapError(nextAllocation, req.params.id);
         if (overlapError) return res.status(400).json({ error: overlapError });
       }
@@ -2342,6 +2771,7 @@ var createCrudRoutes = (tableName, idField = "id") => {
         const nextSchedule = { ...existingItem, ...req.body };
         const bookableError = await getBookableRoomError(nextSchedule.room_id);
         if (bookableError) return res.status(400).json({ error: bookableError });
+        req.body.schedule_code = await assignScheduleCode(req.body, req.params.id, existingItem);
       }
       if (tableName === "bookings") {
         const nextBooking = { ...existingItem, ...req.body };
@@ -2432,6 +2862,12 @@ var createCrudRoutes = (tableName, idField = "id") => {
       return res.status(403).json({ error: "Only Administrator can remove users." });
     }
     try {
+      if (tableName === "department_allocations") {
+        const dependentCount = await db.prepare("SELECT COUNT(*) as total FROM batch_room_allocations").get();
+        if ((Number(dependentCount?.total) || 0) > 0) {
+          return res.status(400).json({ error: "Batch Room Allocations still depend on Department Allocations. Remove batch allocations first." });
+        }
+      }
       await db.prepare(`DELETE FROM ${tableName}`).run();
       res.json({ success: true });
     } catch (err) {
@@ -2444,6 +2880,16 @@ var createCrudRoutes = (tableName, idField = "id") => {
     }
     try {
       const existingItem = await db.prepare(`SELECT * FROM ${tableName} WHERE ${idField} = ?`).get(req.params.id);
+      if (tableName === "department_allocations" && existingItem) {
+        const dependentBatchAllocations = await countDependentBatchRoomAllocations(
+          existingItem.room_id,
+          existingItem.department_id,
+          existingItem.semester
+        );
+        if (dependentBatchAllocations > 0) {
+          return res.status(400).json({ error: "This Department Allocation is still used by Batch Room Allocations. Remove or reassign those batch allocations first." });
+        }
+      }
       await db.prepare(`DELETE FROM ${tableName} WHERE ${idField} = ?`).run(req.params.id);
       if (tableName === "bookings" && existingItem) {
         const actor = req.user.name;
@@ -2458,6 +2904,45 @@ var createCrudRoutes = (tableName, idField = "id") => {
     }
   });
 };
+app.delete("/api/department_allocations/cleanup/odd", authenticate, async (_req, res) => {
+  try {
+    const allocations = await db.prepare(`
+      SELECT id, room_id, department_id, semester
+      FROM department_allocations
+      ORDER BY id ASC
+    `).all();
+    const oddAllocations = allocations.filter((allocation) => normalizeSemesterKey(allocation?.semester) === "odd");
+    if (oddAllocations.length === 0) {
+      return res.json({ success: true, deletedCount: 0, skippedCount: 0, skipped: [] });
+    }
+    const skipped = [];
+    let deletedCount = 0;
+    for (const allocation of oddAllocations) {
+      const dependentBatchAllocations = await countDependentBatchRoomAllocations(
+        allocation.room_id,
+        allocation.department_id,
+        allocation.semester
+      );
+      if (dependentBatchAllocations > 0) {
+        skipped.push({
+          id: allocation.id,
+          reason: "Batch Room Allocations still depend on this Odd semester mapping."
+        });
+        continue;
+      }
+      await db.prepare("DELETE FROM department_allocations WHERE id = ?").run(allocation.id);
+      deletedCount += 1;
+    }
+    res.json({
+      success: true,
+      deletedCount,
+      skippedCount: skipped.length,
+      skipped
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
 createCrudRoutes("users");
 createCrudRoutes("campuses");
 createCrudRoutes("buildings");
