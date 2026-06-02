@@ -2398,14 +2398,14 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   Schedule: {
-    headers: ['Schedule ID', 'Department', 'Program', 'Year', 'Semester', 'Specialization / Branch', 'Section', 'Course Code', 'Course Name', 'Faculty', 'Room', 'Day', 'Start Time', 'End Time', 'Import Status', 'Review Note'],
+    headers: ['Schedule ID', 'Department', 'Program', 'Year', EXACT_SEMESTER_LABEL, 'Specialization / Branch', 'Section', 'Course Code', 'Course Name', 'Faculty', 'Room', 'Day', 'Start Time', 'End Time', 'Import Status', 'Review Note'],
     exampleRows: [
       {
         'Schedule ID': 'SCH-CSE-BTECH-001',
         Department: 'Computer Science and Engineering',
         Program: 'B.Tech',
         Year: 'II Year',
-        Semester: 'IV Semester',
+        [EXACT_SEMESTER_LABEL]: 'IV Semester',
         'Specialization / Branch': '',
         Section: 'A1',
         'Course Code': 'CSE401L',
@@ -2423,7 +2423,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Department: 'Pharmacy',
         Program: 'B.Pharm',
         Year: 'II Year',
-        Semester: 'IV Semester',
+        [EXACT_SEMESTER_LABEL]: 'IV Semester',
         'Specialization / Branch': '',
         Section: 'B2',
         'Course Code': 'PHARM402L',
@@ -2441,7 +2441,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Department: 'Paramedical and Allied Sciences',
         Program: 'B.Sc',
         Year: 'I Year',
-        Semester: 'II Semester',
+        [EXACT_SEMESTER_LABEL]: 'II Semester',
         'Specialization / Branch': 'CVT',
         Section: '',
         'Course Code': 'BSC201',
@@ -2459,7 +2459,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Department: 'Paramedical and Allied Sciences',
         Program: 'B.Sc',
         Year: 'I Year',
-        Semester: 'II Semester',
+        [EXACT_SEMESTER_LABEL]: 'II Semester',
         'Specialization / Branch': 'OPT',
         Section: '',
         'Course Code': 'BSC201',
@@ -2477,12 +2477,12 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       'Department, Program, and Room are used to keep schedule identity and timetable context accurate while importing timetable rows. Department and Room still drive automatic Department Room Mapping updates.',
       'Room can match the canonical Room Number or a Room Alias from Room Management only when that label maps to one unique room. If a label matches multiple rooms (for example across blocks), the row is kept as Unmatched Room for manual review.',
       'Timetable imports link against any matching room in Room Management, even if that room is not currently bookable for ad-hoc bookings. This keeps seminar halls, shared rooms, and internal-use venues linked correctly in schedules.',
-      'For PDF timetable extraction, normal slots inherit the section header Room No automatically. The same section header also supplies Department, Program, Semester, Year, and Specialization / Branch when Gemini omits them. Only slots that explicitly mention another room such as (R.No.610) override that default room.',
+      `For PDF timetable extraction, normal slots inherit the section header Room No automatically. The same section header also supplies Department, Program, ${EXACT_SEMESTER_LABEL}, Year, and Specialization / Branch when Gemini omits them. Only slots that explicitly mention another room such as (R.No.610) override that default room.`,
       'Program should be filled explicitly as values like B.Sc, BPT, B.Tech, M.Tech, or B.Pharm. It appears in the readable Schedule ID pattern and helps keep mixed academic contexts distinct.',
       'Use Specialization / Branch when the timetable row belongs to a branch like AOTT, CVT, or OPT. Leave it blank only when the row applies to the whole department/program.',
       'Use Section for timetable groups like A1, A2, A10. Different sections can use the same room and time slot, so Section is part of schedule identity during import.',
       'If a class is combined across branches and there is no section split, keep Section blank and distinguish the rows using Specialization / Branch.',
-      'Use the Semester column for the exact semester value such as I Semester, II Semester, IV Semester, or VI Semester.',
+      `Use the ${EXACT_SEMESTER_LABEL} column for the exact semester value such as I Semester, II Semester, IV Semester, or VI Semester.`,
       'Numeric values like 6 and Roman values like VI Semester are normalized automatically to one exact semester format during import.',
       'If an older file still uses Odd/Even, the app derives the exact semester from the Year column whenever possible so the stored schedule remains precise.',
       'Year can be provided explicitly as I Year / II Year / III Year / IV Year (or 1 / 2 / 3 / 4). If omitted, it is derived from Semester during import.',
@@ -2490,7 +2490,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       'If a lab is conducted in a classroom instead of a dedicated lab room, still enter the actual classroom room number here. The app links schedules to the real room used, not only to room type labels.',
       'Different departments or schools can follow different lab lengths in the same workbook. The schedule template does not force a fixed lab duration; it only preserves the actual timed occupancy.',
       'Import Status and Review Note columns are optional in Excel. If Import Status is blank, the app auto-sets Linked / Unmatched Room / Room Missing from room matching.',
-      'Department, Program, Semester, and Section are also used by Timetable View, Room Bookings schedule review, and Digital Twin links to preserve the correct mixed-room academic context. Fill them consistently for accurate vacancy display.',
+      `Department, Program, ${EXACT_SEMESTER_LABEL}, and Section are also used by Timetable View, Room Bookings schedule review, and Digital Twin links to preserve the correct mixed-room academic context. Fill them consistently for accurate vacancy display.`,
       'All workbook sheets are scanned during import. Rows without a matching room are imported as Unmatched Room schedules and can be fixed later after adding the missing room.',
       'Rows without a matching department still import as schedules but cannot create department mapping.',
       'Normal schedules stay in the master timetable, but they are suppressed automatically on dates covered by Academic Calendar rows with Event Type = Examinations for the same department and semester.',
@@ -8229,13 +8229,12 @@ function SchedulingManagement() {
   const fields = [
     { key: 'schedule_id', label: 'Schedule ID', render: (schedule: any) => schedule?.schedule_code || schedule?.schedule_id || '-' },
     { key: 'department_id', label: 'Department', type: 'select', options: departments.map(d => ({ value: d.id, label: d.name })) },
-    { key: 'program', label: 'Program', type: 'select', required: false, options: PROGRAM_OPTIONS, render: (schedule: any) => schedule?.program || '-' },
+    { key: 'program', label: 'Program', type: 'select', options: PROGRAM_OPTIONS, render: (schedule: any) => schedule?.program || '-' },
     {
       key: 'year_of_study',
       label: 'Year',
       formOnly: true,
       type: 'select',
-      required: false,
       options: scheduleYearOptions,
     },
     {
@@ -8247,7 +8246,6 @@ function SchedulingManagement() {
     {
       key: 'semester',
       label: EXACT_SEMESTER_LABEL,
-      formLabel: 'Semester',
       type: 'select',
       options: (formData: any) => getScheduleSemesterOptions(formData.year_of_study),
       render: (schedule: any) => normalizeExactSemesterValue(schedule?.semester, schedule?.year_of_study, schedule?.semester || '-') || '-',
@@ -8402,8 +8400,8 @@ function SchedulingManagement() {
         ? (row['Review Note'] || null)
         : (row['Review Note'] || roomResolution.note || 'Room label from import did not match a unique room in Room Management.');
       const normalizedYear = normalizeYearOfStudyValue(getImportValue(row, ['Year', 'Year / Semester'])) ||
-        normalizeYearOfStudyValue(getImportValue(row, ['Semester', 'Term']));
-      const normalizedSemester = normalizeExactSemesterValue(getImportValue(row, ['Semester', 'Term']), normalizedYear, '');
+        normalizeYearOfStudyValue(getImportValue(row, [EXACT_SEMESTER_LABEL, 'Semester', 'Term']));
+      const normalizedSemester = normalizeExactSemesterValue(getImportValue(row, [EXACT_SEMESTER_LABEL, 'Semester', 'Term']), normalizedYear, '');
       const derivedYearNumber = getYearNumberFromAcademicContext(normalizedYear, normalizedSemester);
       const sessionPayload = {
         department_id: dept?.id,
@@ -8443,7 +8441,7 @@ function SchedulingManagement() {
           unmatchedRoomCount += 1;
           if (roomResolution.reason === 'ambiguous') ambiguousRoomCount += 1;
         }
-        await ensureAllocationFromSchedule(room, dept, normalizedSemester || getImportValue(row, ['Semester', 'Term']));
+        await ensureAllocationFromSchedule(room, dept, normalizedSemester || getImportValue(row, [EXACT_SEMESTER_LABEL, 'Semester', 'Term']));
       }
     }
     setRefreshKey(prev => prev + 1);
