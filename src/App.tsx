@@ -1228,6 +1228,85 @@ const resolveRoomForImport = (rooms: any[], value: unknown) => {
   };
 };
 
+const inferSplitRoomLabelPart = (token: string, previousToken: string) => {
+  const trimmedToken = token.trim();
+  if (!trimmedToken || !previousToken) return trimmedToken;
+  if (!/^\d+[a-z]?$/i.test(trimmedToken)) return trimmedToken;
+  const previousMatch = previousToken.trim().match(/^(.*?)(\d+[a-z]?)$/i);
+  if (!previousMatch?.[1]) return trimmedToken;
+  return `${previousMatch[1]}${trimmedToken}`;
+};
+
+const splitCombinedRoomImportLabel = (value: unknown) => {
+  const raw = value?.toString().trim() || '';
+  if (!raw) return [];
+  const normalized = raw.replace(/\b(and)\b/gi, '&').replace(/\+/g, '&');
+  if (!/[&,;]/.test(normalized)) return [raw];
+
+  const parts = normalized
+    .split(/[&,;]/)
+    .map(part => part.trim())
+    .filter(Boolean);
+
+  const expandedParts: string[] = [];
+  for (const part of parts) {
+    expandedParts.push(inferSplitRoomLabelPart(part, expandedParts[expandedParts.length - 1] || ''));
+  }
+
+  return Array.from(new Set(expandedParts.filter(Boolean)));
+};
+
+const resolveRoomSetForImport = (rooms: any[], value: unknown) => {
+  const directResolution = resolveRoomForImport(rooms, value);
+  if (!value || directResolution.room || directResolution.reason === 'missing') {
+    return {
+      rooms: directResolution.room ? [directResolution.room] : [],
+      reason: directResolution.reason,
+      note: directResolution.note,
+      matchType: directResolution.matchType,
+      isSplit: false,
+    };
+  }
+
+  const splitLabels = splitCombinedRoomImportLabel(value);
+  if (splitLabels.length <= 1) {
+    return {
+      rooms: [],
+      reason: directResolution.reason,
+      note: directResolution.note,
+      matchType: directResolution.matchType,
+      isSplit: false,
+    };
+  }
+
+  const splitResolutions = splitLabels.map(label => ({ label, resolution: resolveRoomForImport(rooms, label) }));
+  if (splitResolutions.every(item => item.resolution.room)) {
+    const resolvedRooms = Array.from(new Map(
+      splitResolutions
+        .map(item => item.resolution.room)
+        .filter(Boolean)
+        .map(room => [room.id?.toString(), room]),
+    ).values());
+
+    return {
+      rooms: resolvedRooms,
+      reason: 'linked' as const,
+      note: `Split class imported from room label "${value?.toString().trim()}".`,
+      matchType: 'split_label',
+      isSplit: resolvedRooms.length > 1,
+    };
+  }
+
+  const firstProblem = splitResolutions.find(item => item.resolution.reason !== 'linked');
+  return {
+    rooms: [],
+    reason: directResolution.reason,
+    note: firstProblem?.resolution.note || directResolution.note,
+    matchType: directResolution.matchType,
+    isSplit: false,
+  };
+};
+
 const findRoomByImportLabel = (rooms: any[], value: unknown) => {
   const resolution = resolveRoomForImport(rooms, value);
   return resolution.room || null;
@@ -1288,6 +1367,22 @@ const getScheduleAcademicContextKey = (schedule: any) => [
   normalizeImportMatchValue(schedule?.section),
 ].join('|');
 
+const buildScheduleSessionGroupId = (schedule: any) => [
+  getScheduleAcademicContextKey(schedule),
+  normalizeImportMatchValue(schedule?.course_code),
+  normalizeImportMatchValue(schedule?.course_name),
+  normalizeImportMatchValue(schedule?.faculty),
+  normalizeImportMatchValue(schedule?.day_of_week),
+  normalizeImportMatchValue(schedule?.start_time),
+  normalizeImportMatchValue(schedule?.end_time),
+].join('|');
+
+const getScheduleSessionGroupId = (schedule: any) =>
+  normalizeImportMatchValue(schedule?.session_group_id) || buildScheduleSessionGroupId(schedule);
+
+const getScheduleRoomIdentity = (schedule: any) =>
+  normalizeImportMatchValue(schedule?.room_id) || normalizeImportMatchValue(schedule?.room_label);
+
 const getScheduleAcademicContextLabel = (schedule: any, departments: any[]) => {
   const departmentName = schedule?.department_name
     || departments.find((department: any) => idsMatch(department.id, schedule?.department_id))?.name
@@ -1344,9 +1439,26 @@ const isCombinedClassScheduleSet = (schedules: any[]) => {
   });
 };
 
-const getScheduleOverlapState = (schedules: any[]) => {
+const isSplitClassScheduleSet = (schedules: any[], scheduleUniverse: any[] = []) => {
+  if (!Array.isArray(schedules) || schedules.length === 0 || !Array.isArray(scheduleUniverse) || scheduleUniverse.length === 0) return false;
+  const [firstSchedule] = schedules;
+  const groupId = getScheduleSessionGroupId(firstSchedule);
+  if (!groupId) return false;
+
+  const sameSessionSchedules = scheduleUniverse.filter((schedule: any) =>
+    getScheduleSessionGroupId(schedule) === groupId &&
+    normalizeImportMatchValue(schedule?.day_of_week) === normalizeImportMatchValue(firstSchedule?.day_of_week) &&
+    normalizeImportMatchValue(schedule?.start_time) === normalizeImportMatchValue(firstSchedule?.start_time) &&
+    normalizeImportMatchValue(schedule?.end_time) === normalizeImportMatchValue(firstSchedule?.end_time)
+  );
+
+  const distinctRooms = new Set(sameSessionSchedules.map(schedule => getScheduleRoomIdentity(schedule)).filter(Boolean));
+  return distinctRooms.size > 1;
+};
+
+const getScheduleOverlapState = (schedules: any[], scheduleUniverse: any[] = []) => {
   if (!Array.isArray(schedules) || schedules.length === 0) return 'vacant';
-  if (schedules.length === 1) return 'scheduled';
+  if (schedules.length === 1) return isSplitClassScheduleSet(schedules, scheduleUniverse) ? 'split' : 'scheduled';
   return isCombinedClassScheduleSet(schedules) ? 'combined' : 'multi';
 };
 
@@ -1370,6 +1482,31 @@ const getCombinedClassStageSummary = (schedules: any[], departments: any[] = [])
       .filter(Boolean),
   ).size;
   return `${groupCount || schedules.length} academic groups`;
+};
+
+const getSplitClassRoomSummary = (schedules: any[], scheduleUniverse: any[] = [], rooms: any[] = []) => {
+  if (!Array.isArray(schedules) || schedules.length === 0) return '';
+  const [firstSchedule] = schedules;
+  const groupId = getScheduleSessionGroupId(firstSchedule);
+  if (!groupId) return '';
+
+  const sameSessionSchedules = scheduleUniverse.filter((schedule: any) =>
+    getScheduleSessionGroupId(schedule) === groupId &&
+    normalizeImportMatchValue(schedule?.day_of_week) === normalizeImportMatchValue(firstSchedule?.day_of_week) &&
+    normalizeImportMatchValue(schedule?.start_time) === normalizeImportMatchValue(firstSchedule?.start_time) &&
+    normalizeImportMatchValue(schedule?.end_time) === normalizeImportMatchValue(firstSchedule?.end_time)
+  );
+
+  const labels = Array.from(new Set(
+    sameSessionSchedules
+      .map((schedule: any) => {
+        const room = rooms.find(item => idsMatch(item.id, schedule?.room_id));
+        return room ? getRoomDisplayLabel(room, rooms) : (schedule?.room_label?.toString().trim() || '');
+      })
+      .filter(Boolean),
+  ));
+
+  return labels.join(' + ');
 };
 
 const deduplicateScheduleRows = (rows: any[]) => {
@@ -8107,14 +8244,19 @@ function SchedulingManagement() {
     const derivedYearNumber = getYearNumberFromAcademicContext(data.year_of_study, normalizedSemester);
     const inferredImportStatus = selectedRoom ? 'Linked' : 'Room Missing';
 
-    return {
+    const normalizedPayload = {
       ...data,
-      room_id: data.room_id || null,
       program: normalizeProgramValue(data.program) || null,
       specialization: data.specialization?.toString().trim() || null,
       section: data.section?.toString().trim() || null,
       semester: normalizedSemester || data.semester,
       year_of_study: derivedYearNumber ? derivedYearNumber.toString() : normalizeYearOfStudyValue(data.year_of_study) || null,
+    };
+
+    return {
+      ...normalizedPayload,
+      room_id: data.room_id || null,
+      session_group_id: data.session_group_id?.toString().trim() || buildScheduleSessionGroupId(normalizedPayload),
       import_status: normalizeScheduleImportStatus(data.import_status) || inferredImportStatus,
       review_note: data.review_note?.toString().trim() || null,
     };
@@ -8172,26 +8314,24 @@ function SchedulingManagement() {
         continue;
       }
 
-      const roomResolution = resolveRoomForImport(rooms, roomLabel);
-      const room = roomResolution.room;
+      const roomResolution = resolveRoomSetForImport(rooms, roomLabel);
+      const resolvedRooms = roomResolution.rooms;
       const dept = findDepartmentForSchedule(row['Department']);
-      const inferredImportStatus = room
+      const inferredImportStatus = resolvedRooms.length > 0
         ? 'Linked'
         : roomLabel
           ? 'Unmatched Room'
           : 'Room Missing';
       const importStatus = normalizeScheduleImportStatus(getImportValue(row, ['Import Status'])) || inferredImportStatus;
-      const normalizedImportStatus = room ? importStatus : (roomLabel ? 'Unmatched Room' : 'Room Missing');
-      const reviewNote = room
+      const normalizedImportStatus = resolvedRooms.length > 0 ? importStatus : (roomLabel ? 'Unmatched Room' : 'Room Missing');
+      const reviewNote = resolvedRooms.length > 0
         ? (row['Review Note'] || null)
         : (row['Review Note'] || roomResolution.note || 'Room label from import did not match a unique room in Room Management.');
       const normalizedYear = normalizeYearOfStudyValue(getImportValue(row, ['Year', 'Year / Semester'])) ||
         normalizeYearOfStudyValue(getImportValue(row, ['Semester', 'Term']));
       const normalizedSemester = normalizeExactSemesterValue(getImportValue(row, ['Semester', 'Term']), normalizedYear, '');
       const derivedYearNumber = getYearNumberFromAcademicContext(normalizedYear, normalizedSemester);
-      
-      const payload = {
-        schedule_id: scheduleId,
+      const sessionPayload = {
         department_id: dept?.id,
         program: program || null,
         year_of_study: derivedYearNumber ? derivedYearNumber.toString() : normalizedYear || null,
@@ -8200,25 +8340,37 @@ function SchedulingManagement() {
         course_code: row['Course Code'],
         course_name: courseName,
         faculty: row['Faculty'],
-        room_id: room?.id ?? null,
-        room_label: roomLabel || null,
         day_of_week: dayOfWeek,
         start_time: startTime,
         end_time: endTime,
         semester: normalizedSemester || null,
-        import_status: normalizedImportStatus,
-        review_note: reviewNote,
-        source_file: row['Source File'] || null,
       };
+      const sessionGroupId = buildScheduleSessionGroupId(sessionPayload);
+      const targetRooms = resolvedRooms.length > 0 ? resolvedRooms : [null];
 
-      await upsertImportRecord('/api/schedules', payload, [['schedule_id'], ['room_id', 'program', 'specialization', 'section', 'day_of_week', 'start_time', 'end_time'], ['room_label', 'program', 'specialization', 'section', 'day_of_week', 'start_time', 'end_time']]);
-      importedCount += 1;
-      if (room) linkedCount += 1;
-      else {
-        unmatchedRoomCount += 1;
-        if (roomResolution.reason === 'ambiguous') ambiguousRoomCount += 1;
+      for (const [index, room] of targetRooms.entries()) {
+        const isSplitImport = resolvedRooms.length > 1;
+        const payload = {
+          schedule_id: isSplitImport ? `${scheduleId}-${String(index + 1).padStart(2, '0')}` : scheduleId,
+          ...sessionPayload,
+          room_id: room?.id ?? null,
+          room_label: room ? getRoomDisplayLabel(room, rooms) : roomLabel || null,
+          import_status: room ? normalizedImportStatus : (roomLabel ? 'Unmatched Room' : 'Room Missing'),
+          review_note: isSplitImport
+            ? `Split class imported from room label "${roomLabel}".`
+            : reviewNote,
+          session_group_id: sessionGroupId,
+        };
+
+        await upsertImportRecord('/api/schedules', payload, [['schedule_id'], ['room_id', 'program', 'specialization', 'section', 'day_of_week', 'start_time', 'end_time'], ['room_label', 'program', 'specialization', 'section', 'day_of_week', 'start_time', 'end_time']]);
+        importedCount += 1;
+        if (room) linkedCount += 1;
+        else {
+          unmatchedRoomCount += 1;
+          if (roomResolution.reason === 'ambiguous') ambiguousRoomCount += 1;
+        }
+        await ensureAllocationFromSchedule(room, dept, normalizedSemester || getImportValue(row, ['Semester', 'Term']));
       }
-      await ensureAllocationFromSchedule(room, dept, normalizedSemester || getImportValue(row, ['Semester', 'Term']));
     }
     setRefreshKey(prev => prev + 1);
     await refreshSchedulingLookups();
@@ -8277,15 +8429,13 @@ function SchedulingManagement() {
         let ambiguousRoomCount = 0;
 
         for (const schedule of validSchedules) {
-          const roomResolution = resolveRoomForImport(rooms, schedule.room);
-          const room = roomResolution.room;
+          const roomResolution = resolveRoomSetForImport(rooms, schedule.room);
+          const resolvedRooms = roomResolution.rooms;
           const dept = findDepartmentForSchedule(schedule.department);
-          const reviewNote = room
+          const reviewNote = resolvedRooms.length > 0
             ? null
             : roomResolution.note || 'Room label from AI import did not match a unique room in Room Management.';
-
-          const payload = {
-            schedule_id: `SCH-${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
+          const sessionPayload = {
             department_id: dept?.id ?? null,
             program: normalizeProgramValue(schedule.program) || null,
             specialization: schedule.specialization || null,
@@ -8293,31 +8443,44 @@ function SchedulingManagement() {
             course_code: schedule.course_code || null,
             course_name: schedule.course_name,
             faculty: schedule.faculty || 'TBA',
-            room_id: room?.id ?? null,
-            room_label: schedule.room || null,
             day_of_week: schedule.day_of_week,
             start_time: schedule.start_time,
             end_time: schedule.end_time,
             student_count: schedule.student_count ?? null,
             year_of_study: normalizeYearOfStudyValue(schedule.year_of_study, getYearNumberFromAcademicContext('', schedule.semester)?.toString() || ''),
             semester: normalizeExactSemesterValue(schedule.semester, schedule.year_of_study, ''),
-            import_status: room ? 'Linked' : 'Unmatched Room',
-            review_note: reviewNote,
-            source_file: file.name,
           };
+          const sessionGroupId = buildScheduleSessionGroupId(sessionPayload);
+          const targetRooms = resolvedRooms.length > 0 ? resolvedRooms : [null];
 
-          await upsertImportRecord('/api/schedules', payload, [
-            ['schedule_id'],
-            ['room_id', 'program', 'specialization', 'section', 'day_of_week', 'start_time', 'end_time'],
-            ['room_label', 'program', 'specialization', 'section', 'day_of_week', 'start_time', 'end_time'],
-          ]);
-          importedCount += 1;
-          if (room) {
-            linkedCount += 1;
-            await ensureAllocationFromSchedule(room, dept, schedule.semester);
-          } else {
-            unmatchedRoomCount += 1;
-            if (roomResolution.reason === 'ambiguous') ambiguousRoomCount += 1;
+          for (const [index, room] of targetRooms.entries()) {
+            const isSplitImport = resolvedRooms.length > 1;
+            const payload = {
+              schedule_id: `SCH-${Math.random().toString(36).substring(2, 9).toUpperCase()}${isSplitImport ? `-${String(index + 1).padStart(2, '0')}` : ''}`,
+              ...sessionPayload,
+              room_id: room?.id ?? null,
+              room_label: room ? getRoomDisplayLabel(room, rooms) : schedule.room || null,
+              import_status: room ? 'Linked' : (schedule.room ? 'Unmatched Room' : 'Room Missing'),
+              review_note: isSplitImport
+                ? `Split class imported from room label "${schedule.room}".`
+                : reviewNote,
+              source_file: file.name,
+              session_group_id: sessionGroupId,
+            };
+
+            await upsertImportRecord('/api/schedules', payload, [
+              ['schedule_id'],
+              ['room_id', 'program', 'specialization', 'section', 'day_of_week', 'start_time', 'end_time'],
+              ['room_label', 'program', 'specialization', 'section', 'day_of_week', 'start_time', 'end_time'],
+            ]);
+            importedCount += 1;
+            if (room) {
+              linkedCount += 1;
+              await ensureAllocationFromSchedule(room, dept, schedule.semester);
+            } else {
+              unmatchedRoomCount += 1;
+              if (roomResolution.reason === 'ambiguous') ambiguousRoomCount += 1;
+            }
           }
         }
         setRefreshKey(prev => prev + 1);
@@ -15718,7 +15881,7 @@ function TimetableBuilder() {
       .map(slot => {
         const coveringSchedules = daySchedules.filter(schedule => scheduleCoversSlot(schedule, slot));
         const coveringSuppressedSchedules = suppressedSchedules.filter(schedule => scheduleCoversSlot(schedule, slot));
-        const overlapState = getScheduleOverlapState(coveringSchedules);
+        const overlapState = getScheduleOverlapState(coveringSchedules, daySchedules);
         return {
           ...slot,
           key: getTimeSlotKey(slot),
@@ -15882,6 +16045,10 @@ function TimetableBuilder() {
             <div className="h-2.5 w-2.5 rounded-full bg-emerald-500"></div>
             <span className="text-[11px] font-bold text-emerald-700">Scheduled</span>
           </div>
+          <div className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-3 py-1">
+            <div className="h-2.5 w-2.5 rounded-full bg-violet-500"></div>
+            <span className="text-[11px] font-bold text-violet-700">Split Class</span>
+          </div>
           <div className="inline-flex items-center gap-2 rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1">
             <div className="h-2.5 w-2.5 rounded-full bg-cyan-500"></div>
             <span className="text-[11px] font-bold text-cyan-700">Combined Class</span>
@@ -15947,6 +16114,8 @@ function TimetableBuilder() {
                       "rounded-xl border p-4 transition-all",
                       slot.state === 'multi'
                         ? "bg-rose-100 border-rose-300 shadow-sm hover:shadow-md"
+                        : slot.state === 'split'
+                        ? "bg-violet-100 border-violet-300 shadow-sm hover:shadow-md"
                         : slot.state === 'combined'
                         ? "bg-cyan-100 border-cyan-300 shadow-sm hover:shadow-md"
                         : slot.state === 'scheduled'
@@ -15963,6 +16132,8 @@ function TimetableBuilder() {
                             "w-2.5 h-2.5 rounded-full",
                             slot.state === 'multi'
                               ? "bg-rose-600"
+                              : slot.state === 'split'
+                              ? "bg-violet-600"
                               : slot.state === 'combined'
                               ? "bg-cyan-600"
                               : slot.state === 'scheduled'
@@ -15977,6 +16148,8 @@ function TimetableBuilder() {
                             "text-[10px] font-bold uppercase tracking-wider",
                             slot.state === 'multi'
                               ? "text-rose-800"
+                              : slot.state === 'split'
+                              ? "text-violet-800"
                               : slot.state === 'combined'
                               ? "text-cyan-800"
                               : slot.state === 'scheduled'
@@ -15994,6 +16167,8 @@ function TimetableBuilder() {
                           "rounded-full px-2.5 py-1 text-[9px] font-bold uppercase tracking-widest border",
                           slot.state === 'multi'
                             ? "border-rose-300 bg-rose-200 text-rose-800"
+                            : slot.state === 'split'
+                            ? "border-violet-300 bg-violet-200 text-violet-800"
                             : slot.state === 'combined'
                             ? "border-cyan-300 bg-cyan-200 text-cyan-800"
                             : slot.state === 'scheduled'
@@ -16005,6 +16180,8 @@ function TimetableBuilder() {
                       >
                         {slot.state === 'multi'
                           ? 'Multiple'
+                          : slot.state === 'split'
+                          ? 'Split'
                           : slot.state === 'combined'
                           ? 'Combined'
                           : slot.state === 'scheduled'
@@ -16040,6 +16217,8 @@ function TimetableBuilder() {
                               "group relative rounded-lg bg-white p-3 shadow-sm",
                               slot.state === 'multi'
                                 ? "border border-rose-200 ring-1 ring-rose-100"
+                                : slot.state === 'split'
+                                ? "border border-violet-200 ring-1 ring-violet-100"
                                 : slot.state === 'combined'
                                 ? "border border-cyan-200 ring-1 ring-cyan-100"
                                 : "border border-emerald-200 ring-1 ring-emerald-100"
@@ -16059,6 +16238,11 @@ function TimetableBuilder() {
                                 ? [s.combinedAudience, s.course_code, s.faculty].filter(Boolean).join(' | ')
                                 : [s.specialization || '', s.section ? `Section ${s.section}` : '', s.course_code, s.faculty].filter(Boolean).join(' | ')}
                             </p>
+                            {slot.state === 'split' && (
+                              <p className="text-[10px] text-violet-700 font-medium mb-2">
+                                Rooms: {getSplitClassRoomSummary(slot.schedules, daySchedules, rooms)}
+                              </p>
+                            )}
                             <div className="flex items-center justify-between pt-2 border-t border-slate-50">
                               <span className="text-[10px] font-bold text-slate-400">
                                 {s.isCombinedSummary
@@ -16627,6 +16811,11 @@ function DigitalTwin() {
     });
     return map;
   }, [rooms, effectiveTodaySchedulesByRoomId, currentTime]);
+
+  const effectiveTodaySchedules = useMemo(
+    () => Array.from(effectiveTodaySchedulesByRoomId.values()).flat(),
+    [effectiveTodaySchedulesByRoomId],
+  );
 
   const roomNextSchedulesByRoomId = useMemo(() => {
     const map = new Map<string, any[]>();
@@ -17278,10 +17467,10 @@ function DigitalTwin() {
               const roomSchedules = getRoomSchedules(r);
               const currentSchedules = getCurrentScheduleSet(r);
               const currentSchedule = currentSchedules[0] || null;
-              const currentScheduleState = getScheduleOverlapState(currentSchedules);
+              const currentScheduleState = getScheduleOverlapState(currentSchedules, effectiveTodaySchedules);
               const nextSchedules = currentSchedule ? [] : getNextScheduleSet(r);
               const nextSchedule = nextSchedules[0] || null;
-              const nextScheduleState = getScheduleOverlapState(nextSchedules);
+              const nextScheduleState = getScheduleOverlapState(nextSchedules, schedules);
               const linkContextSchedule = getRoomLinkContextSchedule(r);
               const roomContextCount = getRoomContextCount(r);
               const statusClass =
@@ -17317,7 +17506,7 @@ function DigitalTwin() {
                 {currentSchedule ? (
                   <div className="mt-3 rounded-xl border border-rose-500/20 bg-rose-500/10 p-3">
                     <p className="text-[10px] font-bold uppercase tracking-widest text-rose-300">
-                      {currentScheduleState === 'combined' ? 'Combined Class' : currentScheduleState === 'multi' ? 'Multiple Classes' : 'Current Class'}
+                      {currentScheduleState === 'split' ? 'Split Class' : currentScheduleState === 'combined' ? 'Combined Class' : currentScheduleState === 'multi' ? 'Multiple Classes' : 'Current Class'}
                     </p>
                     <p className="mt-1 text-xs font-bold text-white line-clamp-1">{currentSchedule.course_name}</p>
                     <p className="text-[10px] text-slate-500">
@@ -17325,6 +17514,9 @@ function DigitalTwin() {
                         ? getCombinedClassStageSummary(currentSchedules, departments)
                         : getScheduleAcademicContextLabel(currentSchedule, departments) || 'Academic context not set'}
                     </p>
+                    {currentScheduleState === 'split' && (
+                      <p className="text-[10px] text-slate-400">{getSplitClassRoomSummary(currentSchedules, effectiveTodaySchedules, rooms)}</p>
+                    )}
                     {currentScheduleState === 'combined' && (
                       <p className="text-[10px] text-slate-400">{getCombinedClassAudienceSummary(currentSchedules, departments)}</p>
                     )}
@@ -17333,7 +17525,7 @@ function DigitalTwin() {
                 ) : nextSchedule ? (
                   <div className="mt-3 rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3">
                     <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-300">
-                      {nextScheduleState === 'combined' ? 'Next Combined Class' : nextScheduleState === 'multi' ? 'Next Multiple Classes' : 'Next Class'}
+                      {nextScheduleState === 'split' ? 'Next Split Class' : nextScheduleState === 'combined' ? 'Next Combined Class' : nextScheduleState === 'multi' ? 'Next Multiple Classes' : 'Next Class'}
                     </p>
                     <p className="mt-1 text-xs font-bold text-white line-clamp-1">{nextSchedule.course_name}</p>
                     <p className="text-[10px] text-slate-500">
@@ -17341,6 +17533,9 @@ function DigitalTwin() {
                         ? getCombinedClassStageSummary(nextSchedules, departments)
                         : getScheduleAcademicContextLabel(nextSchedule, departments) || 'Academic context not set'}
                     </p>
+                    {nextScheduleState === 'split' && (
+                      <p className="text-[10px] text-slate-400">{getSplitClassRoomSummary(nextSchedules, schedules, rooms)}</p>
+                    )}
                     {nextScheduleState === 'combined' && (
                       <p className="text-[10px] text-slate-400">{getCombinedClassAudienceSummary(nextSchedules, departments)}</p>
                     )}

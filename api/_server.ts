@@ -271,6 +271,7 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       id ${idDefinition},
       schedule_id TEXT UNIQUE NOT NULL,
       schedule_code TEXT,
+      session_group_id TEXT,
       department_id INTEGER,
       program TEXT,
       specialization TEXT,
@@ -403,6 +404,7 @@ await ensureColumn("schedules", "import_status", "TEXT");
 await ensureColumn("schedules", "review_note", "TEXT");
 await ensureColumn("schedules", "schedule_code", "TEXT");
 await ensureColumn("schedules", "source_file", "TEXT");
+await ensureColumn("schedules", "session_group_id", "TEXT");
 await ensureColumn("users", "responsibilities", "TEXT");
 await ensureColumn("users", "access_limits", "TEXT");
 await ensureColumn("users", "access_paths", "TEXT");
@@ -1231,6 +1233,7 @@ const normalizeSchedulePayload = (payload: any) => ({
   program: normalizeScheduleProgramValue(payload?.program),
   specialization: normalizeScheduleSpecializationValue(payload?.specialization || payload?.branch),
   section: payload?.section?.toString().trim() || null,
+  session_group_id: payload?.session_group_id?.toString().trim() || null,
 });
 
 const buildDepartmentScheduleCodeSegment = (department: any) => {
