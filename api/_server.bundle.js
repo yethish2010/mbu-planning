@@ -888,20 +888,40 @@ var validateRoomHierarchy = async (room, excludeId) => {
   }
   return null;
 };
-var getBookableRoomError = async (roomId) => {
+var getBookableRoomError = async (roomId, context) => {
   if (!roomId) return null;
+  const cacheKey = roomId.toString();
+  if (context?.roomBookableErrorByRoomId.has(cacheKey)) {
+    return context.roomBookableErrorByRoomId.get(cacheKey) || null;
+  }
   const room = await db.prepare("SELECT room_number, room_type, usage_category, is_bookable, status FROM rooms WHERE id = ?").get(roomId);
-  if (!room) return "Please select a valid room.";
-  if (room.is_bookable === 0) return `Room ${room.room_number} is marked as not bookable.`;
-  if (room.status && room.status !== "Available") return `Room ${room.room_number} is not available.`;
+  if (!room) {
+    context?.roomBookableErrorByRoomId.set(cacheKey, "Please select a valid room.");
+    return "Please select a valid room.";
+  }
+  if (room.is_bookable === 0) {
+    const message = `Room ${room.room_number} is marked as not bookable.`;
+    context?.roomBookableErrorByRoomId.set(cacheKey, message);
+    return message;
+  }
+  if (room.status && room.status !== "Available") {
+    const message = `Room ${room.room_number} is not available.`;
+    context?.roomBookableErrorByRoomId.set(cacheKey, message);
+    return message;
+  }
   const roomType = normalizeRoomTypeValue(room.room_type);
   if (isNonCapacityRoomType(roomType)) {
-    return `Room ${room.room_number} cannot be booked because ${roomType} is a non-bookable room type.`;
+    const message = `Room ${room.room_number} cannot be booked because ${roomType} is a non-bookable room type.`;
+    context?.roomBookableErrorByRoomId.set(cacheKey, message);
+    return message;
   }
   const usageCategory = normalizeUsageCategoryValue(room.usage_category, roomType);
   if (!BOOKABLE_ROOM_TYPE_VALUES.includes(roomType) && !BOOKABLE_USAGE_CATEGORY_VALUES.includes(usageCategory || "")) {
-    return `Room ${room.room_number} cannot be booked because its room type or usage category is not bookable.`;
+    const message = `Room ${room.room_number} cannot be booked because its room type or usage category is not bookable.`;
+    context?.roomBookableErrorByRoomId.set(cacheKey, message);
+    return message;
   }
+  context?.roomBookableErrorByRoomId.set(cacheKey, null);
   return null;
 };
 var allowsBlankAttachedRestroomType = async (room) => {
@@ -1191,10 +1211,15 @@ var isExaminationCalendarEvent = (calendar) => {
   return eventType.includes("exam") || eventType.includes("ciat") || title.includes("exam") || title.includes("ciat");
 };
 var normalizeAcademicContextText = (value) => normalizeDuplicateValue(value)?.toString() || "";
-var getDepartmentAllocationLink = async (roomId, departmentId, semester) => {
+var getDepartmentAllocationLink = async (roomId, departmentId, semester, context) => {
   const numericRoomId = Number(roomId || 0) || null;
   const numericDepartmentId = Number(departmentId || 0) || null;
   if (!numericRoomId || !numericDepartmentId) return null;
+  const normalizedSemester = normalizeSemesterKey(semester);
+  const cacheKey = [numericRoomId, numericDepartmentId, normalizedSemester || ""].join("|");
+  if (context?.departmentAllocationLinksByContext.has(cacheKey)) {
+    return context.departmentAllocationLinksByContext.get(cacheKey) || null;
+  }
   const matches = await db.prepare(`
     SELECT id, room_id, department_id, school_id, semester
     FROM department_allocations
@@ -1202,18 +1227,30 @@ var getDepartmentAllocationLink = async (roomId, departmentId, semester) => {
     ORDER BY id DESC
   `).all(numericRoomId, numericDepartmentId);
   if (matches.length === 0) return null;
-  const normalizedSemester = normalizeSemesterKey(semester);
-  if (!normalizedSemester) return matches[0];
-  return matches.find((match) => normalizeSemesterKey(match.semester) === normalizedSemester) || null;
+  const matchedAllocation = !normalizedSemester ? matches[0] : matches.find((match) => normalizeSemesterKey(match.semester) === normalizedSemester) || null;
+  context?.departmentAllocationLinksByContext.set(cacheKey, matchedAllocation || null);
+  return matchedAllocation;
 };
-var getDepartmentAllocationLinkError = async (roomId, departmentId, semester) => {
+var getDepartmentAllocationLinkError = async (roomId, departmentId, semester, context) => {
   if (!roomId || !departmentId) return "Please select both department and room.";
-  const linkedAllocation = await getDepartmentAllocationLink(roomId, departmentId, semester);
+  const linkedAllocation = await getDepartmentAllocationLink(roomId, departmentId, semester, context);
   if (linkedAllocation) return null;
-  const room = await db.prepare("SELECT room_number FROM rooms WHERE id = ?").get(roomId);
-  const department = await db.prepare("SELECT name FROM departments WHERE id = ?").get(departmentId);
+  const roomCacheKey = roomId.toString();
+  let roomNumber = context?.roomNumberById.get(roomCacheKey) || "";
+  if (!roomNumber) {
+    const room = await db.prepare("SELECT room_number FROM rooms WHERE id = ?").get(roomId);
+    roomNumber = room?.room_number || "";
+    context?.roomNumberById.set(roomCacheKey, roomNumber);
+  }
+  const departmentCacheKey = departmentId.toString();
+  let departmentName = context?.departmentNameById.get(departmentCacheKey) || "";
+  if (!departmentName) {
+    const department = await db.prepare("SELECT name FROM departments WHERE id = ?").get(departmentId);
+    departmentName = department?.name || "";
+    context?.departmentNameById.set(departmentCacheKey, departmentName);
+  }
   const semesterLabel = normalizeSemesterKey(semester) ? ` for ${semester}` : "";
-  return `Room ${room?.room_number || roomId} is not mapped to ${department?.name || "the selected department"}${semesterLabel} in Department Allocation. Create the department allocation first.`;
+  return `Room ${roomNumber || roomId} is not mapped to ${departmentName || "the selected department"}${semesterLabel} in Department Allocation. Create the department allocation first.`;
 };
 var countDependentBatchRoomAllocations = async (roomId, departmentId, semester) => {
   const numericRoomId = Number(roomId || 0) || null;
@@ -1286,13 +1323,55 @@ var buildScheduleCodePrefix = (department, program, specialization) => {
   const specializationSegment = normalizeScheduleSpecializationValue(specialization);
   return ["SCH", departmentSegment, programSegment, specializationSegment].filter(Boolean).join("-");
 };
-var assignScheduleCode = async (payload, existingId, existingItem) => {
+var createBulkImportContext = (tableName, records) => ({
+  tableName,
+  records,
+  departmentById: /* @__PURE__ */ new Map(),
+  roomBookableErrorByRoomId: /* @__PURE__ */ new Map(),
+  departmentAllocationLinksByContext: /* @__PURE__ */ new Map(),
+  roomNumberById: /* @__PURE__ */ new Map(),
+  departmentNameById: /* @__PURE__ */ new Map(),
+  scheduleCodeSequenceByPrefix: /* @__PURE__ */ new Map()
+});
+var getCachedDepartmentForScheduleCode = async (departmentId, context) => {
+  if (!departmentId) return null;
+  const cacheKey = departmentId.toString();
+  if (context?.departmentById.has(cacheKey)) {
+    return context.departmentById.get(cacheKey) || null;
+  }
+  const department = await db.prepare("SELECT id, department_id, name FROM departments WHERE id = ?").get(departmentId);
+  context?.departmentById.set(cacheKey, department || null);
+  return department || null;
+};
+var seedScheduleCodeSequenceCache = async (context) => {
+  if (context.scheduleCodeSequenceByPrefix.size > 0) return;
+  const rows = context.records.length > 0 ? context.records : await db.prepare("SELECT id, schedule_code FROM schedules WHERE schedule_code IS NOT NULL").all();
+  rows.forEach((row) => {
+    const code = row?.schedule_code?.toString().trim() || "";
+    const match = code.match(/^(.*)-(\d{3,})$/);
+    if (!match) return;
+    const prefix = match[1];
+    const sequence = parseInt(match[2], 10);
+    if (!Number.isFinite(sequence)) return;
+    const current = context.scheduleCodeSequenceByPrefix.get(prefix) || 0;
+    if (sequence > current) {
+      context.scheduleCodeSequenceByPrefix.set(prefix, sequence);
+    }
+  });
+};
+var assignScheduleCode = async (payload, existingId, existingItem, context) => {
   const mergedPayload = { ...existingItem || {}, ...payload || {} };
-  const department = mergedPayload?.department_id ? await db.prepare("SELECT id, department_id, name FROM departments WHERE id = ?").get(mergedPayload.department_id) : null;
+  const department = mergedPayload?.department_id ? await getCachedDepartmentForScheduleCode(mergedPayload.department_id, context) : null;
   const prefix = buildScheduleCodePrefix(department, mergedPayload.program, mergedPayload.specialization);
   const existingCode = existingItem?.schedule_code?.toString().trim() || "";
   if (existingCode && existingCode.startsWith(`${prefix}-`)) {
     return existingCode;
+  }
+  if (context?.tableName === "schedules") {
+    await seedScheduleCodeSequenceCache(context);
+    const nextSequence = (context.scheduleCodeSequenceByPrefix.get(prefix) || 0) + 1;
+    context.scheduleCodeSequenceByPrefix.set(prefix, nextSequence);
+    return `${prefix}-${String(nextSequence).padStart(3, "0")}`;
   }
   const rows = await db.prepare("SELECT id, schedule_code FROM schedules WHERE schedule_code IS NOT NULL").all();
   let maxSequence = 0;
@@ -2351,7 +2430,7 @@ var normalizeBulkImportPayload = async (tableName, payload, existingItem) => {
   }
   return nextPayload;
 };
-var validateBulkImportPayload = async (tableName, payload, existingItem) => {
+var validateBulkImportPayload = async (tableName, payload, existingItem, context) => {
   const nextRecord = existingItem ? { ...existingItem, ...payload } : payload;
   const duplicateError = await checkDuplicateRecord(tableName, nextRecord, existingItem?.id);
   if (duplicateError) throw new Error(duplicateError);
@@ -2364,7 +2443,7 @@ var validateBulkImportPayload = async (tableName, payload, existingItem) => {
   if (tableName === "department_allocations") {
     const room = await db.prepare("SELECT room_number, capacity, room_type, is_bookable FROM rooms WHERE id = ?").get(nextRecord.room_id);
     if (!room) throw new Error("Please select a valid room.");
-    const bookableError = await getBookableRoomError(nextRecord.room_id);
+    const bookableError = await getBookableRoomError(nextRecord.room_id, context);
     if (bookableError) throw new Error(bookableError);
     if ((parseInt(nextRecord.capacity, 10) || 0) > room.capacity) {
       throw new Error(`Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${nextRecord.capacity}.`);
@@ -2372,22 +2451,22 @@ var validateBulkImportPayload = async (tableName, payload, existingItem) => {
     payload.room_type = room.room_type;
   }
   if (tableName === "batch_room_allocations") {
-    const bookableError = await getBookableRoomError(nextRecord.room_id);
+    const bookableError = await getBookableRoomError(nextRecord.room_id, context);
     if (bookableError) throw new Error(bookableError);
-    const departmentAllocationError = await getDepartmentAllocationLinkError(nextRecord.room_id, nextRecord.department_id, nextRecord.semester);
+    const departmentAllocationError = await getDepartmentAllocationLinkError(nextRecord.room_id, nextRecord.department_id, nextRecord.semester, context);
     if (departmentAllocationError) throw new Error(departmentAllocationError);
     const overlapError = await getBatchAllocationOverlapError(nextRecord, existingItem?.id);
     if (overlapError) throw new Error(overlapError);
   }
   if (tableName === "schedules") {
-    const bookableError = await getBookableRoomError(nextRecord.room_id);
+    const bookableError = await getBookableRoomError(nextRecord.room_id, context);
     if (bookableError) throw new Error(bookableError);
-    payload.schedule_code = await assignScheduleCode(payload, existingItem?.id, existingItem);
+    payload.schedule_code = await assignScheduleCode(payload, existingItem?.id, existingItem, context);
   }
 };
-var persistBulkImportRecord = async (tableName, payload, existingItem) => {
+var persistBulkImportRecord = async (tableName, payload, existingItem, context) => {
   const normalizedPayload = await normalizeBulkImportPayload(tableName, payload, existingItem);
-  await validateBulkImportPayload(tableName, normalizedPayload, existingItem);
+  await validateBulkImportPayload(tableName, normalizedPayload, existingItem, context);
   const fields = Object.keys(normalizedPayload);
   if (fields.length === 0) {
     throw new Error("Import payload is empty.");
@@ -2538,30 +2617,38 @@ var createCrudRoutes = (tableName, idField = "id") => {
         return res.json({ results: [] });
       }
       const records = await db.prepare(`SELECT * FROM ${tableName}`).all();
+      const importContext = createBulkImportContext(tableName, records);
       const results = [];
-      for (const entry of entries) {
-        const payload = entry?.payload ?? entry;
-        const uniqueFieldGroups = Array.isArray(entry?.uniqueFieldGroups) ? entry.uniqueFieldGroups : [];
-        try {
-          const existingItem = findMatchingImportRecord(records, payload, uniqueFieldGroups);
-          const savedRecord = await persistBulkImportRecord(tableName, payload, existingItem);
-          const existingIndex = records.findIndex((record) => idsEqual(record?.id, savedRecord?.id));
-          if (existingIndex >= 0) {
-            records[existingIndex] = { ...records[existingIndex], ...savedRecord };
-          } else {
-            records.push(savedRecord);
+      await db.exec("BEGIN IMMEDIATE TRANSACTION");
+      try {
+        for (const entry of entries) {
+          const payload = entry?.payload ?? entry;
+          const uniqueFieldGroups = Array.isArray(entry?.uniqueFieldGroups) ? entry.uniqueFieldGroups : [];
+          try {
+            const existingItem = findMatchingImportRecord(records, payload, uniqueFieldGroups);
+            const savedRecord = await persistBulkImportRecord(tableName, payload, existingItem, importContext);
+            const existingIndex = records.findIndex((record) => idsEqual(record?.id, savedRecord?.id));
+            if (existingIndex >= 0) {
+              records[existingIndex] = { ...records[existingIndex], ...savedRecord };
+            } else {
+              records.push(savedRecord);
+            }
+            results.push({
+              ok: true,
+              record: savedRecord,
+              action: savedRecord.__importAction
+            });
+          } catch (err) {
+            results.push({
+              ok: false,
+              error: err?.message || "Import failed."
+            });
           }
-          results.push({
-            ok: true,
-            record: savedRecord,
-            action: savedRecord.__importAction
-          });
-        } catch (err) {
-          results.push({
-            ok: false,
-            error: err?.message || "Import failed."
-          });
         }
+        await db.exec("COMMIT");
+      } catch (err) {
+        await db.exec("ROLLBACK");
+        throw err;
       }
       res.json({ results });
     } catch (err) {
