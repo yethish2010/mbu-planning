@@ -1538,6 +1538,49 @@ const apiJson = async (url: string, options?: RequestInit) => {
   return data;
 };
 
+type ImportUpsertCache = Map<string, any[]>;
+
+const createImportUpsertCache = (): ImportUpsertCache => new Map();
+
+const upsertImportRecord = async (
+  apiPath: string,
+  payload: any,
+  uniqueFieldGroups: string[][],
+  cache?: ImportUpsertCache,
+) => {
+  let records = cache?.get(apiPath);
+  if (!records) {
+    const fetchedRecords = await apiJson(apiPath);
+    records = Array.isArray(fetchedRecords) ? fetchedRecords : [];
+    cache?.set(apiPath, records);
+  }
+
+  const existing = findMatchingImportRecord(records, payload, uniqueFieldGroups);
+
+  if (existing?.id) {
+    const updatedRecord = await apiJson(`${apiPath}/${existing.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const mergedRecord = { ...existing, ...updatedRecord, ...payload, __importAction: 'updated' as const };
+    const existingIndex = records.findIndex((record: any) => record?.id?.toString() === existing.id?.toString());
+    if (existingIndex >= 0) {
+      records[existingIndex] = mergedRecord;
+    }
+    return mergedRecord;
+  }
+
+  const createdRecord = await apiJson(apiPath, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const mergedRecord = { ...createdRecord, ...payload, __importAction: 'created' as const };
+  records.push(mergedRecord);
+  return mergedRecord;
+};
+
 type ExcelWorkbook = import('exceljs').Workbook;
 type ExcelWorksheet = import('exceljs').Worksheet;
 type StyledWorkbookSheet = {
@@ -1660,27 +1703,6 @@ const exportStyledWorkbook = async (
   const workbook = await createExcelWorkbook();
   sheets.forEach((sheet) => appendExcelMatrixSheet(workbook, sheet));
   await saveExcelWorkbook(workbook, fileName);
-};
-
-const upsertImportRecord = async (apiPath: string, payload: any, uniqueFieldGroups: string[][]) => {
-  const records = await apiJson(apiPath);
-  const existing = findMatchingImportRecord(Array.isArray(records) ? records : [], payload, uniqueFieldGroups);
-
-  if (existing?.id) {
-    await apiJson(`${apiPath}/${existing.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    return { ...existing, ...payload, __importAction: 'updated' as const };
-  }
-
-  const createdRecord = await apiJson(apiPath, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  return { ...createdRecord, __importAction: 'created' as const };
 };
 
 type ImportAuditRow = Record<string, any>;
@@ -4914,6 +4936,7 @@ function UserManagement() {
   };
 
   const handleImport = async (data: any[]) => {
+    const importCache = createImportUpsertCache();
     for (const row of data) {
       const payload = {
         full_name: row['Full Name'],
@@ -4924,7 +4947,7 @@ function UserManagement() {
         password: getImportValue(row, ['Password', 'Password / Admin Reset'])?.toString() || 'Welcome123'
       };
       if (!payload.email || !payload.employee_id) continue;
-      await upsertImportRecord('/api/users', payload, [['employee_id'], ['email']]);
+      await upsertImportRecord('/api/users', payload, [['employee_id'], ['email']], importCache);
     }
   };
 
@@ -4940,6 +4963,7 @@ function CampusManagement() {
   ];
 
   const handleImport = async (data: any[]) => {
+    const importCache = createImportUpsertCache();
     for (const row of data) {
       const payload = {
         campus_id: row['Campus ID']?.toString(),
@@ -4948,7 +4972,7 @@ function CampusManagement() {
         description: row['Description']
       };
       if (!payload.campus_id || !payload.name) continue;
-      await upsertImportRecord('/api/campuses', payload, [['campus_id'], ['name']]);
+      await upsertImportRecord('/api/campuses', payload, [['campus_id'], ['name']], importCache);
     }
   };
 
@@ -5036,6 +5060,7 @@ function BuildingManagement() {
   };
 
   const handleImport = async (data: any[]) => {
+    const importCache = createImportUpsertCache();
     let importedCount = 0;
     const skippedRows: string[] = [];
 
@@ -5054,7 +5079,7 @@ function BuildingManagement() {
         skippedRows.push(`row ${index + 2}`);
         continue;
       }
-      await upsertImportRecord('/api/buildings', payload, [['building_id'], ['campus_id', 'name']]);
+      await upsertImportRecord('/api/buildings', payload, [['building_id'], ['campus_id', 'name']], importCache);
       importedCount += 1;
     }
 
@@ -5108,6 +5133,7 @@ function BlockManagement() {
   };
 
   const handleImport = async (data: any[]) => {
+    const importCache = createImportUpsertCache();
     let importedCount = 0;
     const skippedRows: string[] = [];
 
@@ -5124,7 +5150,7 @@ function BlockManagement() {
         skippedRows.push(`row ${index + 2}`);
         continue;
       }
-      await upsertImportRecord('/api/blocks', payload, [['block_id'], ['building_id', 'name']]);
+      await upsertImportRecord('/api/blocks', payload, [['block_id'], ['building_id', 'name']], importCache);
       importedCount += 1;
     }
 
@@ -5385,6 +5411,7 @@ function FloorManagement() {
 
   const afterSubmit = async (savedFloor: any, data: any, editingItem: any) => {
     if (editingItem) return;
+    const importCache = createImportUpsertCache();
 
     const floorCount = Number(data.floor_count);
     if (!Number.isInteger(floorCount) || floorCount <= 1) return;
@@ -5409,7 +5436,7 @@ function FloorManagement() {
         block_id: savedFloor.block_id,
         floor_number: floorNumber,
         description: getFloorSequenceDescription(data.description, floorNumber),
-      }, [['floor_id'], ['block_id', 'floor_number']]);
+      }, [['floor_id'], ['block_id', 'floor_number']], importCache);
     }
   };
 
@@ -5427,6 +5454,7 @@ function FloorManagement() {
   };
 
   const handleImport = async (data: any[]) => {
+    const importCache = createImportUpsertCache();
     let importedCount = 0;
     const skippedRows: string[] = [];
 
@@ -5474,7 +5502,7 @@ function FloorManagement() {
           block_id: blockId,
           floor_number: floorNumber,
           description: getFloorSequenceDescription(row['Description'], floorNumber),
-        }, [['floor_id'], ['block_id', 'floor_number']]);
+        }, [['floor_id'], ['block_id', 'floor_number']], importCache);
         importedCount += 1;
       }
     }
@@ -6019,6 +6047,7 @@ function RoomManagement() {
   };
 
   const handleImport = async (data: any[]) => {
+    const importCache = createImportUpsertCache();
     const knownRooms = [...rooms];
     const getRowRoomLabels = (row: any) => [
       row['Room Number'],
@@ -6207,7 +6236,7 @@ function RoomManagement() {
         }
 
         const normalizedPayload = normalizeRoomFormPayload(payload, knownRooms);
-        const savedRoom: any = await upsertImportRecord('/api/rooms', normalizedPayload, [['room_id'], ['room_number']]);
+        const savedRoom: any = await upsertImportRecord('/api/rooms', normalizedPayload, [['room_id'], ['room_number']], importCache);
         const existingIndex = knownRooms.findIndex(room => room.id?.toString() === savedRoom.id?.toString());
         if (existingIndex >= 0) {
           knownRooms[existingIndex] = savedRoom;
@@ -6316,6 +6345,7 @@ function SchoolManagement() {
   ];
 
   const handleImport = async (data: any[]) => {
+    const importCache = createImportUpsertCache();
     for (const row of data) {
       const payload = {
         school_id: row['School ID']?.toString(),
@@ -6324,7 +6354,7 @@ function SchoolManagement() {
         description: row['Description']
       };
       if (!payload.school_id || !payload.name) continue;
-      await upsertImportRecord('/api/schools', payload, [['school_id'], ['name']]);
+      await upsertImportRecord('/api/schools', payload, [['school_id'], ['name']], importCache);
     }
   };
 
@@ -6351,6 +6381,7 @@ function DepartmentManagement() {
   ];
 
   const handleImport = async (data: any[]) => {
+    const importCache = createImportUpsertCache();
     for (const row of data) {
       const school = schools.find(s =>
         normalizeLookupValue(s.name) === normalizeLookupValue(row['School']) ||
@@ -6364,7 +6395,7 @@ function DepartmentManagement() {
         description: row['Description']
       };
       if (!payload.department_id || !payload.name || !payload.school_id) continue;
-      await upsertImportRecord('/api/departments', payload, [['department_id'], ['school_id', 'name']]);
+      await upsertImportRecord('/api/departments', payload, [['department_id'], ['school_id', 'name']], importCache);
     }
   };
 
@@ -6459,6 +6490,7 @@ function TimingProfileManagement() {
   };
 
   const handleImport = async (data: any[]) => {
+    const importCache = createImportUpsertCache();
     const auditRows: ImportAuditRow[] = [];
     let created = 0;
     let updated = 0;
@@ -6496,7 +6528,7 @@ function TimingProfileManagement() {
       };
 
       if (!payload.profile_id || !payload.profile_name || !payload.slot_pattern) continue;
-      await upsertImportRecord('/api/timing_profiles', payload, [['profile_id']]);
+      await upsertImportRecord('/api/timing_profiles', payload, [['profile_id']], importCache);
     }
   };
 
@@ -6643,6 +6675,7 @@ function AcademicCalendarManagement() {
   };
 
   const handleImport = async (data: any[]) => {
+    const importCache = createImportUpsertCache();
     const auditRows: ImportAuditRow[] = [];
     let created = 0;
     let updated = 0;
@@ -6715,7 +6748,7 @@ function AcademicCalendarManagement() {
         const savedRecord: any = await upsertImportRecord('/api/academic_calendars', payload, [
           ['calendar_id'],
           ['department_id', 'program', 'batch', 'specialization', 'year_of_study', 'semester', 'event_type', 'title', 'start_date', 'end_date'],
-        ]);
+        ], importCache);
         if (savedRecord?.__importAction === 'updated') {
           updated += 1;
         } else {
@@ -7121,6 +7154,7 @@ function BatchRoomAllocationManagement() {
   ];
 
   const handleImport = async (data: any[]) => {
+    const importCache = createImportUpsertCache();
     for (const row of data) {
       const calendar = calendars.find(item =>
         normalizeLookupValue(item.calendar_id) === normalizeLookupValue(getImportValue(row, ['Academic Calendar', 'Calendar ID'])) ||
@@ -7182,7 +7216,7 @@ function BatchRoomAllocationManagement() {
       await upsertImportRecord('/api/batch_room_allocations', payload, [
         ['allocation_id'],
         ['room_id', 'department_id', 'program', 'batch', 'specialization', 'year_of_study', 'semester', 'start_date', 'end_date'],
-      ]);
+      ], importCache);
     }
   };
 
@@ -7644,6 +7678,7 @@ function DepartmentAllocationManagement() {
   ];
 
   const handleImport = async (data: any[]) => {
+    const importCache = createImportUpsertCache();
     for (const row of data) {
       const school = schools.find(s =>
         normalizeLookupValue(s.name) === normalizeLookupValue(row['School']) ||
@@ -7695,7 +7730,7 @@ function DepartmentAllocationManagement() {
         !semesterOptions.includes(payload.semester)
       ) continue;
       
-      await upsertImportRecord('/api/department_allocations', payload, [['room_id', 'department_id', 'semester']]);
+      await upsertImportRecord('/api/department_allocations', payload, [['room_id', 'department_id', 'semester']], importCache);
     }
   };
 
@@ -7885,6 +7920,7 @@ function EquipmentManagement() {
   ];
 
   const handleImport = async (data: any[]) => {
+    const importCache = createImportUpsertCache();
     for (const row of data) {
       const roomValue = getImportValue(row, ['Room Number', 'Room']);
       const room = findRoomByImportLabel(rooms, roomValue);
@@ -7896,7 +7932,7 @@ function EquipmentManagement() {
         condition: row['Condition']
       };
       if (!payload.equipment_id || !payload.name || !payload.room_id) continue;
-      await upsertImportRecord('/api/equipment', payload, [['equipment_id'], ['room_id', 'name']]);
+      await upsertImportRecord('/api/equipment', payload, [['equipment_id'], ['room_id', 'name']], importCache);
     }
   };
 
@@ -8334,7 +8370,7 @@ function SchedulingManagement() {
     };
   };
 
-  const ensureAllocationFromSchedule = async (room: any, department: any, semesterValue: unknown) => {
+  const ensureAllocationFromSchedule = async (room: any, department: any, semesterValue: unknown, importCache?: ImportUpsertCache) => {
     if (!room?.id || !department?.id || !department?.school_id) return null;
 
     const payload = {
@@ -8348,7 +8384,7 @@ function SchedulingManagement() {
 
     const savedAllocation = await upsertImportRecord('/api/department_allocations', payload, [
       ['room_id', 'department_id', 'semester'],
-    ]);
+    ], importCache);
 
     setAllocations(prev => {
       const existingIndex = prev.findIndex(allocation => allocation.id?.toString() === savedAllocation.id?.toString());
@@ -8364,6 +8400,7 @@ function SchedulingManagement() {
   };
 
   const handleImport = async (data: any[]) => {
+    const importCache = createImportUpsertCache();
     let importedCount = 0;
     let linkedCount = 0;
     let unmatchedRoomCount = 0;
@@ -8434,14 +8471,14 @@ function SchedulingManagement() {
           session_group_id: sessionGroupId,
         };
 
-        await upsertImportRecord('/api/schedules', payload, [['schedule_id'], ['room_id', 'program', 'specialization', 'section', 'day_of_week', 'start_time', 'end_time'], ['room_label', 'program', 'specialization', 'section', 'day_of_week', 'start_time', 'end_time']]);
+        await upsertImportRecord('/api/schedules', payload, [['schedule_id'], ['room_id', 'program', 'specialization', 'section', 'day_of_week', 'start_time', 'end_time'], ['room_label', 'program', 'specialization', 'section', 'day_of_week', 'start_time', 'end_time']], importCache);
         importedCount += 1;
         if (room) linkedCount += 1;
         else {
           unmatchedRoomCount += 1;
           if (roomResolution.reason === 'ambiguous') ambiguousRoomCount += 1;
         }
-        await ensureAllocationFromSchedule(room, dept, normalizedSemester || getImportValue(row, [EXACT_SEMESTER_LABEL, 'Semester', 'Term']));
+        await ensureAllocationFromSchedule(room, dept, normalizedSemester || getImportValue(row, [EXACT_SEMESTER_LABEL, 'Semester', 'Term']), importCache);
       }
     }
     setRefreshKey(prev => prev + 1);
@@ -8494,6 +8531,7 @@ function SchedulingManagement() {
         const validSchedules = extractedSchedules
           .map(sanitizeExtractedSchedule)
           .filter(Boolean);
+        const importCache = createImportUpsertCache();
 
         let importedCount = 0;
         let linkedCount = 0;
@@ -8544,11 +8582,11 @@ function SchedulingManagement() {
               ['schedule_id'],
               ['room_id', 'program', 'specialization', 'section', 'day_of_week', 'start_time', 'end_time'],
               ['room_label', 'program', 'specialization', 'section', 'day_of_week', 'start_time', 'end_time'],
-            ]);
+            ], importCache);
             importedCount += 1;
             if (room) {
               linkedCount += 1;
-              await ensureAllocationFromSchedule(room, dept, schedule.semester);
+              await ensureAllocationFromSchedule(room, dept, schedule.semester, importCache);
             } else {
               unmatchedRoomCount += 1;
               if (roomResolution.reason === 'ambiguous') ambiguousRoomCount += 1;
@@ -9907,6 +9945,7 @@ function MaintenanceManagement() {
   ];
 
   const handleImport = async (data: any[]) => {
+    const importCache = createImportUpsertCache();
     for (const row of data) {
       const roomValue = getImportValue(row, ['Room Number', 'Room']);
       const room = findRoomByImportLabel(rooms, roomValue);
@@ -9917,7 +9956,7 @@ function MaintenanceManagement() {
         status: row['Status'] || 'Pending'
       };
       if (!payload.maintenance_id || !payload.room_id) continue;
-      await upsertImportRecord('/api/maintenance', payload, [['maintenance_id']]);
+      await upsertImportRecord('/api/maintenance', payload, [['maintenance_id']], importCache);
     }
   };
 
