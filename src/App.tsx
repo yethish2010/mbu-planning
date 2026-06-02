@@ -5486,9 +5486,9 @@ function FloorManagement() {
   };
 
   const handleImport = async (data: any[]) => {
-    const importCache = createImportUpsertCache();
     let importedCount = 0;
     const skippedRows: string[] = [];
+    const entries: BulkImportEntry[] = [];
 
     for (const [index, row] of data.entries()) {
       const floorId = row['Floor ID']?.toString();
@@ -5529,15 +5529,20 @@ function FloorManagement() {
 
       for (let offset = 0; offset < floorCount; offset += 1) {
         const floorNumber = firstFloorNumber + offset;
-        await upsertImportRecord('/api/floors', {
-          floor_id: floorCount === 1 && floorId ? floorId : getGeneratedFloorId(prefix, floorNumber),
-          block_id: blockId,
-          floor_number: floorNumber,
-          description: getFloorSequenceDescription(row['Description'], floorNumber),
-        }, [['floor_id'], ['block_id', 'floor_number']], importCache);
-        importedCount += 1;
+        entries.push({
+          payload: {
+            floor_id: floorCount === 1 && floorId ? floorId : getGeneratedFloorId(prefix, floorNumber),
+            block_id: blockId,
+            floor_number: floorNumber,
+            description: getFloorSequenceDescription(row['Description'], floorNumber),
+          },
+          uniqueFieldGroups: [['floor_id'], ['block_id', 'floor_number']],
+        });
       }
     }
+
+    const results = await upsertImportRecordsBulk('/api/floors', entries);
+    importedCount = results.filter(result => result?.ok).length;
 
     if (importedCount === 0) {
       throw new Error(`No floors were imported. For block buildings, provide a valid block. For no-block buildings, use "Direct floors". Skipped ${skippedRows.join(', ') || 'all rows'}.`);
@@ -6079,7 +6084,6 @@ function RoomManagement() {
   };
 
   const handleImport = async (data: any[]) => {
-    const importCache = createImportUpsertCache();
     const knownRooms = [...rooms];
     const getRowRoomLabels = (row: any) => [
       row['Room Number'],
@@ -6184,109 +6188,137 @@ function RoomManagement() {
     };
     const sortedRows = [...data].sort((left, right) => layoutPriority(left) - layoutPriority(right));
 
-    for (const row of sortedRows) {
-      const existingFailures = rowFailures.get(getAuditRowKey(row));
-      if (existingFailures?.length) {
-        pushAudit(row, 'Failed', 'Validation', existingFailures.join(' '));
-        continue;
+    const processRoomImportPhase = async (phaseRows: any[]) => {
+      const pendingRows: Array<{ row: any; payload: any }> = [];
+
+      for (const row of phaseRows) {
+        const existingFailures = rowFailures.get(getAuditRowKey(row));
+        if (existingFailures?.length) {
+          pushAudit(row, 'Failed', 'Validation', existingFailures.join(' '));
+          continue;
+        }
+
+        try {
+          const building = buildings.find(b => normalizeLookupValue(b.name) === normalizeLookupValue(getImportValue(row, ['Building'])));
+          const blockLabel = getImportValue(row, ['Block / Direct Floors', 'Block']);
+          const normalizedBlockLabel = normalizeLookupValue(blockLabel);
+          const block = blocks.find(b =>
+            (!building || idsMatch(b.building_id, building.id)) &&
+            (
+              normalizeLookupValue(b.name) === normalizedBlockLabel ||
+              ((normalizedBlockLabel === 'direct floors' || normalizedBlockLabel === 'direct floors (no block)' || !normalizedBlockLabel) && isImplicitBuildingBlock(b, building))
+            )
+          );
+          const floorValue = getImportValue(row, ['Floor', 'Floor ID']);
+          const floor = floors.find(f =>
+            (!block || f.block_id === block.id) &&
+            (
+              f.id?.toString() === floorValue?.toString() ||
+              f.floor_number?.toString() === floorValue?.toString() ||
+              normalizeLookupValue(getFloorName(f.floor_number)) === normalizeLookupValue(floorValue) ||
+              normalizeLookupValue(getFloorDisplayLabel(f, blocks, buildings)) === normalizeLookupValue(floorValue)
+            )
+          );
+          const parentRoomValue = normalizeOptionalImportValue(getImportValue(row, ['Parent Room', 'Inside / Parent Room']));
+          const parentRoom = parentRoomValue ? findRoomByImportLabel(knownRooms, parentRoomValue) : null;
+
+          if (parentRoomValue && !parentRoom) {
+            pushAudit(row, 'Failed', 'Parent lookup', `Parent room "${parentRoomValue}" was not found. Add the parent room first or check the room number.`);
+            continue;
+          }
+
+          const roomLayoutValue = normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout']));
+          const isChildRoomLayout = HIERARCHY_CHILD_ROOM_LAYOUTS.includes(roomLayoutValue);
+          const importedRoomType = isChildRoomLayout
+            ? getImportValue(row, ['Sub Room Type', 'Room Type'])
+            : getImportValue(row, ['Room Type', 'Sub Room Type']);
+
+          const payload = {
+            room_id: row['Room ID']?.toString(),
+            room_number: row['Room Number']?.toString(),
+            room_name: normalizeOptionalImportValue(getImportValue(row, ['Room Name'])),
+            room_aliases: normalizeRoomAliases(getImportValue(row, ['Room Aliases', 'Aliases', 'Alternate Room Numbers'])),
+            floor_id: floor?.id ?? parseInt(floorValue as any),
+            room_type: normalizeRoomTypeValue(importedRoomType),
+            room_layout: roomLayoutValue,
+            parent_room_id: parentRoom?.id || null,
+            sub_room_count: getImportValue(row, ['Sub Room Count', 'Number of Splits', 'Number of Rooms Inside']),
+            room_section_name: normalizeOptionalImportValue(getImportValue(row, ['Sub Room Name', 'Room Section Name', 'Section Name'])) || '',
+            usage_category: normalizeUsageCategoryValue(getImportValue(row, ['Usage Category', 'Usage']), importedRoomType),
+            is_bookable: isNonCapacityRoomType(importedRoomType) ? 0 : normalizeBooleanLikeValue(getImportValue(row, ['Is Bookable', 'Bookable']), true) ? 1 : 0,
+            lab_name: normalizeOptionalImportValue(getImportValue(row, ['Lab Name'])),
+            sub_lab_name: normalizeOptionalImportValue(getImportValue(row, ['Sub Lab Name'])),
+            restroom_type: normalizeRestroomTypeValue(getImportValue(row, ['Restroom For', 'Restroom Type'])),
+            capacity: isCapacityRoomType(importedRoomType) ? parseInt(row['Capacity']) || 0 : 0,
+            status: row['Status'] || 'Available'
+          };
+
+          if (!payload.room_id || !payload.room_number) {
+            pushAudit(row, 'Skipped', 'Missing primary fields', 'Room ID and Room Number are required for import.');
+            continue;
+          }
+
+          if (!payload.floor_id || Number.isNaN(Number(payload.floor_id))) {
+            pushAudit(row, 'Skipped', 'Missing floor match', `No floor match was found for "${floorValue || '-'}".`);
+            continue;
+          }
+
+          if (
+            parentRoom &&
+            (
+              parentRoom.room_id?.toString() === payload.room_id ||
+              parentRoom.room_number?.toString() === payload.room_number
+            )
+          ) {
+            pushAudit(row, 'Failed', 'Parent validation', `Room "${payload.room_number}" cannot use itself as the parent room.`);
+            continue;
+          }
+
+          pendingRows.push({
+            row,
+            payload: normalizeRoomFormPayload(payload, knownRooms),
+          });
+        } catch (err: any) {
+          pushAudit(row, 'Failed', 'Import failed', err?.message || 'Unexpected import error.');
+        }
       }
 
-      try {
-        const building = buildings.find(b => normalizeLookupValue(b.name) === normalizeLookupValue(getImportValue(row, ['Building'])));
-        const blockLabel = getImportValue(row, ['Block / Direct Floors', 'Block']);
-        const normalizedBlockLabel = normalizeLookupValue(blockLabel);
-        const block = blocks.find(b =>
-          (!building || idsMatch(b.building_id, building.id)) &&
-          (
-            normalizeLookupValue(b.name) === normalizedBlockLabel ||
-            ((normalizedBlockLabel === 'direct floors' || normalizedBlockLabel === 'direct floors (no block)' || !normalizedBlockLabel) && isImplicitBuildingBlock(b, building))
-          )
-        );
-        const floorValue = getImportValue(row, ['Floor', 'Floor ID']);
-        const floor = floors.find(f =>
-          (!block || f.block_id === block.id) &&
-          (
-            f.id?.toString() === floorValue?.toString() ||
-            f.floor_number?.toString() === floorValue?.toString() ||
-            normalizeLookupValue(getFloorName(f.floor_number)) === normalizeLookupValue(floorValue) ||
-            normalizeLookupValue(getFloorDisplayLabel(f, blocks, buildings)) === normalizeLookupValue(floorValue)
-          )
-        );
-        const parentRoomValue = normalizeOptionalImportValue(getImportValue(row, ['Parent Room', 'Inside / Parent Room']));
-        const parentRoom = parentRoomValue ? findRoomByImportLabel(knownRooms, parentRoomValue) : null;
+      const results = await upsertImportRecordsBulk('/api/rooms', pendingRows.map(entry => ({
+        payload: entry.payload,
+        uniqueFieldGroups: [['room_id'], ['room_number']],
+      })));
 
-        if (parentRoomValue && !parentRoom) {
-          pushAudit(row, 'Failed', 'Parent lookup', `Parent room "${parentRoomValue}" was not found. Add the parent room first or check the room number.`);
-          continue;
+      pendingRows.forEach((entry, index) => {
+        const result = results[index];
+        if (!result?.ok || !result.record) {
+          pushAudit(entry.row, 'Failed', 'Import failed', result?.error || 'Unexpected import error.');
+          return;
         }
 
-        const roomLayoutValue = normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout']));
-        const isChildRoomLayout = HIERARCHY_CHILD_ROOM_LAYOUTS.includes(roomLayoutValue);
-        const importedRoomType = isChildRoomLayout
-          ? getImportValue(row, ['Sub Room Type', 'Room Type'])
-          : getImportValue(row, ['Room Type', 'Sub Room Type']);
-
-        const payload = {
-          room_id: row['Room ID']?.toString(),
-          room_number: row['Room Number']?.toString(),
-          room_name: normalizeOptionalImportValue(getImportValue(row, ['Room Name'])),
-          room_aliases: normalizeRoomAliases(getImportValue(row, ['Room Aliases', 'Aliases', 'Alternate Room Numbers'])),
-          floor_id: floor?.id ?? parseInt(floorValue as any),
-          room_type: normalizeRoomTypeValue(importedRoomType),
-          room_layout: roomLayoutValue,
-          parent_room_id: parentRoom?.id || null,
-          sub_room_count: getImportValue(row, ['Sub Room Count', 'Number of Splits', 'Number of Rooms Inside']),
-          room_section_name: normalizeOptionalImportValue(getImportValue(row, ['Sub Room Name', 'Room Section Name', 'Section Name'])) || '',
-          usage_category: normalizeUsageCategoryValue(getImportValue(row, ['Usage Category', 'Usage']), importedRoomType),
-          is_bookable: isNonCapacityRoomType(importedRoomType) ? 0 : normalizeBooleanLikeValue(getImportValue(row, ['Is Bookable', 'Bookable']), true) ? 1 : 0,
-          lab_name: normalizeOptionalImportValue(getImportValue(row, ['Lab Name'])),
-          sub_lab_name: normalizeOptionalImportValue(getImportValue(row, ['Sub Lab Name'])),
-          restroom_type: normalizeRestroomTypeValue(getImportValue(row, ['Restroom For', 'Restroom Type'])),
-          capacity: isCapacityRoomType(importedRoomType) ? parseInt(row['Capacity']) || 0 : 0,
-          status: row['Status'] || 'Available'
-        };
-
-        if (!payload.room_id || !payload.room_number) {
-          pushAudit(row, 'Skipped', 'Missing primary fields', 'Room ID and Room Number are required for import.');
-          continue;
-        }
-
-        if (!payload.floor_id || Number.isNaN(Number(payload.floor_id))) {
-          pushAudit(row, 'Skipped', 'Missing floor match', `No floor match was found for "${floorValue || '-'}".`);
-          continue;
-        }
-
-        if (
-          parentRoom &&
-          (
-            parentRoom.room_id?.toString() === payload.room_id ||
-            parentRoom.room_number?.toString() === payload.room_number
-          )
-        ) {
-          pushAudit(row, 'Failed', 'Parent validation', `Room "${payload.room_number}" cannot use itself as the parent room.`);
-          continue;
-        }
-
-        const normalizedPayload = normalizeRoomFormPayload(payload, knownRooms);
-        const savedRoom: any = await upsertImportRecord('/api/rooms', normalizedPayload, [['room_id'], ['room_number']], importCache);
+        const savedRoom: any = result.record;
         const existingIndex = knownRooms.findIndex(room => room.id?.toString() === savedRoom.id?.toString());
         if (existingIndex >= 0) {
           knownRooms[existingIndex] = savedRoom;
         } else {
           knownRooms.push(savedRoom);
         }
+
         pushAudit(
-          row,
-          savedRoom.__importAction === 'updated' ? 'Updated' : 'Created',
-          savedRoom.__importAction === 'updated' ? 'Updated existing record' : 'Created new record',
-          savedRoom.__importAction === 'updated'
+          entry.row,
+          result.action === 'updated' ? 'Updated' : 'Created',
+          result.action === 'updated' ? 'Updated existing record' : 'Created new record',
+          result.action === 'updated'
             ? 'Matched an existing room by Room ID or Room Number and updated it.'
             : 'Inserted a new room record.'
         );
-      } catch (err: any) {
-        pushAudit(row, 'Failed', 'Import failed', err?.message || 'Unexpected import error.');
-      }
-    }
+      });
+    };
+
+    const parentAndNormalRows = sortedRows.filter(row => !HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout']))));
+    const childOnlyRows = sortedRows.filter(row => HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout']))));
+
+    await processRoomImportPhase(parentAndNormalRows);
+    await processRoomImportPhase(childOnlyRows);
 
     summary.validRows = summary.totalRowsRead - summary.failed;
     return {
