@@ -799,13 +799,24 @@ const validateRoomHierarchy = async (room: any, excludeId?: string | number) => 
   return null;
 };
 
+const findRecordById = (records: any[], id: any) => {
+  if (id == null || id === "") return null;
+  return (Array.isArray(records) ? records : []).find(record => idsEqual(record?.id, id)) || null;
+};
+
 const getBookableRoomError = async (roomId: any, context?: BulkImportContext) => {
   if (!roomId) return null;
   const cacheKey = roomId.toString();
   if (context?.roomBookableErrorByRoomId.has(cacheKey)) {
     return context.roomBookableErrorByRoomId.get(cacheKey) || null;
   }
-  const room = await db.prepare("SELECT room_number, room_type, usage_category, is_bookable, status FROM rooms WHERE id = ?").get(roomId) as any;
+  let room = context?.roomById.get(cacheKey) || null;
+  if (!room) {
+    room = await db.prepare("SELECT id, room_number, room_type, usage_category, is_bookable, status FROM rooms WHERE id = ?").get(roomId) as any;
+    if (room) {
+      context?.roomById.set(cacheKey, room);
+    }
+  }
   if (!room) {
     context?.roomBookableErrorByRoomId.set(cacheKey, "Please select a valid room.");
     return "Please select a valid room.";
@@ -1111,15 +1122,17 @@ const normalizeBatchRoomAllocationPayload = async (payload: any) => {
   return nextPayload;
 };
 
-const getBatchAllocationOverlapError = async (allocation: any, excludeId?: string | number) => {
+const getBatchAllocationOverlapError = async (allocation: any, excludeId?: string | number, existingRows?: any[]) => {
   if (!allocation?.room_id || !allocation?.start_date || !allocation?.end_date) return null;
   const room = await db.prepare("SELECT room_number FROM rooms WHERE id = ?").get(allocation.room_id) as any;
-  const existingAllocations = await db.prepare(`
-    SELECT id, department_id, program, batch, academic_year, year_of_study, semester, start_date, end_date, status, allocation_mode
-    FROM batch_room_allocations
-    WHERE room_id = ?
-    ${excludeId ? "AND id != ?" : ""}
-  `).all(allocation.room_id, ...(excludeId ? [excludeId] : [])) as any[];
+  const existingAllocations = Array.isArray(existingRows)
+    ? existingRows.filter(existing => idsEqual(existing?.room_id, allocation.room_id) && (!excludeId || !idsEqual(existing?.id, excludeId)))
+    : await db.prepare(`
+      SELECT id, department_id, program, batch, academic_year, year_of_study, semester, start_date, end_date, status, allocation_mode
+      FROM batch_room_allocations
+      WHERE room_id = ?
+      ${excludeId ? "AND id != ?" : ""}
+    `).all(allocation.room_id, ...(excludeId ? [excludeId] : [])) as any[];
 
   const conflictingAllocation = existingAllocations.find(existing => {
     if ((existing.status || "").toString().trim().toLowerCase() === "released") return false;
@@ -1334,6 +1347,7 @@ type BulkImportContext = {
   tableName: string;
   records: any[];
   departmentById: Map<string, any>;
+  roomById: Map<string, any>;
   roomBookableErrorByRoomId: Map<string, string | null>;
   departmentAllocationLinksByContext: Map<string, any>;
   roomNumberById: Map<string, string>;
@@ -1345,6 +1359,7 @@ const createBulkImportContext = (tableName: string, records: any[]): BulkImportC
   tableName,
   records,
   departmentById: new Map(),
+  roomById: new Map(),
   roomBookableErrorByRoomId: new Map(),
   departmentAllocationLinksByContext: new Map(),
   roomNumberById: new Map(),
@@ -2686,6 +2701,71 @@ const findMatchingImportRecord = (records: any[], payload: any, uniqueFieldGroup
   return null;
 };
 
+const findDuplicateRecordInCollection = (
+  tableName: string,
+  records: any[],
+  data: any,
+  excludeId?: string | number,
+) => {
+  const rules = duplicateRules[tableName] || [];
+
+  for (const rule of rules) {
+    if (rule.fields.some(field => data[field] == null || data[field] === "")) continue;
+
+    const existing = (Array.isArray(records) ? records : []).find(record => {
+      if (excludeId && idsEqual(record?.id, excludeId)) return false;
+      return rule.fields.every(field => {
+        if (record?.[field] == null || record[field] === "") return false;
+        return shouldUseCaseInsensitiveTextComparison(tableName, field, data[field])
+          ? normalizeDuplicateValue(record[field]) === normalizeDuplicateValue(data[field])
+          : record[field] === data[field];
+      });
+    });
+
+    if (existing) {
+      return `${rule.label} already exists. Duplicate records are not allowed.`;
+    }
+  }
+
+  if (tableName === "schedules" && data?.day_of_week && data?.start_time && data?.end_time) {
+    const candidates = (Array.isArray(records) ? records : []).filter(candidate => {
+      if (excludeId && idsEqual(candidate?.id, excludeId)) return false;
+      return normalizeDuplicateValue(candidate?.day_of_week) === normalizeDuplicateValue(data.day_of_week) &&
+        normalizeDuplicateValue(candidate?.start_time) === normalizeDuplicateValue(data.start_time) &&
+        normalizeDuplicateValue(candidate?.end_time) === normalizeDuplicateValue(data.end_time);
+    });
+
+    const conflictingSchedule = candidates.find(candidate => schedulesConflict(candidate, data));
+    if (conflictingSchedule) {
+      return "Schedule slot for this room, program, branch, and section already exists. Duplicate records are not allowed.";
+    }
+  }
+
+  if (tableName === "rooms") {
+    const candidateTokens = Array.from(new Set([
+      normalizeDuplicateValue(data.room_number),
+      ...getRoomAliasTokens(data.room_aliases),
+    ].filter(Boolean)));
+
+    if (candidateTokens.length > 0) {
+      const conflictingRoom = (Array.isArray(records) ? records : []).find(room => {
+        if (excludeId && idsEqual(room?.id, excludeId)) return false;
+        const existingTokens = new Set([
+          normalizeDuplicateValue(room.room_number),
+          ...getRoomAliasTokens(room.room_aliases),
+        ].filter(Boolean));
+        return candidateTokens.some(token => existingTokens.has(token));
+      });
+
+      if (conflictingRoom) {
+        return "Room number or alias already exists. Shared venue labels must be unique across Room Management.";
+      }
+    }
+  }
+
+  return null;
+};
+
 const normalizeBulkImportPayload = async (tableName: string, payload: any, existingItem?: any) => {
   let nextPayload = { ...(payload || {}) };
 
@@ -2716,11 +2796,24 @@ const normalizeBulkImportPayload = async (tableName: string, payload: any, exist
 
 const validateBulkImportPayload = async (tableName: string, payload: any, existingItem?: any, context?: BulkImportContext) => {
   const nextRecord = existingItem ? { ...existingItem, ...payload } : payload;
-  const duplicateError = await checkDuplicateRecord(tableName, nextRecord, existingItem?.id);
+  const duplicateError = context?.records
+    ? findDuplicateRecordInCollection(tableName, context.records, nextRecord, existingItem?.id)
+    : await checkDuplicateRecord(tableName, nextRecord, existingItem?.id);
   if (duplicateError) throw new Error(duplicateError);
 
   if (tableName === "rooms") {
-    const hierarchyError = await validateRoomHierarchy(nextRecord, existingItem?.id);
+    const parentRoom = context?.records ? findRecordById(context.records, nextRecord.parent_room_id) : null;
+    const hierarchyError = context?.records && nextRecord?.parent_room_id
+      ? (
+          existingItem && nextRecord.parent_room_id?.toString() === existingItem.id?.toString()
+            ? "A room cannot be inside itself."
+            : !parentRoom
+              ? "Please select a valid parent room."
+              : parentRoom.floor_id?.toString() !== nextRecord.floor_id?.toString()
+                ? "The parent room must be on the same floor."
+                : null
+        )
+      : await validateRoomHierarchy(nextRecord, existingItem?.id);
     if (hierarchyError) throw new Error(hierarchyError);
     const restroomValidationError = await getRestroomValidationError(nextRecord);
     if (restroomValidationError) throw new Error(restroomValidationError);
@@ -2742,7 +2835,11 @@ const validateBulkImportPayload = async (tableName: string, payload: any, existi
     if (bookableError) throw new Error(bookableError);
     const departmentAllocationError = await getDepartmentAllocationLinkError(nextRecord.room_id, nextRecord.department_id, nextRecord.semester, context);
     if (departmentAllocationError) throw new Error(departmentAllocationError);
-    const overlapError = await getBatchAllocationOverlapError(nextRecord, existingItem?.id);
+    const overlapError = await getBatchAllocationOverlapError(
+      nextRecord,
+      existingItem?.id,
+      context?.tableName === "batch_room_allocations" ? context.records : undefined,
+    );
     if (overlapError) throw new Error(overlapError);
   }
 

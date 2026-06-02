@@ -1589,7 +1589,7 @@ type BulkImportEntry = {
 const upsertImportRecordsBulk = async (
   apiPath: string,
   entries: BulkImportEntry[],
-  chunkSize: number = 100,
+  chunkSize: number = 200,
 ) => {
   if (!Array.isArray(entries) || entries.length === 0) return [];
 
@@ -1620,6 +1620,16 @@ const createExcelWorkbook = async () => {
   const module = await import('exceljs');
   const ExcelJSRuntime = (module as any).default || module;
   return new ExcelJSRuntime.Workbook() as ExcelWorkbook;
+};
+
+const appendLookupCandidate = <T,>(map: Map<string, T[]>, key: string, value: T) => {
+  if (!key) return;
+  const existing = map.get(key);
+  if (existing) {
+    existing.push(value);
+  } else {
+    map.set(key, [value]);
+  }
 };
 
 const toExcelCellValue = (value: unknown) => {
@@ -6741,26 +6751,36 @@ function AcademicCalendarManagement() {
     let skipped = 0;
     let failed = 0;
     const bulkEntries: Array<BulkImportEntry & { row: any; sourceLabel: string; schoolLabel: string; departmentLabel: string; calendarId: string }> = [];
+    const schoolLookup = new Map<string, any[]>();
+    schools.forEach(item => {
+      appendLookupCandidate(schoolLookup, normalizeLookupValue(item.name), item);
+      appendLookupCandidate(schoolLookup, normalizeLookupValue(item.school_id), item);
+    });
+    const departmentLookup = new Map<string, any[]>();
+    sortedDepartments.forEach(item => {
+      const schoolKey = item.school_id?.toString() || '*';
+      appendLookupCandidate(departmentLookup, `${schoolKey}|${normalizeLookupValue(item.name)}`, item);
+      appendLookupCandidate(departmentLookup, `${schoolKey}|${normalizeLookupValue(item.department_id)}`, item);
+      appendLookupCandidate(departmentLookup, `*|${normalizeLookupValue(item.name)}`, item);
+      appendLookupCandidate(departmentLookup, `*|${normalizeLookupValue(item.department_id)}`, item);
+    });
+    const timingProfileLookup = new Map<string, any[]>();
+    timingProfiles.forEach(item => {
+      appendLookupCandidate(timingProfileLookup, normalizeLookupValue(item.profile_id), item);
+      appendLookupCandidate(timingProfileLookup, normalizeLookupValue(item.profile_name), item);
+    });
 
     for (const row of data) {
       const sourceLabel = `${row.__sheetName || 'Sheet'} row ${row.__rowNumber || '?'}`;
-      const school = schools.find(item =>
-        normalizeLookupValue(item.name) === normalizeLookupValue(row['School']) ||
-        normalizeLookupValue(item.school_id) === normalizeLookupValue(row['School'])
-      );
-      const department = sortedDepartments.find(item =>
-        (
-          normalizeLookupValue(item.name) === normalizeLookupValue(row['Department']) ||
-          normalizeLookupValue(item.department_id) === normalizeLookupValue(row['Department'])
-        ) &&
-        (!school || idsMatch(item.school_id, school.id))
-      );
+      const normalizedSchoolValue = normalizeLookupValue(row['School']);
+      const normalizedDepartmentValue = normalizeLookupValue(row['Department']);
+      const school = (schoolLookup.get(normalizedSchoolValue) || [])[0];
+      const schoolKey = school?.id?.toString() || '*';
+      const department = (departmentLookup.get(`${schoolKey}|${normalizedDepartmentValue}`) || departmentLookup.get(`*|${normalizedDepartmentValue}`) || [])
+        .find(item => !school || idsMatch(item.school_id, school.id));
       const startDate = formatExcelDate(row['Start Date']);
       const endDate = formatExcelDate(row['End Date']);
-      const timingProfile = timingProfiles.find(item =>
-        normalizeLookupValue(item.profile_id) === normalizeLookupValue(row['Timing Profile']) ||
-        normalizeLookupValue(item.profile_name) === normalizeLookupValue(row['Timing Profile'])
-      );
+      const timingProfile = (timingProfileLookup.get(normalizeLookupValue(row['Timing Profile'])) || [])[0];
       const calendarId = row['Calendar ID']?.toString().trim() || '';
       const title = row['Title']?.toString().trim() || row['Event Type']?.toString().trim() || '';
 
@@ -7232,22 +7252,38 @@ function BatchRoomAllocationManagement() {
   ];
 
   const handleImport = async (data: any[]) => {
+    const calendarLookup = new Map<string, any[]>();
+    calendars.forEach(item => {
+      appendLookupCandidate(calendarLookup, normalizeLookupValue(item.calendar_id), item);
+      appendLookupCandidate(calendarLookup, normalizeLookupValue(item.title), item);
+    });
+    const departmentLookup = new Map<string, any[]>();
+    sortedDepartments.forEach(item => {
+      appendLookupCandidate(departmentLookup, normalizeLookupValue(item.name), item);
+      appendLookupCandidate(departmentLookup, normalizeLookupValue(item.department_id), item);
+    });
+    const buildingLookup = new Map<string, any[]>();
+    buildings.forEach(item => {
+      appendLookupCandidate(buildingLookup, normalizeLookupValue(item.name), item);
+    });
+    const reservableRoomLookup = new Map<string, any[]>();
+    rooms.filter(isRoomReservable).forEach(room => {
+      appendLookupCandidate(reservableRoomLookup, normalizeLookupValue(room.room_id), room);
+      appendLookupCandidate(reservableRoomLookup, normalizeLookupValue(room.room_number), room);
+      appendLookupCandidate(reservableRoomLookup, normalizeLookupValue(getRoomDisplayLabel(room, rooms)), room);
+    });
+
     const entries = data.map((row) => {
-      const calendar = calendars.find(item =>
-        normalizeLookupValue(item.calendar_id) === normalizeLookupValue(getImportValue(row, ['Academic Calendar', 'Calendar ID'])) ||
-        normalizeLookupValue(item.title) === normalizeLookupValue(getImportValue(row, ['Academic Calendar', 'Title']))
-      );
-      const department = sortedDepartments.find(item =>
-        normalizeLookupValue(item.name) === normalizeLookupValue(row['Department']) ||
-        normalizeLookupValue(item.department_id) === normalizeLookupValue(row['Department']) ||
-        idsMatch(item.id, calendar?.department_id)
-      );
-      const building = buildings.find(item => normalizeLookupValue(item.name) === normalizeLookupValue(getImportValue(row, ['Building'])));
+      const calendarLookupValue = normalizeLookupValue(getImportValue(row, ['Academic Calendar', 'Calendar ID'])) || normalizeLookupValue(getImportValue(row, ['Academic Calendar', 'Title']));
+      const calendar = (calendarLookup.get(calendarLookupValue) || [])[0];
+      const departmentLookupValue = normalizeLookupValue(row['Department']);
+      const department = (departmentLookup.get(departmentLookupValue) || []).find(item => !calendar || idsMatch(item.id, calendar?.department_id)) ||
+        sortedDepartments.find(item => idsMatch(item.id, calendar?.department_id));
+      const building = (buildingLookup.get(normalizeLookupValue(getImportValue(row, ['Building']))) || [])[0];
       const blockLabel = getImportValue(row, ['Block', 'Block / Direct Floors']);
       const normalizedBlockLabel = normalizeLookupValue(blockLabel);
       const normalizedRoomValue = normalizeLookupValue(getImportValue(row, ['Room', 'Room Number']));
-      const room = rooms.find(r => {
-        if (!isRoomReservable(r)) return false;
+      const room = (reservableRoomLookup.get(normalizedRoomValue) || []).find(r => {
         if (![
           normalizeLookupValue(r.room_id),
           normalizeLookupValue(r.room_number),
@@ -7760,24 +7796,40 @@ function DepartmentAllocationManagement() {
   ];
 
   const handleImport = async (data: any[]) => {
+    const schoolLookup = new Map<string, any[]>();
+    schools.forEach(item => {
+      appendLookupCandidate(schoolLookup, normalizeLookupValue(item.name), item);
+      appendLookupCandidate(schoolLookup, normalizeLookupValue(item.school_id), item);
+    });
+    const departmentLookup = new Map<string, any[]>();
+    departments.forEach(item => {
+      const schoolKey = item.school_id?.toString() || '*';
+      appendLookupCandidate(departmentLookup, `${schoolKey}|${normalizeLookupValue(item.name)}`, item);
+      appendLookupCandidate(departmentLookup, `${schoolKey}|${normalizeLookupValue(item.department_id)}`, item);
+      appendLookupCandidate(departmentLookup, `*|${normalizeLookupValue(item.name)}`, item);
+      appendLookupCandidate(departmentLookup, `*|${normalizeLookupValue(item.department_id)}`, item);
+    });
+    const buildingLookup = new Map<string, any[]>();
+    buildings.forEach(item => {
+      appendLookupCandidate(buildingLookup, normalizeLookupValue(item.name), item);
+    });
+    const reservableRoomLookup = new Map<string, any[]>();
+    rooms.filter(isRoomReservable).forEach(room => {
+      appendLookupCandidate(reservableRoomLookup, normalizeLookupValue(room.room_id), room);
+      appendLookupCandidate(reservableRoomLookup, normalizeLookupValue(room.room_number), room);
+      appendLookupCandidate(reservableRoomLookup, normalizeLookupValue(getRoomDisplayLabel(room, rooms)), room);
+    });
+
     const entries = data.map((row) => {
-      const school = schools.find(s =>
-        normalizeLookupValue(s.name) === normalizeLookupValue(row['School']) ||
-        normalizeLookupValue(s.school_id) === normalizeLookupValue(row['School'])
-      );
-      const department = departments.find(d =>
-        (!school || idsMatch(d.school_id, school.id)) &&
-        (
-          normalizeLookupValue(d.name) === normalizeLookupValue(row['Department']) ||
-          normalizeLookupValue(d.department_id) === normalizeLookupValue(row['Department'])
-        )
-      );
-      const building = buildings.find(b => normalizeLookupValue(b.name) === normalizeLookupValue(getImportValue(row, ['Building'])));
+      const school = (schoolLookup.get(normalizeLookupValue(row['School'])) || [])[0];
+      const department = (departmentLookup.get(`${school?.id?.toString() || '*'}|${normalizeLookupValue(row['Department'])}`) ||
+        departmentLookup.get(`*|${normalizeLookupValue(row['Department'])}`) ||
+        []).find(d => !school || idsMatch(d.school_id, school.id));
+      const building = (buildingLookup.get(normalizeLookupValue(getImportValue(row, ['Building']))) || [])[0];
       const blockLabel = getImportValue(row, ['Block', 'Block / Direct Floors']);
       const normalizedBlockLabel = normalizeLookupValue(blockLabel);
       const normalizedRoomValue = normalizeLookupValue(getImportValue(row, ['Room', 'Room Number']));
-      const room = rooms.find(r => {
-        if (!isRoomReservable(r)) return false;
+      const room = (reservableRoomLookup.get(normalizedRoomValue) || []).find(r => {
         if (![
           normalizeLookupValue(r.room_id),
           normalizeLookupValue(r.room_number),
@@ -8493,6 +8545,21 @@ function SchedulingManagement() {
     let skippedCount = 0;
     const scheduleEntries: Array<BulkImportEntry & { roomLinked: boolean; ambiguous: boolean }> = [];
     const allocationEntryMap = new Map<string, BulkImportEntry>();
+    const departmentLookup = new Map<string, any[]>();
+    departments.forEach(item => {
+      appendLookupCandidate(departmentLookup, normalizeLookupValue(item.name), item);
+      appendLookupCandidate(departmentLookup, normalizeLookupValue(item.department_id), item);
+    });
+    const roomResolutionCache = new Map<string, ReturnType<typeof resolveRoomSetForImport>>();
+    const resolveCachedRoomSet = (roomLabel: string) => {
+      const cacheKey = normalizeLookupValue(roomLabel);
+      if (roomResolutionCache.has(cacheKey)) {
+        return roomResolutionCache.get(cacheKey)!;
+      }
+      const resolution = resolveRoomSetForImport(rooms, roomLabel);
+      roomResolutionCache.set(cacheKey, resolution);
+      return resolution;
+    };
 
     for (const row of data) {
       const scheduleId = row['Schedule ID']?.toString().trim();
@@ -8510,9 +8577,9 @@ function SchedulingManagement() {
         continue;
       }
 
-      const roomResolution = resolveRoomSetForImport(rooms, roomLabel);
+      const roomResolution = resolveCachedRoomSet(roomLabel);
       const resolvedRooms = roomResolution.rooms;
-      const dept = findDepartmentForSchedule(row['Department']);
+      const dept = (departmentLookup.get(normalizeLookupValue(row['Department'])) || [])[0] || findDepartmentForSchedule(row['Department']);
       const inferredImportStatus = resolvedRooms.length > 0
         ? 'Linked'
         : roomLabel
