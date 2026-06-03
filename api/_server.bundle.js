@@ -2544,32 +2544,6 @@ var validateBulkImportPayload = async (tableName, payload, existingItem, context
     payload.schedule_code = await assignScheduleCode(payload, existingItem?.id, existingItem, context);
   }
 };
-var persistBulkImportRecord = async (tableName, payload, existingItem, context) => {
-  const normalizedPayload = await normalizeBulkImportPayload(tableName, payload, existingItem);
-  await validateBulkImportPayload(tableName, normalizedPayload, existingItem, context);
-  const fields = Object.keys(normalizedPayload);
-  if (fields.length === 0) {
-    throw new Error("Import payload is empty.");
-  }
-  if (existingItem?.id) {
-    const setClause = fields.map((field) => `${field} = ?`).join(", ");
-    const values2 = [...Object.values(normalizedPayload), existingItem.id];
-    if (tableName === "users" && normalizedPayload.password) {
-      const passwordIndex = fields.indexOf("password");
-      values2[passwordIndex] = bcrypt.hashSync(normalizedPayload.password, 10);
-    }
-    await db.prepare(`UPDATE ${tableName} SET ${setClause} WHERE id = ?`).run(...values2);
-    return { ...existingItem, ...normalizedPayload, id: existingItem.id, __importAction: "updated" };
-  }
-  const placeholders = fields.map(() => "?").join(", ");
-  const values = [...Object.values(normalizedPayload)];
-  if (tableName === "users" && normalizedPayload.password) {
-    const passwordIndex = fields.indexOf("password");
-    values[passwordIndex] = bcrypt.hashSync(normalizedPayload.password, 10);
-  }
-  const info = await db.prepare(`INSERT INTO ${tableName} (${fields.join(", ")}) VALUES (${placeholders})`).run(...values);
-  return { id: info.lastInsertRowid, ...normalizedPayload, __importAction: "created" };
-};
 await cleanupDuplicateSchedules();
 await syncBatchAllocationStatuses();
 var isPastDateTime = (date, time) => {
@@ -2696,40 +2670,62 @@ var createCrudRoutes = (tableName, idField = "id") => {
       if (entries.length === 0) {
         return res.json({ results: [] });
       }
-      const records = await db.prepare(`SELECT * FROM ${tableName}`).all();
-      const importContext = createBulkImportContext(tableName, records);
-      const results = [];
-      await db.exec("BEGIN IMMEDIATE TRANSACTION");
-      try {
+      const results = await db.transaction(async (transactionDb) => {
+        const records = await transactionDb.prepare(`SELECT * FROM ${tableName}`).all();
+        const importContext = createBulkImportContext(tableName, records);
+        const scopedPersistBulkImportRecord = async (payload, existingItem, context) => {
+          const normalizedPayload = await normalizeBulkImportPayload(tableName, payload, existingItem);
+          await validateBulkImportPayload(tableName, normalizedPayload, existingItem, context);
+          const fields = Object.keys(normalizedPayload);
+          if (fields.length === 0) {
+            throw new Error("Import payload is empty.");
+          }
+          if (existingItem?.id) {
+            const setClause = fields.map((field) => `${field} = ?`).join(", ");
+            const values2 = [...Object.values(normalizedPayload), existingItem.id];
+            if (tableName === "users" && normalizedPayload.password) {
+              const passwordIndex = fields.indexOf("password");
+              values2[passwordIndex] = bcrypt.hashSync(normalizedPayload.password, 10);
+            }
+            await transactionDb.prepare(`UPDATE ${tableName} SET ${setClause} WHERE id = ?`).run(...values2);
+            return { ...existingItem, ...normalizedPayload, id: existingItem.id, __importAction: "updated" };
+          }
+          const placeholders = fields.map(() => "?").join(", ");
+          const values = [...Object.values(normalizedPayload)];
+          if (tableName === "users" && normalizedPayload.password) {
+            const passwordIndex = fields.indexOf("password");
+            values[passwordIndex] = bcrypt.hashSync(normalizedPayload.password, 10);
+          }
+          const info = await transactionDb.prepare(`INSERT INTO ${tableName} (${fields.join(", ")}) VALUES (${placeholders})`).run(...values);
+          return { id: info.lastInsertRowid, ...normalizedPayload, __importAction: "created" };
+        };
+        const transactionResults = [];
         for (const entry of entries) {
           const payload = entry?.payload ?? entry;
           const uniqueFieldGroups = Array.isArray(entry?.uniqueFieldGroups) ? entry.uniqueFieldGroups : [];
           try {
             const existingItem = findMatchingImportRecord(records, payload, uniqueFieldGroups);
-            const savedRecord = await persistBulkImportRecord(tableName, payload, existingItem, importContext);
+            const savedRecord = await scopedPersistBulkImportRecord(payload, existingItem, importContext);
             const existingIndex = records.findIndex((record) => idsEqual(record?.id, savedRecord?.id));
             if (existingIndex >= 0) {
               records[existingIndex] = { ...records[existingIndex], ...savedRecord };
             } else {
               records.push(savedRecord);
             }
-            results.push({
+            transactionResults.push({
               ok: true,
               record: savedRecord,
               action: savedRecord.__importAction
             });
           } catch (err) {
-            results.push({
+            transactionResults.push({
               ok: false,
               error: err?.message || "Import failed."
             });
           }
         }
-        await db.exec("COMMIT");
-      } catch (err) {
-        await db.exec("ROLLBACK");
-        throw err;
-      }
+        return transactionResults;
+      });
       res.json({ results });
     } catch (err) {
       res.status(400).json({ error: err.message });
