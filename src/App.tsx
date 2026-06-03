@@ -2355,11 +2355,12 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   'Batch Room Allocation': {
-    headers: ['Allocation ID', 'Academic Calendar', 'Department', 'Program', 'Batch', 'Specialization / Branch', 'Academic Year', 'Semester Type', 'Year / Semester', 'Building', 'Block', 'Floor', 'Room', 'Allocation Mode', 'Allocation Pattern', 'Split Allocation Group', 'Room Type', 'Required Capacity', 'Start Date', 'End Date', 'Notes'],
+    headers: ['Allocation ID', 'Academic Calendar', 'School', 'Department', 'Program', 'Batch', 'Specialization / Branch', 'Academic Year', 'Semester Type', 'Year / Semester', 'Allocation Mode', 'Allocation Pattern', 'Building', 'Block', 'Floor', 'Room', 'Split Allocation Group', 'Room Type', 'Required Capacity', 'Start Date', 'End Date', 'Notes'],
     exampleRows: [
       {
         'Allocation ID': 'ALLOC-MTECH2-322',
         'Academic Calendar': 'CAL-MTECH2-2025-26',
+        School: 'School of Computing',
         Department: 'Computer Science and Engineering',
         Program: 'M.Tech',
         Batch: '2025-2027',
@@ -2367,12 +2368,12 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Academic Year': '2025-26',
         'Semester Type': 'Even',
         'Year / Semester': '2nd Year - 4th Semester',
+        'Allocation Mode': 'Shared',
+        'Allocation Pattern': 'Single Room',
         Building: 'M-Plaza',
         Block: 'North',
         Floor: 'Third Floor',
         Room: '322',
-        'Allocation Mode': 'Shared',
-        'Allocation Pattern': 'Single Room',
         'Split Allocation Group': '',
         'Room Type': 'Classroom',
         'Required Capacity': 36,
@@ -2383,6 +2384,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       {
         'Allocation ID': 'ALLOC-BTECH3-331',
         'Academic Calendar': 'CAL-BTECH3-2025-26',
+        School: 'School of Computing',
         Department: 'Computer Science and Engineering',
         Program: 'B.Tech',
         Batch: '2023-2027',
@@ -2390,12 +2392,12 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Academic Year': '2025-26',
         'Semester Type': 'Even',
         'Year / Semester': '3rd Year - 6th Semester',
+        'Allocation Mode': 'Shared',
+        'Allocation Pattern': 'Single Room',
         Building: 'M-Plaza',
         Block: 'North',
         Floor: 'Third Floor',
         Room: '331',
-        'Allocation Mode': 'Shared',
-        'Allocation Pattern': 'Single Room',
         'Split Allocation Group': '',
         'Room Type': 'Classroom',
         'Required Capacity': 60,
@@ -2406,6 +2408,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       {
         'Allocation ID': 'ALLOC-ECE2-322',
         'Academic Calendar': 'CAL-BTECH-ECE-2025-26',
+        School: 'School of Computing',
         Department: 'Electronics and Communication Engineering',
         Program: 'B.Tech',
         Batch: '2024-2028',
@@ -2413,12 +2416,12 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Academic Year': '2025-26',
         'Semester Type': 'Even',
         'Year / Semester': '2nd Year - 4th Semester',
+        'Allocation Mode': 'Shared',
+        'Allocation Pattern': 'Single Room',
         Building: 'M-Plaza',
         Block: 'North',
         Floor: 'Third Floor',
         Room: '322',
-        'Allocation Mode': 'Shared',
-        'Allocation Pattern': 'Single Room',
         'Split Allocation Group': '',
         'Room Type': 'Classroom',
         'Required Capacity': 42,
@@ -2429,6 +2432,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       {
         'Allocation ID': 'ALLOC-BSC-AOTT-2102',
         'Academic Calendar': 'SoPAHCS-0001',
+        School: 'School of Paramedical Health and Allied Care Sciences',
         Department: 'Department of Paramedical',
         Program: 'B.Sc',
         Batch: '2025-26',
@@ -2436,12 +2440,12 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Academic Year': '2025-26',
         'Semester Type': 'Even',
         'Year / Semester': '1st Year - 2nd Semester',
+        'Allocation Mode': 'Shared',
+        'Allocation Pattern': 'Split Room',
         Building: 'MNS',
         Block: 'Direct floors',
         Floor: 'Floor 2',
         Room: '2102',
-        'Allocation Mode': 'Shared',
-        'Allocation Pattern': 'Split Room',
         'Split Allocation Group': 'SPLIT-AOTT-2025-26-CLASSWORK',
         'Room Type': 'Classroom',
         'Required Capacity': 35,
@@ -2452,6 +2456,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
     instructions: [
       'Use Academic Calendar to auto-fill department, batch, semester type, start date, and end date wherever possible.',
+      `Match the form order exactly: Academic Calendar -> School -> Department -> Program -> Batch -> ${SPECIALIZATION_BRANCH_LABEL} -> Academic Year -> Semester Type -> Year / Semester -> Allocation Mode -> Allocation Pattern -> Building -> Block -> Floor -> Room.`,
       'Create the matching Department Allocation first. Batch Room Allocation now accepts only rooms already mapped to the same department and semester in Department Allocation.',
       'For CIAT or examination windows that should suppress only one batch or year, keep Program, Batch, Academic Year, and Year / Semester aligned with the Academic Calendar row so the app can apply the exam override safely.',
       'Semester Type accepts only Odd or Even. Keep the exact semester number in Year / Semester.',
@@ -7277,10 +7282,18 @@ function BatchRoomAllocationManagement() {
       appendLookupCandidate(calendarLookup, normalizeLookupValue(item.calendar_id), item);
       appendLookupCandidate(calendarLookup, normalizeLookupValue(item.title), item);
     });
+    const schoolLookup = new Map<string, any[]>();
+    schools.forEach(item => {
+      appendLookupCandidate(schoolLookup, normalizeLookupValue(item.name), item);
+      appendLookupCandidate(schoolLookup, normalizeLookupValue(item.school_id), item);
+    });
     const departmentLookup = new Map<string, any[]>();
     sortedDepartments.forEach(item => {
-      appendLookupCandidate(departmentLookup, normalizeLookupValue(item.name), item);
-      appendLookupCandidate(departmentLookup, normalizeLookupValue(item.department_id), item);
+      const schoolKey = item.school_id?.toString() || '*';
+      appendLookupCandidate(departmentLookup, `${schoolKey}|${normalizeLookupValue(item.name)}`, item);
+      appendLookupCandidate(departmentLookup, `${schoolKey}|${normalizeLookupValue(item.department_id)}`, item);
+      appendLookupCandidate(departmentLookup, `*|${normalizeLookupValue(item.name)}`, item);
+      appendLookupCandidate(departmentLookup, `*|${normalizeLookupValue(item.department_id)}`, item);
     });
     const buildingLookup = new Map<string, any[]>();
     buildings.forEach(item => {
@@ -7296,8 +7309,13 @@ function BatchRoomAllocationManagement() {
     const entries = data.map((row) => {
       const calendarLookupValue = normalizeLookupValue(getImportValue(row, ['Academic Calendar', 'Calendar ID'])) || normalizeLookupValue(getImportValue(row, ['Academic Calendar', 'Title']));
       const calendar = (calendarLookup.get(calendarLookupValue) || [])[0];
+      const school = (schoolLookup.get(normalizeLookupValue(row['School'])) || [])[0];
       const departmentLookupValue = normalizeLookupValue(row['Department']);
-      const department = (departmentLookup.get(departmentLookupValue) || []).find(item => !calendar || idsMatch(item.id, calendar?.department_id)) ||
+      const schoolKey = calendar?.school_id?.toString() || school?.id?.toString() || '*';
+      const department = (departmentLookup.get(`${schoolKey}|${departmentLookupValue}`) || departmentLookup.get(`*|${departmentLookupValue}`) || []).find(item =>
+        (!calendar || idsMatch(item.id, calendar?.department_id)) &&
+        (!school || idsMatch(item.school_id, school.id))
+      ) ||
         sortedDepartments.find(item => idsMatch(item.id, calendar?.department_id));
       const building = (buildingLookup.get(normalizeLookupValue(getImportValue(row, ['Building']))) || [])[0];
       const blockLabel = getImportValue(row, ['Block', 'Block / Direct Floors']);
@@ -7325,7 +7343,7 @@ function BatchRoomAllocationManagement() {
       const payload = {
         allocation_id: row['Allocation ID']?.toString(),
         academic_calendar_id: calendar?.id || null,
-        school_id: department?.school_id,
+        school_id: department?.school_id || school?.id,
         department_id: department?.id,
         room_id: room?.id,
         program: normalizeProgramValue(row['Program']) || calendar?.program,
