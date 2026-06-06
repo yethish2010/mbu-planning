@@ -3262,6 +3262,58 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
           });
         }
 
+        if (tableName === "rooms") {
+          let roomItems = await db.prepare(`SELECT * FROM ${tableName}`).all() as any[];
+          const campusId = req.query.campus_id?.toString() || "";
+          const buildingId = req.query.building_id?.toString() || "";
+          const blockId = req.query.block_id?.toString() || "";
+          const floorId = req.query.floor_id?.toString() || "";
+          if (campusId || buildingId || blockId || floorId) {
+            const floors = await db.prepare("SELECT id, block_id FROM floors").all() as any[];
+            const blocks = await db.prepare("SELECT id, building_id FROM blocks").all() as any[];
+            const buildings = await db.prepare("SELECT id, campus_id FROM buildings").all() as any[];
+            const floorById = new Map(floors.map(floor => [floor.id?.toString(), floor]));
+            const blockById = new Map(blocks.map(block => [block.id?.toString(), block]));
+            const buildingById = new Map(buildings.map(building => [building.id?.toString(), building]));
+
+            roomItems = roomItems.filter((item: any) => {
+              const floor = floorById.get(item?.floor_id?.toString());
+              const block = blockById.get(floor?.block_id?.toString());
+              const building = buildingById.get(block?.building_id?.toString());
+              if (campusId && !idsEqual(building?.campus_id, campusId)) return false;
+              if (buildingId && !idsEqual(building?.id, buildingId)) return false;
+              if (blockId && !idsEqual(block?.id, blockId)) return false;
+              if (floorId && !idsEqual(floor?.id, floorId)) return false;
+              return true;
+            });
+          }
+          if (requestedSearch && allowedSearchFields.length > 0) {
+            const normalizedSearch = requestedSearch.toLowerCase();
+            roomItems = roomItems.filter((item: any) =>
+              allowedSearchFields.some(field =>
+                item?.[field] != null && item[field].toString().toLowerCase().includes(normalizedSearch)
+              )
+            );
+          }
+          if (sortKey) {
+            roomItems = roomItems.slice().sort((left: any, right: any) => {
+              const comparison = compareServerSortValues(left?.[sortKey], right?.[sortKey]);
+              return requestedSortDir === "desc" ? -comparison : comparison;
+            });
+          }
+          if (!wantsPagination) {
+            return res.json(roomItems);
+          }
+          const total = roomItems.length;
+          const startIndex = (requestedPage - 1) * requestedPageSize;
+          return res.json({
+            items: roomItems.slice(startIndex, startIndex + requestedPageSize),
+            total,
+            page: requestedPage,
+            pageSize: requestedPageSize,
+          });
+        }
+
         const whereClauses: string[] = [];
         const values: any[] = [];
         if (requestedSearch && allowedSearchFields.length > 0) {

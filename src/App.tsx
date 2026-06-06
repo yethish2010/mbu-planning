@@ -5827,21 +5827,15 @@ function RoomManagement() {
       .map(floor => ({ value: floor.id, label: getFloorDisplayLabel(floor, blocks, buildings) }));
   };
 
-  const roomMatchesLocationFilters = (room: any) => {
-    const { floor, block, building } = getRoomLocation(room);
-    if (roomFilters.campus_id && !idsMatch(building?.campus_id, roomFilters.campus_id)) return false;
-    if (roomFilters.building_id && !idsMatch(building?.id, roomFilters.building_id)) return false;
-    if (roomFilters.block_id && !idsMatch(block?.id, roomFilters.block_id)) return false;
-    if (roomFilters.floor_id && !idsMatch(floor?.id, roomFilters.floor_id)) return false;
-    return true;
-  };
-
   const roomFilterBuildings = buildings
     .filter(building => !roomFilters.campus_id || idsMatch(building.campus_id, roomFilters.campus_id))
     .sort((a, b) => a.name?.localeCompare(b.name || '') || 0);
   const roomFilterBlockOptions = getRoomFilterBlockOptions();
   const roomFilterFloorOptions = getRoomFilterFloorOptions();
   const hasActiveRoomFilters = Object.values(roomFilters).some(Boolean);
+  const roomServerQueryParams = Object.fromEntries(
+    Object.entries(roomFilters).filter(([, value]) => !!value)
+  ) as Record<string, string>;
   const roomFilterControls = (
     <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
       <div>
@@ -6593,9 +6587,9 @@ function RoomManagement() {
       enableServerPagination
       serverSearchFields={['room_id', 'room_number', 'room_name', 'room_type', 'status', 'usage_category', 'lab_name', 'room_aliases']}
       serverSortKey="room_number"
+      serverQueryParams={roomServerQueryParams}
       prepareFormData={prepareFormData}
       onDataChanged={refreshRooms}
-      dataFilter={roomMatchesLocationFilters}
       dataSorter={(left, right) => compareRoomsByNaturalOrder(left, right, rooms)}
       filterControls={roomFilterControls}
     />
