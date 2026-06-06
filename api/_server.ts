@@ -52,6 +52,18 @@ const allowedOrigins = new Set(
     .filter(Boolean)
 );
 
+type ModuleLoadTelemetryRecord = {
+  module: string;
+  phase: string;
+  durationMs: number;
+  itemCount: number;
+  createdAt: string;
+  userRole?: string;
+};
+
+const moduleLoadTelemetry: ModuleLoadTelemetryRecord[] = [];
+const MAX_MODULE_LOAD_TELEMETRY = 250;
+
 const getCampusDateTimeParts = (value: Date = new Date()) => {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: APP_TIME_ZONE,
@@ -2269,6 +2281,75 @@ ${JSON.stringify(snapshot)}`;
     }
   } catch (err: any) {
     res.status(500).json({ error: err.message || "Failed to generate utilization optimization suggestions." });
+  }
+});
+
+app.post("/api/performance/module-load", authenticate, async (req, res) => {
+  try {
+    const moduleName = req.body?.module?.toString().trim() || "";
+    const phase = req.body?.phase?.toString().trim() || "default";
+    const durationMs = Number(req.body?.durationMs);
+    const itemCount = Number(req.body?.itemCount || 0);
+
+    if (!moduleName) {
+      return res.status(400).json({ error: "Module name is required." });
+    }
+    if (!Number.isFinite(durationMs) || durationMs < 0) {
+      return res.status(400).json({ error: "Duration must be a valid non-negative number." });
+    }
+
+    moduleLoadTelemetry.push({
+      module: moduleName,
+      phase,
+      durationMs: Math.round(durationMs),
+      itemCount: Number.isFinite(itemCount) ? Math.max(0, Math.round(itemCount)) : 0,
+      createdAt: new Date().toISOString(),
+      userRole: (req as any).user?.role || "",
+    });
+    if (moduleLoadTelemetry.length > MAX_MODULE_LOAD_TELEMETRY) {
+      moduleLoadTelemetry.splice(0, moduleLoadTelemetry.length - MAX_MODULE_LOAD_TELEMETRY);
+    }
+
+    return res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/performance/module-load", authenticate, async (_req, res) => {
+  try {
+    const grouped = new Map<string, { module: string; phase: string; samples: number; avgDurationMs: number; maxDurationMs: number; lastDurationMs: number; avgItemCount: number; lastSeenAt: string }>();
+    moduleLoadTelemetry.forEach((record) => {
+      const key = `${record.module}::${record.phase}`;
+      const existing = grouped.get(key);
+      if (!existing) {
+        grouped.set(key, {
+          module: record.module,
+          phase: record.phase,
+          samples: 1,
+          avgDurationMs: record.durationMs,
+          maxDurationMs: record.durationMs,
+          lastDurationMs: record.durationMs,
+          avgItemCount: record.itemCount,
+          lastSeenAt: record.createdAt,
+        });
+        return;
+      }
+      const nextSamples = existing.samples + 1;
+      existing.avgDurationMs = Math.round(((existing.avgDurationMs * existing.samples) + record.durationMs) / nextSamples);
+      existing.avgItemCount = Math.round(((existing.avgItemCount * existing.samples) + record.itemCount) / nextSamples);
+      existing.maxDurationMs = Math.max(existing.maxDurationMs, record.durationMs);
+      existing.lastDurationMs = record.durationMs;
+      existing.samples = nextSamples;
+      existing.lastSeenAt = record.createdAt;
+    });
+
+    res.json({
+      summary: Array.from(grouped.values()).sort((left, right) => right.avgDurationMs - left.avgDurationMs),
+      recent: moduleLoadTelemetry.slice(-50).reverse(),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 

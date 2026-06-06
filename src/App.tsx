@@ -1558,6 +1558,30 @@ const apiJson = async (url: string, options?: RequestInit) => {
   return data;
 };
 
+const trackModuleLoadMetric = async (
+  moduleName: string,
+  phase: string,
+  durationMs: number,
+  itemCount = 0,
+) => {
+  if (!moduleName || !Number.isFinite(durationMs) || durationMs < 0) return;
+  try {
+    await fetch('/api/performance/module-load', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        module: moduleName,
+        phase,
+        durationMs: Math.round(durationMs),
+        itemCount: Math.max(0, Math.round(Number(itemCount) || 0)),
+      }),
+    });
+  } catch (error) {
+    console.error('Module load telemetry failed:', error);
+  }
+};
+
 const SHARED_LOOKUP_CACHE_PATHS = new Set([
   '/api/campuses',
   '/api/buildings',
@@ -4045,6 +4069,7 @@ function DashboardHome() {
     let isActive = true;
 
     const fetchData = async () => {
+      const loadStartedAt = performance.now();
       const fetchJson = async <T,>(url: string, fallback: T, options?: RequestInit): Promise<T> => {
         try {
           const response = await fetch(url, { credentials: 'include', ...(options || {}) });
@@ -4070,7 +4095,14 @@ function DashboardHome() {
         setSchoolUsage(safeSchoolReports);
         setAiInsightMessage(fallbackInsight);
         setDashboardOverview(overviewData || {});
+        void trackModuleLoadMetric(
+          'DashboardHome',
+          'overview',
+          performance.now() - loadStartedAt,
+          Array.isArray(overviewData?.topBusyRooms) ? overviewData.topBusyRooms.length : 0,
+        );
 
+        const aiStartedAt = performance.now();
         const aiInsightResponse = await fetchJson<{ insight?: string; source?: string } | null>(
           '/api/ai/dashboard-insight',
           null,
@@ -4088,6 +4120,7 @@ function DashboardHome() {
 
         const generatedInsight = aiInsightResponse?.insight?.toString().trim() || '';
         setAiInsightMessage(generatedInsight || fallbackInsight);
+        void trackModuleLoadMetric('DashboardHome', 'ai-insight', performance.now() - aiStartedAt, safeSchoolReports.length);
       } catch (err) {
         console.error(err);
       } finally {
@@ -4500,6 +4533,7 @@ function GenericCRUD({
   }, [initialSearchTerm]);
 
   const fetchData = async () => {
+    const loadStartedAt = performance.now();
     try {
       if (enableServerPagination) {
         const params = new URLSearchParams({
@@ -4515,8 +4549,10 @@ function GenericCRUD({
         });
         if (searchTerm.trim()) params.set('q', searchTerm.trim());
         const json = await apiJson(`${apiPath}?${params.toString()}`);
-        setData(Array.isArray(json?.items) ? json.items : []);
+        const items = Array.isArray(json?.items) ? json.items : [];
+        setData(items);
         setTotalCount(Number(json?.total || 0));
+        void trackModuleLoadMetric(type, 'table-load', performance.now() - loadStartedAt, items.length);
         return;
       }
 
@@ -4531,6 +4567,7 @@ function GenericCRUD({
       const items = Array.isArray(json) ? json : [];
       setData(items);
       setTotalCount(items.length);
+      void trackModuleLoadMetric(type, 'table-load', performance.now() - loadStartedAt, items.length);
     } catch (err) {
       console.error(`${type} load failed:`, err);
       setData([]);
@@ -10901,6 +10938,7 @@ function AnalyticsDashboard() {
 
   useEffect(() => {
     const fetchData = async () => {
+      const loadStartedAt = performance.now();
       try {
         const [uRes, fRes, bRes, mRes] = await Promise.all([
           fetch('/api/analytics/utilization-trends', { credentials: 'include' }),
@@ -10908,10 +10946,25 @@ function AnalyticsDashboard() {
           fetch('/api/bookings', { credentials: 'include' }),
           fetch('/api/maintenance', { credentials: 'include' })
         ]);
-        setUtilizationData(await uRes.json());
-        setFrequencyData(await fRes.json());
-        setBookings(await bRes.json());
-        setMaintenance(await mRes.json());
+        const nextUtilizationData = await uRes.json();
+        const nextFrequencyData = await fRes.json();
+        const nextBookings = await bRes.json();
+        const nextMaintenance = await mRes.json();
+        setUtilizationData(nextUtilizationData);
+        setFrequencyData(nextFrequencyData);
+        setBookings(nextBookings);
+        setMaintenance(nextMaintenance);
+        void trackModuleLoadMetric(
+          'AnalyticsDashboard',
+          'initial-support-load',
+          performance.now() - loadStartedAt,
+          [
+            Array.isArray(nextUtilizationData) ? nextUtilizationData.length : 0,
+            Array.isArray(nextFrequencyData) ? nextFrequencyData.length : 0,
+            Array.isArray(nextBookings) ? nextBookings.length : 0,
+            Array.isArray(nextMaintenance) ? nextMaintenance.length : 0,
+          ].reduce((sum, value) => sum + value, 0),
+        );
       } catch (err) {
         console.error(err);
       } finally {
@@ -10923,10 +10976,17 @@ function AnalyticsDashboard() {
 
   useEffect(() => {
     const fetchReportData = async () => {
+      const reportStartedAt = performance.now();
       setIsRefreshingAnalyticsReport(true);
       try {
         const data = await apiJson(`/api/reports/utilization${analyticsReportQueryString ? `?${analyticsReportQueryString}` : ''}`);
         setReportData(data);
+        void trackModuleLoadMetric(
+          'AnalyticsDashboard',
+          'filtered-report-load',
+          performance.now() - reportStartedAt,
+          Array.isArray(data?.roomReports) ? data.roomReports.length : 0,
+        );
       } catch (err) {
         console.error(err);
         setReportData(null);
@@ -11468,6 +11528,7 @@ function ReportGeneration() {
 
   const fetchUtilization = async (queryString: string, mode: 'initial' | 'refresh' = 'refresh') => {
     const requestId = ++utilizationRequestIdRef.current;
+    const fetchStartedAt = performance.now();
     if (mode === 'initial') {
       setLoading(true);
     } else {
@@ -11477,6 +11538,12 @@ function ReportGeneration() {
       const data = await apiJson(`/api/reports/utilization${queryString ? `?${queryString}` : ''}`);
       if (utilizationRequestIdRef.current !== requestId) return;
       setUtilizationData(data);
+      void trackModuleLoadMetric(
+        'UtilizationReports',
+        mode === 'initial' ? 'initial-report-load' : 'report-refresh',
+        performance.now() - fetchStartedAt,
+        Array.isArray(data?.roomReports) ? data.roomReports.length : 0,
+      );
     } catch (err) {
       console.error(err);
       if (utilizationRequestIdRef.current !== requestId) return;
@@ -11502,25 +11569,32 @@ function ReportGeneration() {
     const existingPromise = reportSupportDataPromisesRef.current[supportKey];
     if (existingPromise) return existingPromise;
     const loaderPromise = (async () => {
+      const loadStartedAt = performance.now();
       try {
         if (supportKey === 'bookings') {
           const data = await apiJson('/api/bookings');
           setReportBookings(Array.isArray(data) ? data : []);
+          void trackModuleLoadMetric('UtilizationReports', 'support-bookings', performance.now() - loadStartedAt, Array.isArray(data) ? data.length : 0);
         } else if (supportKey === 'schedules') {
           const data = await apiJson('/api/schedules');
           setReportSchedules(Array.isArray(data) ? data : []);
+          void trackModuleLoadMetric('UtilizationReports', 'support-schedules', performance.now() - loadStartedAt, Array.isArray(data) ? data.length : 0);
         } else if (supportKey === 'academicCalendars') {
           const data = await fetchSharedLookupJson('/api/academic_calendars');
           setReportAcademicCalendars(Array.isArray(data) ? data : []);
+          void trackModuleLoadMetric('UtilizationReports', 'support-academic-calendars', performance.now() - loadStartedAt, Array.isArray(data) ? data.length : 0);
         } else if (supportKey === 'maintenance') {
           const data = await apiJson('/api/maintenance');
           setReportMaintenance(Array.isArray(data) ? data : []);
+          void trackModuleLoadMetric('UtilizationReports', 'support-maintenance', performance.now() - loadStartedAt, Array.isArray(data) ? data.length : 0);
         } else if (supportKey === 'departmentAllocations') {
           const data = await fetchSharedLookupJson('/api/department_allocations');
           setReportDepartmentAllocations(Array.isArray(data) ? data : []);
+          void trackModuleLoadMetric('UtilizationReports', 'support-department-allocations', performance.now() - loadStartedAt, Array.isArray(data) ? data.length : 0);
         } else if (supportKey === 'batchRoomAllocations') {
           const data = await fetchSharedLookupJson('/api/batch_room_allocations');
           setReportBatchRoomAllocations(Array.isArray(data) ? data : []);
+          void trackModuleLoadMetric('UtilizationReports', 'support-batch-allocations', performance.now() - loadStartedAt, Array.isArray(data) ? data.length : 0);
         }
         setLoadedReportSupportData((current) => ({ ...current, [supportKey]: true }));
       } catch (error) {
@@ -17101,6 +17175,7 @@ function DigitalTwin() {
 
   useEffect(() => {
     const fetchData = async () => {
+      const loadStartedAt = performance.now();
       const [
         cData,
         bData,
@@ -17138,6 +17213,14 @@ function DigitalTwin() {
       setBatchRoomAllocations(Array.isArray(baData) ? baData : []);
       setDepartments(dData);
       setAcademicCalendars(Array.isArray(acData) ? acData : []);
+      void trackModuleLoadMetric(
+        'DigitalTwin',
+        'initial-live-load',
+        performance.now() - loadStartedAt,
+        (Array.isArray(rData) ? rData.length : 0) +
+          (Array.isArray(liveData?.schedules) ? liveData.schedules.length : 0) +
+          (Array.isArray(liveData?.bookings) ? liveData.bookings.length : 0),
+      );
     };
     fetchData();
   }, []);
