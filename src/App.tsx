@@ -2877,6 +2877,66 @@ const parseTimingProfileSlots = (value: unknown) => {
     .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || '') || (a.end_time || '').localeCompare(b.end_time || ''));
 };
 
+const getSlotDurationMinutes = (startTime?: string, endTime?: string) => {
+  if (!startTime || !endTime) return 0;
+  const [startHour, startMinute] = startTime.split(':').map(Number);
+  const [endHour, endMinute] = endTime.split(':').map(Number);
+  return ((endHour || 0) * 60 + (endMinute || 0)) - ((startHour || 0) * 60 + (startMinute || 0));
+};
+
+const formatAcademicSlotWindowLabel = (window: { start_time: string; end_time: string; slotCount?: number }) => {
+  const slotCount = Math.max(1, Number(window.slotCount) || 1);
+  return `${window.start_time}-${window.end_time}${slotCount > 1 ? ` (${slotCount} slots)` : ' (1 slot)'}`;
+};
+
+const buildTimingProfileSlotWindows = (slots: { start_time: string; end_time: string }[]) => {
+  if (!Array.isArray(slots) || slots.length === 0) return [] as {
+    key: string;
+    start_time: string;
+    end_time: string;
+    slotCount: number;
+    durationMinutes: number;
+    label: string;
+  }[];
+
+  const windows: {
+    key: string;
+    start_time: string;
+    end_time: string;
+    slotCount: number;
+    durationMinutes: number;
+    label: string;
+  }[] = [];
+
+  for (let startIndex = 0; startIndex < slots.length; startIndex += 1) {
+    let currentEnd = slots[startIndex].end_time;
+    windows.push({
+      key: `${slots[startIndex].start_time}-${currentEnd}`,
+      start_time: slots[startIndex].start_time,
+      end_time: currentEnd,
+      slotCount: 1,
+      durationMinutes: getSlotDurationMinutes(slots[startIndex].start_time, currentEnd),
+      label: formatAcademicSlotWindowLabel({ start_time: slots[startIndex].start_time, end_time: currentEnd, slotCount: 1 }),
+    });
+
+    for (let endIndex = startIndex + 1; endIndex < slots.length; endIndex += 1) {
+      if (slots[endIndex - 1].end_time !== slots[endIndex].start_time) break;
+      currentEnd = slots[endIndex].end_time;
+      const slotCount = endIndex - startIndex + 1;
+      windows.push({
+        key: `${slots[startIndex].start_time}-${currentEnd}`,
+        start_time: slots[startIndex].start_time,
+        end_time: currentEnd,
+        slotCount,
+        durationMinutes: getSlotDurationMinutes(slots[startIndex].start_time, currentEnd),
+        label: formatAcademicSlotWindowLabel({ start_time: slots[startIndex].start_time, end_time: currentEnd, slotCount }),
+      });
+    }
+  }
+
+  return windows;
+};
+
 const normalizeTimingProfileSlotPattern = (value: unknown) =>
   parseTimingProfileSlots(value)
     .map(slot => `${slot.start_time}-${slot.end_time}`)
@@ -9304,11 +9364,6 @@ function BookingManagement() {
     return `${end.getHours().toString().padStart(2, '0')}:${end.getMinutes().toString().padStart(2, '0')}`;
   };
 
-  const isPastSearchTime = () => {
-    const selected = new Date(`${searchCriteria.date}T${searchCriteria.time}`);
-    return selected.getTime() < Date.now();
-  };
-
   const [searchCriteria, setSearchCriteria] = useState({
     date: getToday(),
     time: '09:00',
@@ -9350,6 +9405,7 @@ function BookingManagement() {
     recurring: false,
     recurringWeeks: '2'
   });
+  const [selectedBookingSlotWindowKey, setSelectedBookingSlotWindowKey] = useState('');
   const [statusTab, setStatusTab] = useState('Active');
   const [bookingSearch, setBookingSearch] = useState('');
   const [selectedRoomForSchedule, setSelectedRoomForSchedule] = useState<any>(null);
@@ -9460,14 +9516,50 @@ function BookingManagement() {
     () => parseTimingProfileSlots(selectedBookingTimingProfile?.slot_pattern),
     [selectedBookingTimingProfile],
   );
+  const bookingSlotWindows = useMemo(
+    () => buildTimingProfileSlotWindows(selectedBookingTimingSlots),
+    [selectedBookingTimingSlots],
+  );
+  const manualBookingEndTime = addHoursToTime(
+    searchCriteria.time,
+    searchCriteria.durationUnit === 'hours' ? searchCriteria.duration : searchCriteria.dailyDuration,
+  );
+  const slotDrivenBooking = Boolean(selectedBookingTimingProfile && bookingSlotWindows.length > 0);
+  const selectedBookingSlotWindow = useMemo(
+    () => bookingSlotWindows.find(window => window.key === selectedBookingSlotWindowKey) || null,
+    [bookingSlotWindows, selectedBookingSlotWindowKey],
+  );
+  const bookingStartTime = slotDrivenBooking
+    ? (selectedBookingSlotWindow?.start_time || bookingSlotWindows[0]?.start_time || searchCriteria.time)
+    : searchCriteria.time;
+  const bookingEndTime = slotDrivenBooking
+    ? (selectedBookingSlotWindow?.end_time || bookingSlotWindows[0]?.end_time || manualBookingEndTime)
+    : manualBookingEndTime;
+  const activeDailyDuration = slotDrivenBooking
+    ? String((selectedBookingSlotWindow?.durationMinutes || getSlotDurationMinutes(bookingStartTime, bookingEndTime)) / 60)
+    : (searchCriteria.durationUnit === 'hours' ? searchCriteria.duration : searchCriteria.dailyDuration);
+  const isPastBookingContext = () => {
+    const selected = new Date(`${searchCriteria.date}T${bookingStartTime}`);
+    return selected.getTime() < Date.now();
+  };
+
+  useEffect(() => {
+    if (!slotDrivenBooking) {
+      setSelectedBookingSlotWindowKey('');
+      return;
+    }
+    const exactWindow = bookingSlotWindows.find(window => window.start_time === searchCriteria.time && window.end_time === manualBookingEndTime);
+    const hasCurrentWindow = bookingSlotWindows.some(window => window.key === selectedBookingSlotWindowKey);
+    const nextKey = exactWindow?.key || (hasCurrentWindow ? selectedBookingSlotWindowKey : '') || bookingSlotWindows[0]?.key || '';
+    if (nextKey && nextKey !== selectedBookingSlotWindowKey) {
+      setSelectedBookingSlotWindowKey(nextKey);
+    }
+  }, [slotDrivenBooking, bookingSlotWindows, searchCriteria.time, manualBookingEndTime, selectedBookingSlotWindowKey]);
 
   useEffect(() => {
     const interval = window.setInterval(fetchMyBookings, 10000);
     return () => window.clearInterval(interval);
   }, [user?.name, user?.role, user?.department]);
-
-  const activeDailyDuration = searchCriteria.durationUnit === 'hours' ? searchCriteria.duration : searchCriteria.dailyDuration;
-  const bookingEndTime = addHoursToTime(searchCriteria.time, activeDailyDuration);
   const getBookingDates = () => {
     const count = Math.max(1, parseInt(searchCriteria.duration, 10) || 1);
     const totalDays = searchCriteria.durationUnit === 'weeks' ? count * 7 : searchCriteria.durationUnit === 'days' ? count : 1;
@@ -9478,6 +9570,14 @@ function BookingManagement() {
     });
   };
   const getDurationLabel = () => {
+    if (slotDrivenBooking && selectedBookingSlotWindow) {
+      if (searchCriteria.durationUnit === 'hours') {
+        return `${selectedBookingSlotWindow.slotCount} academic slot${selectedBookingSlotWindow.slotCount === 1 ? '' : 's'} (${bookingStartTime} - ${bookingEndTime})`;
+      }
+      const count = parseInt(searchCriteria.duration, 10) || 1;
+      const unit = searchCriteria.durationUnit === 'weeks' ? 'week' : 'day';
+      return `${count} ${unit}${count === 1 ? '' : 's'} with ${selectedBookingSlotWindow.slotCount} academic slot${selectedBookingSlotWindow.slotCount === 1 ? '' : 's'} per day (${bookingStartTime} - ${bookingEndTime})`;
+    }
     if (searchCriteria.durationUnit === 'hours') {
       if (searchCriteria.duration === '0.5') return `30 minutes (${searchCriteria.time} - ${bookingEndTime})`;
       return `${searchCriteria.duration} hour${searchCriteria.duration === '1' ? '' : 's'} (${searchCriteria.time} - ${bookingEndTime})`;
@@ -9628,7 +9728,7 @@ function BookingManagement() {
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     setBookingMessage(null);
-    if (isPastSearchTime()) {
+    if (isPastBookingContext()) {
       setBookingMessage({ type: 'error', text: 'Please select a current or future date and time.' });
       setVacantRooms([]);
       setCombinedOptions([]);
@@ -9647,7 +9747,7 @@ function BookingManagement() {
       const availableByDate = await Promise.all(bookingDates.map(async date => {
         const params = new URLSearchParams({
           date,
-          time: searchCriteria.time,
+          time: bookingStartTime,
           duration: activeDailyDuration,
           members: searchCriteria.members
         });
@@ -9667,7 +9767,7 @@ function BookingManagement() {
 
       const eventParams = new URLSearchParams({
         date: searchCriteria.date,
-        startTime: searchCriteria.time,
+        startTime: bookingStartTime,
         endTime: bookingEndTime,
         strength: searchCriteria.members
       });
@@ -9708,7 +9808,7 @@ function BookingManagement() {
   const handleBook = async () => {
     if (!bookingModal) return;
     setBookingMessage(null);
-    if (isPastSearchTime()) {
+    if (isPastBookingContext()) {
       setBookingMessage({ type: 'error', text: 'Please select a current or future date and time.' });
       return;
     }
@@ -9749,7 +9849,7 @@ function BookingManagement() {
           room_id: room.id,
           equipment_required: bookingForm.equipmentRequired.trim(),
           date,
-          start_time: searchCriteria.time,
+          start_time: bookingStartTime,
           end_time: bookingEndTime,
           status
         };
@@ -9891,12 +9991,24 @@ function BookingManagement() {
           </div>
           <div className="space-y-1">
             <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Start Time</label>
-            <input
-              type="time"
-              value={searchCriteria.time}
-              onChange={e => setSearchCriteria({ ...searchCriteria, time: e.target.value })}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
-            />
+            {slotDrivenBooking ? (
+              <select
+                value={selectedBookingSlotWindow?.key || ''}
+                onChange={e => setSelectedBookingSlotWindowKey(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-50 border border-emerald-200 rounded-lg focus:outline-none focus:border-emerald-500"
+              >
+                {bookingSlotWindows.map(window => (
+                  <option key={window.key} value={window.key}>{window.label}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="time"
+                value={searchCriteria.time}
+                onChange={e => setSearchCriteria({ ...searchCriteria, time: e.target.value })}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+              />
+            )}
           </div>
           <div className="space-y-1">
             <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Duration Type</label>
@@ -9912,48 +10024,60 @@ function BookingManagement() {
           </div>
           <div className="space-y-1">
             <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
-              {searchCriteria.durationUnit === 'hours' ? 'Duration' : searchCriteria.durationUnit === 'days' ? 'Number of Days' : 'Number of Weeks'}
+              {slotDrivenBooking && searchCriteria.durationUnit === 'hours'
+                ? 'Academic Slot Span'
+                : searchCriteria.durationUnit === 'hours'
+                  ? 'Duration'
+                  : searchCriteria.durationUnit === 'days'
+                    ? 'Number of Days'
+                    : 'Number of Weeks'}
             </label>
-            <select
-              value={searchCriteria.duration}
-              onChange={e => setSearchCriteria({ ...searchCriteria, duration: e.target.value })}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
-            >
-              {searchCriteria.durationUnit === 'hours' ? (
-                <>
-                  <option value="0.5">30 minutes</option>
-                  <option value="1">1 hour</option>
-                  <option value="1.5">1.5 hours</option>
-                  <option value="2">2 hours</option>
-                  <option value="2.5">2.5 hours</option>
-                  <option value="3">3 hours</option>
-                  <option value="3.5">3.5 hours</option>
-                  <option value="4">4 hours</option>
-                  <option value="4.5">4.5 hours</option>
-                  <option value="5">5 hours</option>
-                  <option value="5.5">5.5 hours</option>
-                  <option value="6">6 hours</option>
-                  <option value="6.5">6.5 hours</option>
-                  <option value="7">7 hours</option>
-                  <option value="7.5">7.5 hours</option>
-                  <option value="8">8 hours</option>
-                  <option value="8.5">8.5 hours</option>
-                  <option value="9">9 hours</option>
-                </>
-              ) : (
-                <>
-                  <option value="1">1</option>
-                  <option value="2">2</option>
-                  <option value="3">3</option>
-                  <option value="4">4</option>
-                  <option value="5">5</option>
-                  <option value="6">6</option>
-                  <option value="7">7</option>
-                </>
-              )}
-            </select>
+            {slotDrivenBooking && searchCriteria.durationUnit === 'hours' ? (
+              <div className="w-full px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-lg font-bold text-emerald-700">
+                {selectedBookingSlotWindow ? `${selectedBookingSlotWindow.slotCount} slot${selectedBookingSlotWindow.slotCount === 1 ? '' : 's'} • ${bookingStartTime}-${bookingEndTime}` : 'Select a slot window'}
+              </div>
+            ) : (
+              <select
+                value={searchCriteria.duration}
+                onChange={e => setSearchCriteria({ ...searchCriteria, duration: e.target.value })}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+              >
+                {searchCriteria.durationUnit === 'hours' ? (
+                  <>
+                    <option value="0.5">30 minutes</option>
+                    <option value="1">1 hour</option>
+                    <option value="1.5">1.5 hours</option>
+                    <option value="2">2 hours</option>
+                    <option value="2.5">2.5 hours</option>
+                    <option value="3">3 hours</option>
+                    <option value="3.5">3.5 hours</option>
+                    <option value="4">4 hours</option>
+                    <option value="4.5">4.5 hours</option>
+                    <option value="5">5 hours</option>
+                    <option value="5.5">5.5 hours</option>
+                    <option value="6">6 hours</option>
+                    <option value="6.5">6.5 hours</option>
+                    <option value="7">7 hours</option>
+                    <option value="7.5">7.5 hours</option>
+                    <option value="8">8 hours</option>
+                    <option value="8.5">8.5 hours</option>
+                    <option value="9">9 hours</option>
+                  </>
+                ) : (
+                  <>
+                    <option value="1">1</option>
+                    <option value="2">2</option>
+                    <option value="3">3</option>
+                    <option value="4">4</option>
+                    <option value="5">5</option>
+                    <option value="6">6</option>
+                    <option value="7">7</option>
+                  </>
+                )}
+              </select>
+            )}
           </div>
-          {searchCriteria.durationUnit !== 'hours' && (
+          {searchCriteria.durationUnit !== 'hours' && !slotDrivenBooking && (
             <div className="space-y-1">
               <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Daily Hours</label>
               <select
@@ -9971,6 +10095,14 @@ function BookingManagement() {
                 <option value="8">8 hours / day</option>
                 <option value="9">9 hours / day</option>
               </select>
+            </div>
+          )}
+          {searchCriteria.durationUnit !== 'hours' && slotDrivenBooking && (
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Daily Slot Window</label>
+              <div className="w-full px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-lg font-bold text-emerald-700">
+                {selectedBookingSlotWindow ? `${selectedBookingSlotWindow.slotCount} slot${selectedBookingSlotWindow.slotCount === 1 ? '' : 's'} • ${bookingStartTime}-${bookingEndTime}` : 'Select a slot window'}
+              </div>
             </div>
           )}
           <div className="space-y-1">
@@ -10107,7 +10239,7 @@ function BookingManagement() {
           {selectedBookingTimingProfile && (
             <div className={cn(
               "md:col-span-4 rounded-xl px-3 py-2 text-xs",
-              selectedBookingTimingSlots.length > 0 && selectedBookingTimingSlots.some(slot => searchCriteria.time >= slot.start_time && bookingEndTime <= slot.end_time)
+              slotDrivenBooking
                 ? "border border-emerald-100 bg-emerald-50 text-emerald-700"
                 : "border border-amber-100 bg-amber-50 text-amber-700"
             )}>
@@ -10115,8 +10247,11 @@ function BookingManagement() {
               {selectedBookingTimingSlots.length > 0 && (
                 <span> Preferred slots: {selectedBookingTimingSlots.map(slot => `${slot.start_time}-${slot.end_time}`).join(', ')}.</span>
               )}
-              {selectedBookingTimingSlots.length > 0 && !selectedBookingTimingSlots.some(slot => searchCriteria.time >= slot.start_time && bookingEndTime <= slot.end_time) && (
-                <span> The selected request time does not fully fit inside any configured academic slot for this context, so booking overlap checks still run but this should be reviewed carefully.</span>
+              {slotDrivenBooking && selectedBookingSlotWindow && (
+                <span> Slot-aligned booking in effect: <span className="font-bold">{selectedBookingSlotWindow.label}</span>.</span>
+              )}
+              {selectedBookingTimingSlots.length > 0 && !slotDrivenBooking && (
+                <span> Choose an academic slot window so the booking aligns exactly with the configured timing profile.</span>
               )}
             </div>
           )}
@@ -10521,6 +10656,8 @@ function LiveRoomAvailability() {
   const [floors, setFloors] = useState<any[]>([]);
   const [rooms, setRooms] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
+  const [academicCalendars, setAcademicCalendars] = useState<any[]>([]);
+  const [timingProfiles, setTimingProfiles] = useState<any[]>([]);
   const [equipment, setEquipment] = useState<any[]>([]);
   const [loadingLookups, setLoadingLookups] = useState(true);
   const [loadingResults, setLoadingResults] = useState(false);
@@ -10529,6 +10666,7 @@ function LiveRoomAvailability() {
   const [viewMode, setViewMode] = useState<'cards' | 'table'>('cards');
   const [expandedRoomId, setExpandedRoomId] = useState<string | number | null>(null);
   const [bookingRoom, setBookingRoom] = useState<any | null>(null);
+  const [selectedLiveBookingSlotWindowKey, setSelectedLiveBookingSlotWindowKey] = useState('');
   const [bookingForm, setBookingForm] = useState({
     eventName: '',
     purpose: '',
@@ -10586,6 +10724,33 @@ function LiveRoomAvailability() {
   const bookingDepartmentOptions = canChooseAnyRequestDepartment || !user?.department
     ? departments
     : departments.filter(dept => normalizeLookupValue(dept.name) === normalizeLookupValue(user.department));
+  const selectedLiveBookingTimingProfile = useMemo(() => resolveTimingProfileForContext({
+    timingProfiles,
+    academicCalendars,
+    activeDate: filters.date,
+    context: {
+      department_id: bookingForm.departmentId,
+    },
+  }), [academicCalendars, bookingForm.departmentId, filters.date, timingProfiles]);
+  const selectedLiveBookingTimingSlots = useMemo(
+    () => parseTimingProfileSlots(selectedLiveBookingTimingProfile?.slot_pattern),
+    [selectedLiveBookingTimingProfile],
+  );
+  const liveBookingSlotWindows = useMemo(
+    () => buildTimingProfileSlotWindows(selectedLiveBookingTimingSlots),
+    [selectedLiveBookingTimingSlots],
+  );
+  const liveSlotDrivenBooking = Boolean(selectedLiveBookingTimingProfile && liveBookingSlotWindows.length > 0);
+  const selectedLiveBookingSlotWindow = useMemo(
+    () => liveBookingSlotWindows.find(window => window.key === selectedLiveBookingSlotWindowKey) || null,
+    [liveBookingSlotWindows, selectedLiveBookingSlotWindowKey],
+  );
+  const liveBookingStartTime = liveSlotDrivenBooking
+    ? (selectedLiveBookingSlotWindow?.start_time || liveBookingSlotWindows[0]?.start_time || filters.startTime)
+    : filters.startTime;
+  const liveBookingEndTime = liveSlotDrivenBooking
+    ? (selectedLiveBookingSlotWindow?.end_time || liveBookingSlotWindows[0]?.end_time || filters.endTime)
+    : filters.endTime;
 
   useEffect(() => {
     const loadLookups = async () => {
@@ -10599,6 +10764,8 @@ function LiveRoomAvailability() {
           floorData,
           roomData,
           departmentData,
+          calendarData,
+          timingProfileData,
           equipmentData,
         ] = await fetchSharedLookupJsons([
           '/api/campuses',
@@ -10607,6 +10774,8 @@ function LiveRoomAvailability() {
           '/api/floors',
           '/api/rooms',
           '/api/departments',
+          '/api/academic_calendars',
+          '/api/timing_profiles',
           '/api/equipment',
         ]);
         setCampuses(Array.isArray(campusData) ? campusData : []);
@@ -10615,6 +10784,8 @@ function LiveRoomAvailability() {
         setFloors(Array.isArray(floorData) ? floorData : []);
         setRooms(Array.isArray(roomData) ? roomData : []);
         setDepartments(Array.isArray(departmentData) ? departmentData : []);
+        setAcademicCalendars(Array.isArray(calendarData) ? calendarData : []);
+        setTimingProfiles(Array.isArray(timingProfileData) ? timingProfileData : []);
         setEquipment(Array.isArray(equipmentData) ? equipmentData : []);
         void trackModuleLoadMetric('LiveRoomAvailability', 'lookup-load', performance.now() - startedAt, Array.isArray(roomData) ? roomData.length : 0);
       } catch (err: any) {
@@ -10626,6 +10797,19 @@ function LiveRoomAvailability() {
 
     loadLookups();
   }, []);
+
+  useEffect(() => {
+    if (!liveSlotDrivenBooking) {
+      setSelectedLiveBookingSlotWindowKey('');
+      return;
+    }
+    const exactWindow = liveBookingSlotWindows.find(window => window.start_time === filters.startTime && window.end_time === filters.endTime);
+    const hasCurrentWindow = liveBookingSlotWindows.some(window => window.key === selectedLiveBookingSlotWindowKey);
+    const nextKey = exactWindow?.key || (hasCurrentWindow ? selectedLiveBookingSlotWindowKey : '') || liveBookingSlotWindows[0]?.key || '';
+    if (nextKey && nextKey !== selectedLiveBookingSlotWindowKey) {
+      setSelectedLiveBookingSlotWindowKey(nextKey);
+    }
+  }, [filters.endTime, filters.startTime, liveBookingSlotWindows, liveSlotDrivenBooking, selectedLiveBookingSlotWindowKey]);
 
   const selectedBuilding = buildings.find(building => idsMatch(building.id, filters.buildingId));
   const selectedBuildingBlocks = selectedBuilding
@@ -10713,6 +10897,7 @@ function LiveRoomAvailability() {
 
   const openBookingModal = (room: any) => {
     setBookingRoom(room);
+    setSelectedLiveBookingSlotWindowKey('');
     setBookingForm({
       eventName: '',
       purpose: '',
@@ -10730,6 +10915,10 @@ function LiveRoomAvailability() {
     }
     if (!bookingForm.departmentId) {
       setNotice({ type: 'error', text: 'Please choose a department before booking the room.' });
+      return;
+    }
+    if (new Date(`${filters.date}T${liveBookingStartTime}`).getTime() < Date.now()) {
+      setNotice({ type: 'error', text: 'Please choose a current or future booking slot.' });
       return;
     }
 
@@ -10750,8 +10939,8 @@ function LiveRoomAvailability() {
           room_id: bookingRoom.id,
           equipment_required: bookingForm.equipmentRequired.trim(),
           date: filters.date,
-          start_time: filters.startTime,
-          end_time: filters.endTime,
+          start_time: liveBookingStartTime,
+          end_time: liveBookingEndTime,
           status,
         }),
       });
@@ -11122,7 +11311,7 @@ function LiveRoomAvailability() {
             <div className="flex items-center justify-between px-6 py-5 border-b border-slate-100">
               <div>
                 <h3 className="text-xl font-bold text-slate-900">Book Room {bookingRoom.roomNumber}</h3>
-                <p className="text-sm text-slate-500 mt-1">{filters.date} • {filters.startTime} to {filters.endTime}</p>
+                <p className="text-sm text-slate-500 mt-1">{filters.date} • {liveBookingStartTime} to {liveBookingEndTime}</p>
               </div>
               <button onClick={() => setBookingRoom(null)} className="w-10 h-10 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 flex items-center justify-center">
                 <X size={18} />
@@ -11132,6 +11321,22 @@ function LiveRoomAvailability() {
               <div className="md:col-span-2 rounded-xl bg-slate-50 border border-slate-100 px-4 py-3 text-sm text-slate-600">
                 This reuses the existing booking request flow and prefills the selected room, date, and time for faster submission.
               </div>
+              {selectedLiveBookingTimingProfile && (
+                <div className={cn(
+                  'md:col-span-2 rounded-xl px-4 py-3 text-sm',
+                  liveSlotDrivenBooking
+                    ? 'border border-emerald-100 bg-emerald-50 text-emerald-700'
+                    : 'border border-amber-100 bg-amber-50 text-amber-700'
+                )}>
+                  Timing profile in effect: <span className="font-bold">{getTimingProfileDisplayLabel(selectedLiveBookingTimingProfile)}</span>.
+                  {selectedLiveBookingTimingSlots.length > 0 && (
+                    <span> Preferred slots: {selectedLiveBookingTimingSlots.map(slot => `${slot.start_time}-${slot.end_time}`).join(', ')}.</span>
+                  )}
+                  {liveSlotDrivenBooking && selectedLiveBookingSlotWindow && (
+                    <span> Booking will be submitted against <span className="font-bold">{selectedLiveBookingSlotWindow.label}</span>.</span>
+                  )}
+                </div>
+              )}
               <div>
                 <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Event Name</label>
                 <input value={bookingForm.eventName} onChange={e => setBookingForm(prev => ({ ...prev, eventName: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50" />
@@ -11151,6 +11356,20 @@ function LiveRoomAvailability() {
                 <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Equipment Required</label>
                 <input value={bookingForm.equipmentRequired} onChange={e => setBookingForm(prev => ({ ...prev, equipmentRequired: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50" />
               </div>
+              {liveSlotDrivenBooking && (
+                <div className="md:col-span-2">
+                  <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Academic Slot Window</label>
+                  <select
+                    value={selectedLiveBookingSlotWindow?.key || ''}
+                    onChange={e => setSelectedLiveBookingSlotWindowKey(e.target.value)}
+                    className="w-full px-3 py-2.5 border border-emerald-200 rounded-xl bg-emerald-50 text-emerald-700 font-bold"
+                  >
+                    {liveBookingSlotWindows.map(window => (
+                      <option key={window.key} value={window.key}>{window.label}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div className="md:col-span-2">
                 <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Notes</label>
                 <textarea rows={3} value={bookingForm.notes} onChange={e => setBookingForm(prev => ({ ...prev, notes: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50" />
