@@ -9872,6 +9872,12 @@ function BookingManagement() {
           <Search className="text-emerald-500" />
           Find Vacant Rooms
         </h3>
+        <div className="mb-6 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+          <span className="font-bold">Booking-first workspace.</span> This page shows only currently vacant rooms and best-fit options so you can submit a booking quickly.
+          <span className="ml-1">
+            Need a full room-status overview first? Visit <Link to="/live-availability" className="font-bold underline">Live Availability</Link>.
+          </span>
+        </div>
         <form onSubmit={handleSearch} className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <div className="space-y-1">
             <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Date</label>
@@ -10130,7 +10136,15 @@ function BookingManagement() {
       {/* Results Section */}
       {isSearching && (
         <div className="bg-white p-8 rounded-2xl border border-slate-200 shadow-sm">
-          <h3 className="text-lg font-bold text-slate-800 mb-6">Vacant Rooms Found</h3>
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-6">
+            <div>
+              <h3 className="text-lg font-bold text-slate-800">Vacant Rooms Ready for Booking</h3>
+              <p className="text-sm text-slate-500 mt-1">Only bookable rooms that are vacant for the selected slot are shown here.</p>
+            </div>
+            <div className="inline-flex items-center gap-2 rounded-full bg-slate-50 border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-600">
+              Sort: {searchCriteria.sortBy === 'best-fit' ? 'Best fit' : searchCriteria.sortBy === 'largest-capacity' ? 'Largest capacity' : searchCriteria.sortBy === 'building' ? 'Building' : 'Room number'}
+            </div>
+          </div>
           {vacantRooms.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {vacantRooms.map(room => (
@@ -10757,7 +10771,7 @@ function LiveRoomAvailability() {
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
           <div>
             <h2 className="text-2xl font-bold text-slate-800">Live Room Availability</h2>
-            <p className="text-sm text-slate-500 mt-1">Find rooms that are available, occupied, booked, under maintenance, or best suited for immediate booking.</p>
+            <p className="text-sm text-slate-500 mt-1">Monitor live room status across the campus, then book only after you confirm the room context.</p>
           </div>
           <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-1">
             <button onClick={() => setViewMode('cards')} className={cn('px-4 py-2 rounded-lg text-sm font-bold transition-all', viewMode === 'cards' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500')}>
@@ -10769,6 +10783,13 @@ function LiveRoomAvailability() {
               Table View
             </button>
           </div>
+        </div>
+
+        <div className="mb-6 rounded-2xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm text-sky-800">
+          <span className="font-bold">Status-first workspace.</span> This page is meant for monitoring all room states, status reasons, and building-wise availability.
+          <span className="ml-1">
+            If you already know you want to book a room, use <Link to="/bookings" className="font-bold underline">Room Bookings</Link> for the faster booking-first flow.
+          </span>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
@@ -10905,11 +10926,29 @@ function LiveRoomAvailability() {
         ))}
       </div>
 
+      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500 mr-2">Status Legend</span>
+          {[
+            { label: 'Available', classes: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
+            { label: 'Occupied by Timetable', classes: 'bg-rose-100 text-rose-700 border-rose-200' },
+            { label: 'Booked for Event', classes: 'bg-sky-100 text-sky-700 border-sky-200' },
+            { label: 'Under Maintenance', classes: 'bg-amber-100 text-amber-700 border-amber-200' },
+            { label: 'Capacity Mismatch', classes: 'bg-slate-200 text-slate-700 border-slate-300' },
+            { label: 'Best Suitable', classes: 'bg-violet-100 text-violet-700 border-violet-200' },
+          ].map(item => (
+            <span key={item.label} className={cn('px-3 py-1 rounded-full text-[11px] font-bold border', item.classes)}>
+              {item.label}
+            </span>
+          ))}
+        </div>
+      </div>
+
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
         <div className="flex items-center justify-between mb-5">
           <div>
-            <h3 className="text-xl font-bold text-slate-800">Recommended Rooms</h3>
-            <p className="text-sm text-slate-500 mt-1">Top rooms that best fit the selected date, time, capacity, department, and equipment context.</p>
+            <h3 className="text-xl font-bold text-slate-800">Recommended Booking Options</h3>
+            <p className="text-sm text-slate-500 mt-1">Secondary shortcuts for quick booking once the live room-status view has already narrowed your choice.</p>
           </div>
           <div className="px-3 py-1 rounded-full bg-violet-50 text-violet-700 text-xs font-bold">{results.recommendedRooms.length} suggestions</div>
         </div>
@@ -10951,7 +10990,7 @@ function LiveRoomAvailability() {
         <div className="flex items-center justify-between mb-5">
           <div>
             <h3 className="text-xl font-bold text-slate-800">Live Availability Map</h3>
-            <p className="text-sm text-slate-500 mt-1">Grouped by building, block/direct floors, and floor to make live scanning easier.</p>
+            <p className="text-sm text-slate-500 mt-1">Primary operational view grouped by building, block/direct floors, and floor for fast monitoring and conflict review.</p>
           </div>
           <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">{results.rooms.length} rooms</div>
         </div>
@@ -10995,12 +11034,11 @@ function LiveRoomAvailability() {
                         <td className="px-4 py-4 text-sm text-slate-600">{room.nextAvailableSlot || '-'}</td>
                         <td className="px-4 py-4">
                           <div className="flex items-center gap-2">
-                            {room.availableForBooking && canBookRooms ? (
-                              <button onClick={() => openBookingModal(room)} className="px-3 py-1.5 rounded-lg bg-emerald-500 text-white text-xs font-bold hover:bg-emerald-600">Book Now</button>
-                            ) : (
-                              <button onClick={() => setExpandedRoomId(prev => prev === room.id ? null : room.id)} className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-700 text-xs font-bold hover:bg-slate-200">
-                                {expandedRoomId === room.id ? 'Hide Reason' : 'View Reason'}
-                              </button>
+                            <button onClick={() => setExpandedRoomId(prev => prev === room.id ? null : room.id)} className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-700 text-xs font-bold hover:bg-slate-200">
+                              {expandedRoomId === room.id ? 'Hide Details' : 'View Details'}
+                            </button>
+                            {room.availableForBooking && canBookRooms && (
+                              <button onClick={() => openBookingModal(room)} className="px-3 py-1.5 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 text-xs font-bold hover:bg-emerald-100">Book</button>
                             )}
                           </div>
                         </td>
@@ -11008,7 +11046,7 @@ function LiveRoomAvailability() {
                       {expandedRoomId === room.id && (
                         <tr className="bg-slate-50">
                           <td className="px-4 py-4 text-sm text-slate-600" colSpan={9}>
-                            <span className="font-bold text-slate-700">Reason:</span> {room.statusReason || 'No additional detail available.'}
+                            <span className="font-bold text-slate-700">Status Detail:</span> {room.statusReason || 'No additional detail available.'}
                           </td>
                         </tr>
                       )}
@@ -11053,13 +11091,12 @@ function LiveRoomAvailability() {
                         </div>
 
                         <div className="mt-4 flex flex-wrap gap-2">
-                          {room.availableForBooking && canBookRooms ? (
-                            <button onClick={() => openBookingModal(room)} className="flex-1 px-4 py-2.5 rounded-xl bg-slate-900 text-white font-bold hover:bg-slate-800">
-                              Book Now
-                            </button>
-                          ) : (
-                            <button onClick={() => setExpandedRoomId(prev => prev === room.id ? null : room.id)} className="flex-1 px-4 py-2.5 rounded-xl bg-white border border-slate-200 text-slate-700 font-bold hover:bg-slate-50">
-                              {expandedRoomId === room.id ? 'Hide Reason' : 'View Reason'}
+                          <button onClick={() => setExpandedRoomId(prev => prev === room.id ? null : room.id)} className="flex-1 px-4 py-2.5 rounded-xl bg-white border border-slate-200 text-slate-700 font-bold hover:bg-slate-50">
+                            {expandedRoomId === room.id ? 'Hide Details' : 'View Details'}
+                          </button>
+                          {room.availableForBooking && canBookRooms && (
+                            <button onClick={() => openBookingModal(room)} className="px-4 py-2.5 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-700 font-bold hover:bg-emerald-100">
+                              Book
                             </button>
                           )}
                         </div>
