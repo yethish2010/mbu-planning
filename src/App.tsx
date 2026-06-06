@@ -4012,7 +4012,7 @@ function DashboardHome() {
   const [utilizationTrend, setUtilizationTrend] = useState<any[]>([]);
   const [schoolUsage, setSchoolUsage] = useState<any[]>([]);
   const [aiInsightMessage, setAiInsightMessage] = useState('');
-  const [utilizationReport, setUtilizationReport] = useState<any>({});
+  const [dashboardOverview, setDashboardOverview] = useState<any>({});
   const [isAnalysisPanelOpen, setIsAnalysisPanelOpen] = useState(false);
 
   const composeInsightMessage = (statsPayload: any, schoolReportsPayload: any[]) => {
@@ -4057,23 +4057,19 @@ function DashboardHome() {
       };
 
       try {
-        const [statsData, utilizationData, reportData] = await Promise.all([
-          fetchJson('/api/dashboard/stats', {}),
-          fetchJson('/api/analytics/utilization-trends', []),
-          fetchJson<any>('/api/reports/utilization', {})
-        ]);
+        const overviewData = await fetchJson<any>('/api/dashboard/overview', {});
 
         if (!isActive) return;
 
-        const safeStats = statsData || {};
-        const safeSchoolReports = Array.isArray(reportData?.schoolReports) ? reportData.schoolReports : [];
+        const safeStats = overviewData?.stats || {};
+        const safeSchoolReports = Array.isArray(overviewData?.schoolReports) ? overviewData.schoolReports : [];
         const fallbackInsight = composeInsightMessage(safeStats, safeSchoolReports);
 
         setStats(safeStats);
-        setUtilizationTrend(Array.isArray(utilizationData) ? utilizationData : []);
+        setUtilizationTrend(Array.isArray(overviewData?.utilizationTrend) ? overviewData.utilizationTrend : []);
         setSchoolUsage(safeSchoolReports);
         setAiInsightMessage(fallbackInsight);
-        setUtilizationReport(reportData || {});
+        setDashboardOverview(overviewData || {});
 
         const aiInsightResponse = await fetchJson<{ insight?: string; source?: string } | null>(
           '/api/ai/dashboard-insight',
@@ -4115,20 +4111,6 @@ function DashboardHome() {
 
   const schoolUsageItems = useMemo(() => {
     const colorClasses = ['bg-emerald-500', 'bg-blue-500', 'bg-amber-500', 'bg-rose-500', 'bg-indigo-500'];
-    const roomReports = Array.isArray(utilizationReport?.roomReports) ? utilizationReport.roomReports : [];
-
-    const getSchoolRoomTypeUtilization = (schoolName: string, roomType: string) => {
-      const includedRoomTypes = roomType === 'Classroom'
-        ? new Set(['Classroom', 'Seminar Hall'])
-        : new Set([roomType]);
-      const matchingRooms = roomReports.filter((room: any) =>
-        room?.school === schoolName &&
-        includedRoomTypes.has(normalizeRoomTypeValue(room?.room_type))
-      );
-      if (matchingRooms.length === 0) return 0;
-      const totalUtilization = matchingRooms.reduce((sum: number, room: any) => sum + (Number(room?.utilization) || 0), 0);
-      return Math.round(totalUtilization / matchingRooms.length);
-    };
 
     return (Array.isArray(schoolUsage) ? schoolUsage : [])
       .filter((school: any) => school?.name)
@@ -4137,32 +4119,27 @@ function DashboardHome() {
         name: school.name,
         value: Number(school.avgUtilization) || 0,
         deptCount: Number(school.deptCount) || 0,
-        classroomUtilization: getSchoolRoomTypeUtilization(school.name, 'Classroom'),
-        labUtilization: getSchoolRoomTypeUtilization(school.name, 'Lab'),
+        classroomUtilization: Number(school.classroomUtilization) || 0,
+        labUtilization: Number(school.labUtilization) || 0,
         color: colorClasses[index % colorClasses.length],
       }));
-  }, [schoolUsage, utilizationReport]);
+  }, [schoolUsage]);
 
   const topBusyRooms = useMemo(() => {
-    const roomReports = Array.isArray(utilizationReport?.roomReports) ? utilizationReport.roomReports : [];
-    return roomReports
-      .filter((room: any) => Number(room?.utilization) > 0)
-      .sort((a: any, b: any) => (Number(b?.utilization) || 0) - (Number(a?.utilization) || 0))
-      .slice(0, 5);
-  }, [utilizationReport]);
+    return Array.isArray(dashboardOverview?.topBusyRooms) ? dashboardOverview.topBusyRooms : [];
+  }, [dashboardOverview]);
 
   const dashboardRoomMix = useMemo(
-    () => getRoomMixCounts(Array.isArray(utilizationReport?.roomReports) ? utilizationReport.roomReports : []),
-    [utilizationReport],
+    () => ({
+      classrooms: Number(dashboardOverview?.roomMix?.classrooms) || 0,
+      labs: Number(dashboardOverview?.roomMix?.labs) || 0,
+    }),
+    [dashboardOverview],
   );
 
   const lowestUsageRooms = useMemo(() => {
-    const roomReports = Array.isArray(utilizationReport?.roomReports) ? utilizationReport.roomReports : [];
-    return roomReports
-      .filter((room: any) => Number(room?.utilization) >= 0)
-      .sort((a: any, b: any) => (Number(a?.utilization) || 0) - (Number(b?.utilization) || 0))
-      .slice(0, 5);
-  }, [utilizationReport]);
+    return Array.isArray(dashboardOverview?.lowestUsageRooms) ? dashboardOverview.lowestUsageRooms : [];
+  }, [dashboardOverview]);
 
   const openAnalysisPanel = () => {
     setIsAnalysisPanelOpen(true);

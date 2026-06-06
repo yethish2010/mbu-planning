@@ -3986,6 +3986,235 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
   }
 });
 
+app.get("/api/dashboard/overview", authenticate, async (_req, res) => {
+  try {
+    const totalBuildings = await db.prepare("SELECT COUNT(*) as count FROM buildings").get() as any;
+    const totalRooms = await db.prepare("SELECT COUNT(*) as count FROM rooms").get() as any;
+    const maintenanceRooms = await db.prepare("SELECT COUNT(*) as count FROM rooms WHERE status = 'Maintenance'").get() as any;
+    const equipmentIssues = await db.prepare("SELECT COUNT(*) as count FROM maintenance WHERE status = 'Pending'").get() as any;
+    const pendingBookings = await db.prepare("SELECT COUNT(*) as count FROM bookings WHERE status = 'Pending'").get() as any;
+
+    const { date: currentDate, time: currentTime } = getCampusDateTimeParts();
+    const daySchedules = await getEffectiveSchedulesForDate(currentDate);
+    const activeSchedules = daySchedules.filter((schedule: any) =>
+      schedule.start_time <= currentTime && schedule.end_time > currentTime
+    );
+    const activeBookings = await db.prepare(`
+      SELECT room_id FROM bookings
+      WHERE date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
+    `).all(currentDate, currentTime, currentTime) as any[];
+    const activeScheduleRoomIds = new Set(activeSchedules.map((item: any) => item.room_id).filter(Boolean));
+    const dayScheduleRoomIds = new Set(daySchedules.map((item: any) => item.room_id).filter(Boolean));
+    const activeBookingRoomIds = new Set(activeBookings.map((item: any) => item.room_id).filter(Boolean));
+    const occupiedRoomIds = new Set([...activeScheduleRoomIds, ...activeBookingRoomIds]);
+    const availableNow = Math.max(0, totalRooms.count - maintenanceRooms.count - occupiedRoomIds.size);
+
+    const recentAlerts = await db.prepare(`
+      SELECT m.*, r.room_number, bld.name as building_name
+      FROM maintenance m
+      JOIN rooms r ON m.room_id = r.id
+      JOIN floors f ON r.floor_id = f.id
+      JOIN blocks b ON f.block_id = b.id
+      JOIN buildings bld ON b.building_id = bld.id
+      ORDER BY m.reported_date DESC
+      LIMIT 5
+    `).all() as any[];
+
+    const rooms = await db.prepare(`
+      SELECT r.id, r.room_number, r.room_type, r.parent_room_id, r.room_layout, r.room_name, r.usage_category, r.is_bookable,
+             r.lab_name, r.restroom_type, r.capacity, r.status, bld.name as building_name, b.name as block_name
+      FROM rooms r
+      JOIN floors f ON r.floor_id = f.id
+      JOIN blocks b ON f.block_id = b.id
+      JOIN buildings bld ON b.building_id = bld.id
+    `).all() as any[];
+    const schedules = await db.prepare("SELECT room_id, department_id, year_of_study, semester, section, start_time, end_time FROM schedules").all() as any[];
+    const approvedBookings = await db.prepare("SELECT room_id, date, start_time, end_time FROM bookings WHERE status = 'Approved'").all() as any[];
+    const allBookings = await db.prepare("SELECT room_id, status, date FROM bookings").all() as any[];
+    const maintenance = await db.prepare("SELECT room_id, status FROM maintenance").all() as any[];
+    const departments = await db.prepare("SELECT id, name, school_id FROM departments").all() as any[];
+    const schools = await db.prepare("SELECT id, name FROM schools").all() as any[];
+    const allocations = await db.prepare(`
+      SELECT room_id, department_id, school_id, id
+      FROM department_allocations
+      ORDER BY id DESC
+    `).all() as any[];
+
+    const latestAllocationByRoom = new Map<string, any>();
+    allocations.forEach((allocation: any) => {
+      const roomKey = allocation.room_id?.toString();
+      if (roomKey && !latestAllocationByRoom.has(roomKey)) {
+        latestAllocationByRoom.set(roomKey, allocation);
+      }
+    });
+
+    const calculateHours = (start: string, end: string) => {
+      if (!start || !end) return 0;
+      const [h1, m1] = start.split(":").map(Number);
+      const [h2, m2] = end.split(":").map(Number);
+      return (h2 + m2 / 60) - (h1 + m1 / 60);
+    };
+
+    const baseReports = rooms.map((room: any) => {
+      const roomSchedules = schedules.filter((schedule: any) => idsEqual(schedule.room_id, room.id));
+      const roomApprovedBookings = approvedBookings.filter((booking: any) => idsEqual(booking.room_id, room.id));
+      const roomAllBookings = allBookings.filter((booking: any) => idsEqual(booking.room_id, room.id));
+      const allocation = latestAllocationByRoom.get(room.id?.toString());
+      const inferredDepartmentCounts = new Map<number, number>();
+      [...roomSchedules, ...roomAllBookings].forEach((entry: any) => {
+        if (!entry.department_id) return;
+        inferredDepartmentCounts.set(entry.department_id, (inferredDepartmentCounts.get(entry.department_id) || 0) + 1);
+      });
+      const inferredDepartmentId = Array.from(inferredDepartmentCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0];
+      const resolvedDepartmentId = allocation?.department_id || inferredDepartmentId || null;
+      const department = departments.find((dept: any) => dept.id === resolvedDepartmentId);
+      const school = schools.find((item: any) => item.id === (allocation?.school_id || department?.school_id || null));
+      const maintenanceIssues = maintenance.filter((item: any) => idsEqual(item.room_id, room.id) && item.status !== "Completed").length;
+      const scheduledHours = roomSchedules.reduce((acc: number, schedule: any) => acc + calculateHours(schedule.start_time, schedule.end_time), 0);
+      const bookedHours = roomApprovedBookings.reduce((acc: number, booking: any) => acc + calculateHours(booking.start_time, booking.end_time), 0);
+      const utilization = ((scheduledHours + bookedHours) / 72) * 100;
+      const yearTags = Array.from(new Set(roomSchedules
+        .map((schedule: any) => {
+          const normalizedYear = normalizeYearOfStudyKey(schedule?.year_of_study);
+          if (normalizedYear) return normalizedYear;
+          const semesterNumber = parseSemesterNumber(schedule?.semester);
+          return semesterNumber ? Math.ceil(semesterNumber / 2).toString() : "";
+        })
+        .filter(Boolean)));
+      const semesterTags = Array.from(new Set(roomSchedules
+        .map((schedule: any) => normalizeSemesterKey(schedule?.semester))
+        .filter(Boolean)))
+        .map((tag: string) => tag === "odd" ? "Odd" : tag === "even" ? "Even" : tag);
+      const sectionTags = Array.from(new Set(roomSchedules
+        .map((schedule: any) => schedule?.section?.toString().trim())
+        .filter(Boolean)));
+
+      return {
+        room_id: room.id,
+        room_number: room.room_number,
+        building: room.building_name,
+        block: room.block_name,
+        department: department?.name || "Unmapped",
+        school: school?.name || "Unmapped",
+        room_type: room.room_type,
+        status: room.status,
+        utilization: Math.min(100, Math.round(utilization)),
+        maintenanceIssues,
+        bookingStatuses: Array.from(new Set(roomAllBookings.map((booking: any) => booking.status).filter(Boolean))),
+        bookingDates: roomAllBookings.map((booking: any) => booking.date).filter(Boolean),
+        approvedBookingDates: roomApprovedBookings.map((booking: any) => booking.date).filter(Boolean),
+        yearTags,
+        semesterTags,
+        sectionTags,
+      };
+    });
+
+    const classifyRoomMix = (roomTypeValue: any) => {
+      const roomType = normalizeRoomTypeValue(roomTypeValue);
+      if ([
+        "Classroom",
+        "Smart Classroom",
+        "Lecture Hall",
+        "Tutorial Room",
+        "Multipurpose Classroom",
+        "Multipurpose Lecture Hall",
+      ].includes(roomType)) return "classroom";
+      if ([
+        "Lab",
+        "Computer Lab",
+        "Research Lab",
+        "Language Lab",
+        "Workshop",
+        "Studio",
+        "Classroom Lab",
+        "Multipurpose Lab",
+      ].includes(roomType)) return "lab";
+      return "";
+    };
+
+    const roomMix = baseReports.reduce((acc: { classrooms: number; labs: number }, room: any) => {
+      const bucket = classifyRoomMix(room.room_type);
+      if (bucket === "classroom") acc.classrooms += 1;
+      if (bucket === "lab") acc.labs += 1;
+      return acc;
+    }, { classrooms: 0, labs: 0 });
+
+    const schoolReports = Array.from(new Set(baseReports.map((report: any) => report.school).filter(Boolean))).map((schoolName: string) => {
+      const schoolRooms = baseReports.filter((report: any) => report.school === schoolName);
+      const deptCount = new Set(
+        schoolRooms
+          .map((report: any) => report.department)
+          .filter((departmentName: string) => departmentName && departmentName !== "Unmapped")
+      ).size;
+      const avgUtilization = schoolRooms.reduce((acc: number, report: any) => acc + report.utilization, 0) / (schoolRooms.length || 1);
+      const roomTypeAverage = (allowedTypes: string[]) => {
+        const matchingRooms = schoolRooms.filter((report: any) => allowedTypes.includes(normalizeRoomTypeValue(report.room_type)));
+        if (!matchingRooms.length) return 0;
+        return Math.round(matchingRooms.reduce((sum: number, report: any) => sum + report.utilization, 0) / matchingRooms.length);
+      };
+
+      return {
+        name: schoolName,
+        avgUtilization: Math.round(avgUtilization),
+        deptCount,
+        roomCount: schoolRooms.length,
+        classroomUtilization: roomTypeAverage(["Classroom", "Seminar Hall"]),
+        labUtilization: roomTypeAverage(["Lab"]),
+      };
+    }).sort((a: any, b: any) => b.avgUtilization - a.avgUtilization);
+
+    const topBusyRooms = [...baseReports]
+      .filter((room: any) => Number(room.utilization) > 0)
+      .sort((a: any, b: any) => (Number(b.utilization) || 0) - (Number(a.utilization) || 0))
+      .slice(0, 5)
+      .map((room: any) => ({
+        room_id: room.room_id,
+        room_number: room.room_number,
+        building: room.building,
+        block: room.block,
+        utilization: room.utilization,
+      }));
+
+    const lowestUsageRooms = [...baseReports]
+      .filter((room: any) => Number(room.utilization) >= 0)
+      .sort((a: any, b: any) => (Number(a.utilization) || 0) - (Number(b.utilization) || 0))
+      .slice(0, 5)
+      .map((room: any) => ({
+        room_id: room.room_id,
+        room_number: room.room_number,
+        building: room.building,
+        block: room.block,
+        utilization: room.utilization,
+      }));
+
+    const utilizationTrend = [...baseReports]
+      .map((room: any) => ({ name: room.room_number, utilization: room.utilization }))
+      .sort((a: any, b: any) => (Number(b.utilization) || 0) - (Number(a.utilization) || 0))
+      .slice(0, 10);
+
+    res.json({
+      stats: {
+        totalBuildings: totalBuildings.count,
+        availableNow,
+        equipmentIssues: equipmentIssues.count,
+        pendingBookings: pendingBookings.count,
+        scheduledRooms: dayScheduleRoomIds.size,
+        activeScheduledRooms: activeScheduleRoomIds.size,
+        bookedRooms: activeBookingRoomIds.size,
+        occupiedRooms: occupiedRoomIds.size,
+        recentAlerts,
+      },
+      utilizationTrend,
+      schoolReports,
+      roomMix,
+      topBusyRooms,
+      lowestUsageRooms,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --- VACANCY CHECK ROUTE ---
 
 app.get("/api/rooms/vacant", authenticate, async (req, res) => {
