@@ -7803,9 +7803,12 @@ function DepartmentAllocationManagement() {
   const [floors, setFloors] = useState<any[]>([]);
   const [blocks, setBlocks] = useState<any[]>([]);
   const [buildings, setBuildings] = useState<any[]>([]);
-  const [allocations, setAllocations] = useState<any[]>([]);
   const [lookupFilters, setLookupFilters] = useState({ school_id: '', department_id: '', semester: '' });
   const [isDeletingOddSemesterMappings, setIsDeletingOddSemesterMappings] = useState(false);
+  const [lookupResults, setLookupResults] = useState<any[]>([]);
+  const [lookupPage, setLookupPage] = useState(1);
+  const [lookupPageSize] = useState(25);
+  const [lookupTotal, setLookupTotal] = useState(0);
   const semesterOptions = ['Odd', 'Even'];
 
   const normalizeSemester = (value: unknown) => {
@@ -7816,14 +7819,33 @@ function DepartmentAllocationManagement() {
     return value?.toString().trim() || '';
   };
 
-  const refreshAllocations = async () => {
-    const res = await fetch('/api/department_allocations', { credentials: 'include' });
-    const data = await res.json();
-    setAllocations(Array.isArray(data) ? data : []);
+  const hasActiveLookupFilters = !!(lookupFilters.school_id || lookupFilters.department_id || lookupFilters.semester);
+  const lookupTotalPages = Math.max(1, Math.ceil(lookupTotal / lookupPageSize));
+
+  const refreshLookupResults = async () => {
+    if (!hasActiveLookupFilters) {
+      setLookupResults([]);
+      setLookupTotal(0);
+      return;
+    }
+    const params = new URLSearchParams({
+      paginate: '1',
+      page: lookupPage.toString(),
+      pageSize: lookupPageSize.toString(),
+      sortKey: 'semester',
+      sortDir: 'asc',
+      school_id: lookupFilters.school_id,
+      department_id: lookupFilters.department_id,
+      semester: lookupFilters.semester,
+    });
+    const data = await apiJson(`/api/department_allocations?${params.toString()}`);
+    setLookupResults(Array.isArray(data?.items) ? data.items : []);
+    setLookupTotal(Number(data?.total || 0));
   };
 
   const handleDeleteOddSemesterMappings = async () => {
-    const oddMappingsCount = allocations.filter(allocation => normalizeSemester(allocation?.semester) === 'Odd').length;
+    const oddMappings = await apiJson('/api/department_allocations?semester=Odd');
+    const oddMappingsCount = Array.isArray(oddMappings) ? oddMappings.length : 0;
     if (oddMappingsCount === 0) {
       alert(`No Odd ${SEMESTER_TYPE_LABEL.toLowerCase()} room mappings were found.`);
       return;
@@ -7845,7 +7867,7 @@ function DepartmentAllocationManagement() {
       if (!res.ok) throw new Error(result.error || `Failed to delete Odd ${SEMESTER_TYPE_LABEL.toLowerCase()} mappings.`);
 
       invalidateSharedLookupCache(['/api/department_allocations']);
-      await refreshAllocations();
+      await refreshLookupResults();
       setLookupFilters(current => current.semester === 'Odd' ? { ...current, semester: '' } : current);
 
       const skippedSummary = Array.isArray(result.skipped) && result.skipped.length > 0
@@ -7875,7 +7897,6 @@ function DepartmentAllocationManagement() {
       setBlocks(Array.isArray(blockData) ? blockData : []);
       setBuildings(Array.isArray(buildingData) ? buildingData : []);
     });
-    refreshAllocations();
   }, []);
 
   const getRoomPath = (room: any) => {
@@ -7958,24 +7979,19 @@ function DepartmentAllocationManagement() {
     !lookupFilters.school_id || department.school_id?.toString() === lookupFilters.school_id
   );
 
-  const lookupResults = allocations.filter(allocation => {
-    if (lookupFilters.school_id && allocation.school_id?.toString() !== lookupFilters.school_id) return false;
-    if (lookupFilters.department_id && allocation.department_id?.toString() !== lookupFilters.department_id) return false;
-    if (lookupFilters.semester && allocation.semester !== lookupFilters.semester) return false;
-    return lookupFilters.school_id || lookupFilters.department_id || lookupFilters.semester;
-  }).sort((left, right) => {
-    const leftSchool = schools.find(item => idsMatch(item.id, left.school_id))?.name || '';
-    const rightSchool = schools.find(item => idsMatch(item.id, right.school_id))?.name || '';
-    const schoolCompare = compareNaturalSortValues(leftSchool, rightSchool);
-    if (schoolCompare !== 0) return schoolCompare;
-    const leftDepartment = departments.find(item => idsMatch(item.id, left.department_id))?.name || '';
-    const rightDepartment = departments.find(item => idsMatch(item.id, right.department_id))?.name || '';
-    const departmentCompare = compareNaturalSortValues(leftDepartment, rightDepartment);
-    if (departmentCompare !== 0) return departmentCompare;
-    const leftRoom = rooms.find(item => idsMatch(item.id, left.room_id));
-    const rightRoom = rooms.find(item => idsMatch(item.id, right.room_id));
-    return compareRoomsByNaturalOrder(leftRoom || left, rightRoom || right, rooms);
-  });
+  useEffect(() => {
+    setLookupPage(1);
+  }, [lookupFilters.school_id, lookupFilters.department_id, lookupFilters.semester]);
+
+  useEffect(() => {
+    refreshLookupResults();
+  }, [lookupPage, lookupFilters.school_id, lookupFilters.department_id, lookupFilters.semester]);
+
+  useEffect(() => {
+    if (lookupPage > lookupTotalPages) {
+      setLookupPage(lookupTotalPages);
+    }
+  }, [lookupPage, lookupTotalPages]);
 
   const getAllocationDetails = (allocation: any) => {
     const school = schools.find(s => idsMatch(s.id, allocation.school_id));
@@ -8158,18 +8174,11 @@ function DepartmentAllocationManagement() {
     const payload = { ...data };
     const room = rooms.find(r => r.id?.toString() === payload.room_id?.toString());
     const requiredCapacity = parseInt(payload.capacity, 10) || 0;
-    const duplicateAllocation = allocations.some(allocation =>
-      allocation.id !== payload.id &&
-      allocation.room_id?.toString() === payload.room_id?.toString() &&
-      allocation.department_id?.toString() === payload.department_id?.toString() &&
-      allocation.semester === payload.semester
-    );
 
     if (!payload.semester) throw new Error(`${SEMESTER_TYPE_LABEL} is required.`);
     if (!room) throw new Error('Please select a valid room.');
     if (requiredCapacity <= 0) throw new Error('Required capacity must be greater than zero.');
     if (requiredCapacity > room.capacity) throw new Error(`Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${requiredCapacity}.`);
-    if (duplicateAllocation) throw new Error(`This room is already mapped to this department for the selected ${SEMESTER_TYPE_LABEL.toLowerCase()}.`);
 
     payload.room_type = room.room_type;
     delete payload.building_id;
@@ -8285,6 +8294,35 @@ function DepartmentAllocationManagement() {
             </tbody>
           </table>
         </div>
+        {hasActiveLookupFilters && (
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-slate-500">
+              Showing {lookupResults.length === 0 ? 0 : ((lookupPage - 1) * lookupPageSize) + 1}-
+              {Math.min(lookupPage * lookupPageSize, lookupTotal)} of {lookupTotal}
+            </p>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setLookupPage(page => Math.max(1, page - 1))}
+                disabled={lookupPage <= 1}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 disabled:opacity-50"
+              >
+                Previous
+              </button>
+              <span className="text-sm font-semibold text-slate-600">
+                Page {lookupPage} / {lookupTotalPages}
+              </span>
+              <button
+                type="button"
+                onClick={() => setLookupPage(page => Math.min(lookupTotalPages, page + 1))}
+                disabled={lookupPage >= lookupTotalPages}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 disabled:opacity-50"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       <GenericCRUD
@@ -8292,7 +8330,7 @@ function DepartmentAllocationManagement() {
         fields={fields}
         apiPath="/api/department_allocations"
         onImport={handleImport}
-        onDataChanged={refreshAllocations}
+        onDataChanged={refreshLookupResults}
         prepareFormData={prepareFormData}
         prepareSubmitData={prepareSubmitData}
         enableServerPagination

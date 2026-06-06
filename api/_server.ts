@@ -3222,6 +3222,46 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
           });
         }
 
+        if (tableName === "department_allocations") {
+          let allocationItems = await db.prepare(`SELECT * FROM ${tableName}`).all() as any[];
+          const schoolId = req.query.school_id?.toString() || "";
+          const departmentId = req.query.department_id?.toString() || "";
+          const semester = req.query.semester?.toString().trim() || "";
+          if (schoolId || departmentId || semester) {
+            allocationItems = allocationItems.filter((item: any) => {
+              if (schoolId && !idsEqual(item?.school_id, schoolId)) return false;
+              if (departmentId && !idsEqual(item?.department_id, departmentId)) return false;
+              if (semester && item?.semester?.toString() !== semester) return false;
+              return true;
+            });
+          }
+          if (requestedSearch && allowedSearchFields.length > 0) {
+            const normalizedSearch = requestedSearch.toLowerCase();
+            allocationItems = allocationItems.filter((item: any) =>
+              allowedSearchFields.some(field =>
+                item?.[field] != null && item[field].toString().toLowerCase().includes(normalizedSearch)
+              )
+            );
+          }
+          if (sortKey) {
+            allocationItems = allocationItems.slice().sort((left: any, right: any) => {
+              const comparison = compareServerSortValues(left?.[sortKey], right?.[sortKey]);
+              return requestedSortDir === "desc" ? -comparison : comparison;
+            });
+          }
+          if (!wantsPagination) {
+            return res.json(allocationItems);
+          }
+          const total = allocationItems.length;
+          const startIndex = (requestedPage - 1) * requestedPageSize;
+          return res.json({
+            items: allocationItems.slice(startIndex, startIndex + requestedPageSize),
+            total,
+            page: requestedPage,
+            pageSize: requestedPageSize,
+          });
+        }
+
         const whereClauses: string[] = [];
         const values: any[] = [];
         if (requestedSearch && allowedSearchFields.length > 0) {
