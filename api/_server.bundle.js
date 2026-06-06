@@ -2423,6 +2423,17 @@ var BULK_IMPORT_SUPPORTED_TABLES = /* @__PURE__ */ new Set([
 ]);
 var hasImportMatchValue = (value) => value !== void 0 && value !== null && value !== "";
 var normalizeImportMatchValue = (value) => value?.toString().trim().toLowerCase().replace(/\s+/g, " ") || "";
+var SERVER_PAGINATION_TABLES = /* @__PURE__ */ new Set([
+  "rooms",
+  "academic_calendars",
+  "department_allocations",
+  "schedules"
+]);
+var compareServerSortValues = (left, right) => {
+  const leftValue = left == null ? "" : left.toString();
+  const rightValue = right == null ? "" : right.toString();
+  return leftValue.localeCompare(rightValue, void 0, { numeric: true, sensitivity: "base" });
+};
 var findMatchingImportRecord = (records, payload, uniqueFieldGroups) => {
   for (const fields of Array.isArray(uniqueFieldGroups) ? uniqueFieldGroups : []) {
     if (!Array.isArray(fields) || fields.some((field) => !hasImportMatchValue(payload?.[field]))) continue;
@@ -2624,6 +2635,14 @@ await backfillNotificationsIfEmpty();
 var createCrudRoutes = (tableName, idField = "id") => {
   app.get(`/api/${tableName}`, authenticate, async (req, res) => {
     try {
+      const wantsPagination = SERVER_PAGINATION_TABLES.has(tableName) && req.query.paginate?.toString() === "1";
+      const wantsServerQuery = SERVER_PAGINATION_TABLES.has(tableName) && (wantsPagination || !!req.query.q?.toString().trim() || !!req.query.sortKey?.toString().trim());
+      const requestedSearch = req.query.q?.toString().trim() || "";
+      const requestedSortKey = req.query.sortKey?.toString().trim() || "";
+      const requestedSortDir = normalizeImportMatchValue(req.query.sortDir) === "desc" ? "desc" : "asc";
+      const requestedPage = Math.max(parseInt(req.query.page?.toString() || "1", 10) || 1, 1);
+      const requestedPageSize = Math.min(Math.max(parseInt(req.query.pageSize?.toString() || "50", 10) || 50, 1), 200);
+      const searchFields = (req.query.searchFields?.toString() || "").split(",").map((field) => field.trim()).filter(Boolean);
       if (tableName === "bookings") {
         const bookings = await db.prepare(`
           SELECT bk.*, r.room_number, d.name as department_name
@@ -2642,6 +2661,70 @@ var createCrudRoutes = (tableName, idField = "id") => {
       }
       if (tableName === "batch_room_allocations") {
         await syncBatchAllocationStatuses();
+      }
+      if (wantsServerQuery) {
+        const tableColumns = (await db.prepare(`PRAGMA table_info(${tableName})`).all()).map((column) => column?.name?.toString()).filter(Boolean);
+        const allowedSearchFields = (searchFields.length > 0 ? searchFields : tableColumns).filter((field) => tableColumns.includes(field));
+        const sortKey = tableColumns.includes(requestedSortKey) ? requestedSortKey : tableColumns.includes("id") ? "id" : tableColumns[0];
+        if (tableName === "schedules") {
+          let scheduleItems = await db.prepare(`SELECT * FROM ${tableName}`).all();
+          scheduleItems = deduplicateSchedules(await backfillMissingScheduleCodes(scheduleItems)).kept;
+          const requestedDate = normalizeIsoDate(req.query.date);
+          if (requestedDate) {
+            scheduleItems = await filterSchedulesByAcademicCalendar(scheduleItems, requestedDate);
+          }
+          if (requestedSearch && allowedSearchFields.length > 0) {
+            const normalizedSearch = requestedSearch.toLowerCase();
+            scheduleItems = scheduleItems.filter(
+              (item) => allowedSearchFields.some(
+                (field) => item?.[field] != null && item[field].toString().toLowerCase().includes(normalizedSearch)
+              )
+            );
+          }
+          if (sortKey) {
+            scheduleItems = scheduleItems.slice().sort((left, right) => {
+              const comparison = compareServerSortValues(left?.[sortKey], right?.[sortKey]);
+              return requestedSortDir === "desc" ? -comparison : comparison;
+            });
+          }
+          if (!wantsPagination) {
+            return res.json(scheduleItems);
+          }
+          const total2 = scheduleItems.length;
+          const startIndex = (requestedPage - 1) * requestedPageSize;
+          return res.json({
+            items: scheduleItems.slice(startIndex, startIndex + requestedPageSize),
+            total: total2,
+            page: requestedPage,
+            pageSize: requestedPageSize
+          });
+        }
+        const whereClauses = [];
+        const values = [];
+        if (requestedSearch && allowedSearchFields.length > 0) {
+          const searchClause = allowedSearchFields.map((field) => `LOWER(CAST(${field} AS TEXT)) LIKE ?`).join(" OR ");
+          whereClauses.push(`(${searchClause})`);
+          const searchValue = `%${requestedSearch.toLowerCase()}%`;
+          allowedSearchFields.forEach(() => values.push(searchValue));
+        }
+        const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
+        const countRow = await db.prepare(`SELECT COUNT(*) as total FROM ${tableName} ${whereSql}`).get(...values);
+        const total = Number(countRow?.total || 0);
+        const items2 = await db.prepare(`
+          SELECT * FROM ${tableName}
+          ${whereSql}
+          ORDER BY ${sortKey} ${requestedSortDir.toUpperCase()}
+          LIMIT ? OFFSET ?
+        `).all(...values, requestedPageSize, (requestedPage - 1) * requestedPageSize);
+        if (!wantsPagination) {
+          return res.json(items2);
+        }
+        return res.json({
+          items: items2,
+          total,
+          page: requestedPage,
+          pageSize: requestedPageSize
+        });
       }
       const items = await db.prepare(`SELECT * FROM ${tableName}`).all();
       if (tableName === "schedules") {

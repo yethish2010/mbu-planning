@@ -4441,6 +4441,9 @@ function GenericCRUD({
   initialSearchTerm,
   dataSorter,
   exportBuilder,
+  enableServerPagination,
+  serverSearchFields,
+  serverSortKey,
 }: {
   type: string,
   fields: any[],
@@ -4455,8 +4458,14 @@ function GenericCRUD({
   initialSearchTerm?: string,
   dataSorter?: (a: any, b: any) => number,
   exportBuilder?: (items: any[]) => { headers: string[]; rows: any[][] },
+  enableServerPagination?: boolean,
+  serverSearchFields?: string[],
+  serverSortKey?: string,
 }) {
   const [data, setData] = useState<any[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<any>(null);
   const [formData, setFormData] = useState<any>({});
@@ -4472,21 +4481,56 @@ function GenericCRUD({
 
   const fetchData = async () => {
     try {
+      if (enableServerPagination) {
+        const params = new URLSearchParams({
+          paginate: '1',
+          page: currentPage.toString(),
+          pageSize: pageSize.toString(),
+          sortKey: serverSortKey || fields.find(field => !field.formOnly)?.key || 'id',
+          sortDir: 'asc',
+          searchFields: (serverSearchFields?.length ? serverSearchFields : fields.filter(field => !field.formOnly).map(field => field.key)).join(','),
+        });
+        if (searchTerm.trim()) params.set('q', searchTerm.trim());
+        const json = await apiJson(`${apiPath}?${params.toString()}`);
+        setData(Array.isArray(json?.items) ? json.items : []);
+        setTotalCount(Number(json?.total || 0));
+        return;
+      }
+
       const res = await fetch(apiPath, { credentials: 'include' });
       const json = await res.json();
       if (!res.ok) {
         console.error(`${type} load error:`, json);
         setData([]);
+        setTotalCount(0);
         return;
       }
-      setData(Array.isArray(json) ? json : []);
+      const items = Array.isArray(json) ? json : [];
+      setData(items);
+      setTotalCount(items.length);
     } catch (err) {
       console.error(`${type} load failed:`, err);
       setData([]);
+      setTotalCount(0);
     }
   };
 
-  useEffect(() => { fetchData(); }, []);
+  useEffect(() => {
+    fetchData();
+  }, [apiPath, currentPage, pageSize, enableServerPagination]);
+
+  useEffect(() => {
+    if (!enableServerPagination) return;
+    if (!searchTerm.trim()) return;
+    const timer = window.setTimeout(() => {
+      fetchData();
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [searchTerm, enableServerPagination]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, pageSize]);
 
   const tableFields = fields.filter(f => !f.formOnly);
   const formFields = fields.filter(f => !f.tableOnly);
@@ -4544,14 +4588,22 @@ function GenericCRUD({
     return compareNaturalSortValues(left?.id, right?.id);
   };
 
-  const displayData = (dataFilter ? data.filter(dataFilter) : data)
-    .slice()
-    .sort(dataSorter || defaultDataSorter);
-  const filteredData = displayData.filter(item => {
+  const displayData = (dataFilter ? data.filter(dataFilter) : data).slice();
+  if (!enableServerPagination) {
+    displayData.sort(dataSorter || defaultDataSorter);
+  }
+  const filteredData = enableServerPagination ? displayData : displayData.filter(item => {
     const query = searchTerm.trim().toLowerCase();
     if (!query) return true;
     return tableFields.some(field => getFieldDisplayValue(field, item)?.toString().toLowerCase().includes(query));
   });
+  const totalPages = enableServerPagination ? Math.max(1, Math.ceil(totalCount / pageSize)) : 1;
+  useEffect(() => {
+    if (!enableServerPagination) return;
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages, enableServerPagination]);
   const sanitizeExcelName = (value: string) => value.replace(/[\\/?*[\]:]/g, '').slice(0, 31) || 'Export';
 
   const downloadTemplate = async () => {
@@ -4574,11 +4626,23 @@ function GenericCRUD({
   };
 
   const downloadExport = async () => {
+    const exportSource = enableServerPagination
+      ? await (async () => {
+          const params = new URLSearchParams({
+            sortKey: serverSortKey || fields.find(field => !field.formOnly)?.key || 'id',
+            sortDir: 'asc',
+            searchFields: (serverSearchFields?.length ? serverSearchFields : fields.filter(field => !field.formOnly).map(field => field.key)).join(','),
+          });
+          if (searchTerm.trim()) params.set('q', searchTerm.trim());
+          const json = await apiJson(`${apiPath}?${params.toString()}`);
+          return Array.isArray(json) ? json : [];
+        })()
+      : filteredData;
     const exportData = exportBuilder
-      ? exportBuilder(filteredData)
+      ? exportBuilder(exportSource)
       : {
           headers: tableFields.map(field => field.label),
-          rows: filteredData.map(item =>
+          rows: exportSource.map(item =>
             tableFields.map(field => {
               const value = getFieldDisplayValue(field, item);
               return value === undefined || value === null ? '' : value;
@@ -4744,7 +4808,11 @@ function GenericCRUD({
             type="text"
             placeholder={`Search ${type}...`}
             value={searchTerm}
-            onChange={e => setSearchTerm(e.target.value)}
+            onChange={e => {
+              setSearchTerm(e.target.value);
+              if (!enableServerPagination) return;
+              setCurrentPage(1);
+            }}
             className="pl-10 pr-4 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
           />
         </div>
@@ -4909,6 +4977,44 @@ function GenericCRUD({
             )}
           </tbody>
         </table>
+        {enableServerPagination && (
+          <div className="flex flex-col gap-3 border-t border-slate-200 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-slate-500">
+              Showing {filteredData.length === 0 ? 0 : ((currentPage - 1) * pageSize) + 1}-
+              {Math.min(currentPage * pageSize, totalCount)} of {totalCount}
+            </p>
+            <div className="flex items-center gap-3">
+              <select
+                value={pageSize}
+                onChange={e => setPageSize(parseInt(e.target.value, 10) || 50)}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+              >
+                {[25, 50, 100].map(size => (
+                  <option key={size} value={size}>{size} / page</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => setCurrentPage(page => Math.max(1, page - 1))}
+                disabled={currentPage <= 1}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 disabled:opacity-50"
+              >
+                Previous
+              </button>
+              <span className="text-sm font-semibold text-slate-600">
+                Page {currentPage} / {totalPages}
+              </span>
+              <button
+                type="button"
+                onClick={() => setCurrentPage(page => Math.min(totalPages, page + 1))}
+                disabled={currentPage >= totalPages}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 disabled:opacity-50"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {isModalOpen && (
@@ -6476,6 +6582,9 @@ function RoomManagement() {
       onImport={handleImport}
       exportBuilder={buildRoomExportData}
       prepareSubmitData={prepareSubmitData}
+      enableServerPagination
+      serverSearchFields={['room_id', 'room_number', 'room_name', 'room_type', 'status', 'usage_category', 'lab_name', 'room_aliases']}
+      serverSortKey="room_number"
       prepareFormData={prepareFormData}
       onDataChanged={refreshRooms}
       dataFilter={roomMatchesLocationFilters}
@@ -6981,6 +7090,9 @@ function AcademicCalendarManagement() {
       onDataChanged={refreshLookups}
       prepareSubmitData={prepareSubmitData}
       dataSorter={academicCalendarSorter}
+      enableServerPagination
+      serverSearchFields={['calendar_id', 'program', 'batch', 'specialization', 'academic_year', 'year_of_study', 'semester', 'event_type', 'title', 'notes']}
+      serverSortKey="start_date"
     />
   );
 }
@@ -8122,6 +8234,9 @@ function DepartmentAllocationManagement() {
         onDataChanged={refreshAllocations}
         prepareFormData={prepareFormData}
         prepareSubmitData={prepareSubmitData}
+        enableServerPagination
+        serverSearchFields={['semester', 'room_type', 'capacity']}
+        serverSortKey="semester"
       />
     </div>
   );
