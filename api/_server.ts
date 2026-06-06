@@ -4435,7 +4435,16 @@ app.get("/api/live-availability", authenticate, async (req, res) => {
         ORDER BY bra.id DESC
       `).all(date, date, "Released") as Promise<any[]>,
       db.prepare("SELECT room_id, name, type, condition FROM equipment").all() as Promise<any[]>,
-      db.prepare("SELECT room_id, equipment, status, issue_description, date_reported FROM maintenance").all() as Promise<any[]>,
+      db.prepare(`
+        SELECT
+          room_id,
+          equipment_name,
+          issue_description,
+          reported_date,
+          assigned_staff,
+          status
+        FROM maintenance
+      `).all() as Promise<any[]>,
       db.prepare("SELECT room_id, faculty_name, event_name, purpose, date, start_time, end_time, status FROM bookings WHERE date = ? AND status = 'Approved'").all(date) as Promise<any[]>,
     ]);
 
@@ -4552,7 +4561,7 @@ app.get("/api/live-availability", authenticate, async (req, res) => {
       if (roomMaintenance.length > 0 || room.status === "Maintenance") {
         status = "Under Maintenance";
         statusReason = roomMaintenance
-          .map((item: any) => `${item.equipment || "Maintenance issue"}${item.issue_description ? ` - ${item.issue_description}` : ""}${item.status ? ` (${item.status})` : ""}`)
+          .map((item: any) => `${item.equipment_name || "Maintenance issue"}${item.issue_description ? ` - ${item.issue_description}` : ""}${item.status ? ` (${item.status})` : ""}${item.reported_date ? ` [Reported ${item.reported_date}]` : ""}`)
           .join("; ") || "Room is marked under maintenance.";
       } else if (hasCapacityMismatch) {
         status = "Capacity Mismatch";
