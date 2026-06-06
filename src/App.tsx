@@ -1558,6 +1558,51 @@ const apiJson = async (url: string, options?: RequestInit) => {
   return data;
 };
 
+const SHARED_LOOKUP_CACHE_PATHS = new Set([
+  '/api/campuses',
+  '/api/buildings',
+  '/api/blocks',
+  '/api/floors',
+  '/api/rooms',
+  '/api/schools',
+  '/api/departments',
+  '/api/timing_profiles',
+  '/api/academic_calendars',
+  '/api/batch_room_allocations',
+  '/api/department_allocations',
+  '/api/equipment',
+]);
+
+const sharedLookupCache = new Map<string, Promise<any>>();
+
+const invalidateSharedLookupCache = (paths?: string[]) => {
+  if (!paths?.length) {
+    sharedLookupCache.clear();
+    return;
+  }
+  paths.forEach(path => {
+    sharedLookupCache.delete(path);
+  });
+};
+
+const fetchSharedLookupJson = async (path: string) => {
+  if (!SHARED_LOOKUP_CACHE_PATHS.has(path)) {
+    return apiJson(path);
+  }
+  const cached = sharedLookupCache.get(path);
+  if (cached) return cached;
+
+  const request = apiJson(path).catch((error) => {
+    sharedLookupCache.delete(path);
+    throw error;
+  });
+  sharedLookupCache.set(path, request);
+  return request;
+};
+
+const fetchSharedLookupJsons = async (paths: string[]) =>
+  Promise.all(paths.map(path => fetchSharedLookupJson(path)));
+
 type ImportUpsertCache = Map<string, any[]>;
 
 const createImportUpsertCache = (): ImportUpsertCache => new Map();
@@ -4594,6 +4639,7 @@ function GenericCRUD({
           }));
         });
         const importResult = await onImport(jsonData);
+        invalidateSharedLookupCache();
         await fetchData();
         if (onDataChanged) await onDataChanged();
         if (importResult && typeof importResult === 'object') {
@@ -4645,6 +4691,7 @@ function GenericCRUD({
       setIsModalOpen(false);
       setEditingItem(null);
       setFormData({});
+      invalidateSharedLookupCache();
       await fetchData();
       if (onDataChanged) await onDataChanged();
     } else {
@@ -4660,6 +4707,7 @@ function GenericCRUD({
         credentials: 'include'
       });
       if (res.ok) {
+        invalidateSharedLookupCache();
         await fetchData();
         if (onDataChanged) await onDataChanged();
       } else {
@@ -4676,6 +4724,7 @@ function GenericCRUD({
         credentials: 'include'
       });
       if (res.ok) {
+        invalidateSharedLookupCache();
         await fetchData();
         if (onDataChanged) await onDataChanged();
         alert('Module reset successful!');
@@ -4970,8 +5019,7 @@ function GenericCRUD({
 function UserManagement() {
   const [departments, setDepartments] = useState<any[]>([]);
   useEffect(() => {
-    fetch('/api/departments', { credentials: 'include' })
-      .then(res => res.json())
+    fetchSharedLookupJson('/api/departments')
       .then(data => setDepartments(Array.isArray(data) ? data : []))
       .catch(() => setDepartments([]));
   }, []);
@@ -5044,8 +5092,10 @@ function BuildingManagement() {
   const [campuses, setCampuses] = useState<any[]>([]);
   const [blocks, setBlocks] = useState<any[]>([]);
   useEffect(() => {
-    fetch('/api/campuses').then(res => res.json()).then(setCampuses);
-    fetch('/api/blocks').then(res => res.json()).then(setBlocks);
+    fetchSharedLookupJsons(['/api/campuses', '/api/blocks']).then(([campusData, blockData]) => {
+      setCampuses(Array.isArray(campusData) ? campusData : []);
+      setBlocks(Array.isArray(blockData) ? blockData : []);
+    });
   }, []);
 
   const getVisibleBlocksForBuilding = (building: any) =>
@@ -5166,7 +5216,7 @@ function BuildingManagement() {
 function BlockManagement() {
   const [buildings, setBuildings] = useState<any[]>([]);
   useEffect(() => {
-    fetch('/api/buildings').then(res => res.json()).then(setBuildings);
+    fetchSharedLookupJson('/api/buildings').then(data => setBuildings(Array.isArray(data) ? data : []));
   }, []);
 
   const blockEligibleBuildings = buildings.filter(building =>
@@ -5610,15 +5660,17 @@ function RoomManagement() {
   });
 
   const refreshRooms = async () => {
-    const roomData = await fetch('/api/rooms').then(res => res.json());
+    const roomData = await fetchSharedLookupJson('/api/rooms');
     setRooms(Array.isArray(roomData) ? roomData : []);
   };
 
   useEffect(() => {
-    fetch('/api/campuses').then(res => res.json()).then(setCampuses);
-    fetch('/api/floors').then(res => res.json()).then(setFloors);
-    fetch('/api/blocks').then(res => res.json()).then(setBlocks);
-    fetch('/api/buildings').then(res => res.json()).then(setBuildings);
+    fetchSharedLookupJsons(['/api/campuses', '/api/floors', '/api/blocks', '/api/buildings']).then(([campusData, floorData, blockData, buildingData]) => {
+      setCampuses(Array.isArray(campusData) ? campusData : []);
+      setFloors(Array.isArray(floorData) ? floorData : []);
+      setBlocks(Array.isArray(blockData) ? blockData : []);
+      setBuildings(Array.isArray(buildingData) ? buildingData : []);
+    });
     refreshRooms();
   }, []);
 
@@ -6462,7 +6514,7 @@ function SchoolManagement() {
 function DepartmentManagement() {
   const [schools, setSchools] = useState<any[]>([]);
   useEffect(() => {
-    fetch('/api/schools').then(res => res.json()).then(setSchools);
+    fetchSharedLookupJson('/api/schools').then(data => setSchools(Array.isArray(data) ? data : []));
   }, []);
 
   const schoolOptions = schools
@@ -6506,9 +6558,9 @@ function TimingProfileManagement() {
   const [departments, setDepartments] = useState<any[]>([]);
 
   const refreshLookups = async () => {
-    const [schoolData, departmentData] = await Promise.all([
-      fetch('/api/schools', { credentials: 'include' }).then(res => res.json()),
-      fetch('/api/departments', { credentials: 'include' }).then(res => res.json()),
+    const [schoolData, departmentData] = await fetchSharedLookupJsons([
+      '/api/schools',
+      '/api/departments',
     ]);
     setSchools(Array.isArray(schoolData) ? schoolData : []);
     setDepartments(Array.isArray(departmentData) ? departmentData : []);
@@ -6643,10 +6695,10 @@ function AcademicCalendarManagement() {
   const [timingProfiles, setTimingProfiles] = useState<any[]>([]);
 
   const refreshLookups = async () => {
-    const [schoolData, departmentData, timingProfileData] = await Promise.all([
-      fetch('/api/schools', { credentials: 'include' }).then(res => res.json()),
-      fetch('/api/departments', { credentials: 'include' }).then(res => res.json()),
-      fetch('/api/timing_profiles', { credentials: 'include' }).then(res => res.json()),
+    const [schoolData, departmentData, timingProfileData] = await fetchSharedLookupJsons([
+      '/api/schools',
+      '/api/departments',
+      '/api/timing_profiles',
     ]);
     setSchools(Array.isArray(schoolData) ? schoolData : []);
     setDepartments(Array.isArray(departmentData) ? departmentData : []);
@@ -6956,16 +7008,16 @@ function BatchRoomAllocationManagement() {
       calendarData,
       allocationData,
       departmentAllocationData,
-    ] = await Promise.all([
-      fetch('/api/schools', { credentials: 'include' }).then(res => res.json()),
-      fetch('/api/departments', { credentials: 'include' }).then(res => res.json()),
-      fetch('/api/rooms', { credentials: 'include' }).then(res => res.json()),
-      fetch('/api/floors', { credentials: 'include' }).then(res => res.json()),
-      fetch('/api/blocks', { credentials: 'include' }).then(res => res.json()),
-      fetch('/api/buildings', { credentials: 'include' }).then(res => res.json()),
-      fetch('/api/academic_calendars', { credentials: 'include' }).then(res => res.json()),
-      fetch('/api/batch_room_allocations', { credentials: 'include' }).then(res => res.json()),
-      fetch('/api/department_allocations', { credentials: 'include' }).then(res => res.json()),
+    ] = await fetchSharedLookupJsons([
+      '/api/schools',
+      '/api/departments',
+      '/api/rooms',
+      '/api/floors',
+      '/api/blocks',
+      '/api/buildings',
+      '/api/academic_calendars',
+      '/api/batch_room_allocations',
+      '/api/department_allocations',
     ]);
 
     setSchools(Array.isArray(schoolData) ? schoolData : []);
@@ -7619,6 +7671,7 @@ function DepartmentAllocationManagement() {
       const result = await res.json();
       if (!res.ok) throw new Error(result.error || `Failed to delete Odd ${SEMESTER_TYPE_LABEL.toLowerCase()} mappings.`);
 
+      invalidateSharedLookupCache(['/api/department_allocations']);
       await refreshAllocations();
       setLookupFilters(current => current.semester === 'Odd' ? { ...current, semester: '' } : current);
 
@@ -7634,12 +7687,21 @@ function DepartmentAllocationManagement() {
   };
 
   useEffect(() => {
-    fetch('/api/schools').then(res => res.json()).then(setSchools);
-    fetch('/api/departments').then(res => res.json()).then(setDepartments);
-    fetch('/api/rooms').then(res => res.json()).then(setRooms);
-    fetch('/api/floors').then(res => res.json()).then(setFloors);
-    fetch('/api/blocks').then(res => res.json()).then(setBlocks);
-    fetch('/api/buildings').then(res => res.json()).then(setBuildings);
+    fetchSharedLookupJsons([
+      '/api/schools',
+      '/api/departments',
+      '/api/rooms',
+      '/api/floors',
+      '/api/blocks',
+      '/api/buildings',
+    ]).then(([schoolData, departmentData, roomData, floorData, blockData, buildingData]) => {
+      setSchools(Array.isArray(schoolData) ? schoolData : []);
+      setDepartments(Array.isArray(departmentData) ? departmentData : []);
+      setRooms(Array.isArray(roomData) ? roomData : []);
+      setFloors(Array.isArray(floorData) ? floorData : []);
+      setBlocks(Array.isArray(blockData) ? blockData : []);
+      setBuildings(Array.isArray(buildingData) ? buildingData : []);
+    });
     refreshAllocations();
   }, []);
 
@@ -8071,7 +8133,7 @@ function EquipmentManagement() {
   const [roomSearchTerm, setRoomSearchTerm] = useState('');
 
   useEffect(() => {
-    fetch('/api/rooms').then(res => res.json()).then((roomData) => {
+    fetchSharedLookupJson('/api/rooms').then((roomData) => {
       const safeRooms = Array.isArray(roomData) ? roomData : [];
       setRooms(safeRooms);
       const params = new URLSearchParams(location.search);
@@ -8138,14 +8200,14 @@ function SchedulingManagement() {
   });
 
   const refreshSchedulingLookups = async () => {
-    const [campusData, buildingData, blockData, floorData, roomData, departmentData, allocationData] = await Promise.all([
-      fetch('/api/campuses').then(res => res.json()),
-      fetch('/api/buildings').then(res => res.json()),
-      fetch('/api/blocks').then(res => res.json()),
-      fetch('/api/floors').then(res => res.json()),
-      fetch('/api/rooms').then(res => res.json()),
-      fetch('/api/departments').then(res => res.json()),
-      fetch('/api/department_allocations').then(res => res.json()),
+    const [campusData, buildingData, blockData, floorData, roomData, departmentData, allocationData] = await fetchSharedLookupJsons([
+      '/api/campuses',
+      '/api/buildings',
+      '/api/blocks',
+      '/api/floors',
+      '/api/rooms',
+      '/api/departments',
+      '/api/department_allocations',
     ]);
     setCampuses(Array.isArray(campusData) ? campusData : []);
     setBuildings(Array.isArray(buildingData) ? buildingData : []);
@@ -8559,6 +8621,7 @@ function SchedulingManagement() {
     const savedAllocation = await upsertImportRecord('/api/department_allocations', payload, [
       ['room_id', 'department_id', 'semester'],
     ], importCache);
+    invalidateSharedLookupCache(['/api/department_allocations']);
 
     setAllocations(prev => {
       const existingIndex = prev.findIndex(allocation => allocation.id?.toString() === savedAllocation.id?.toString());
@@ -8708,6 +8771,7 @@ function SchedulingManagement() {
 
     if (allocationEntryMap.size > 0) {
       await upsertImportRecordsBulk('/api/department_allocations', Array.from(allocationEntryMap.values()));
+      invalidateSharedLookupCache(['/api/department_allocations']);
     }
 
     setRefreshKey(prev => prev + 1);
@@ -8859,6 +8923,7 @@ function SchedulingManagement() {
 
         if (allocationEntryMap.size > 0) {
           await upsertImportRecordsBulk('/api/department_allocations', Array.from(allocationEntryMap.values()));
+          invalidateSharedLookupCache(['/api/department_allocations']);
         }
 
         setRefreshKey(prev => prev + 1);
@@ -9056,15 +9121,15 @@ function BookingManagement() {
 
   useEffect(() => {
     fetchMyBookings();
-    Promise.all([
-      fetch('/api/rooms', { credentials: 'include' }).then(res => res.json()),
-      fetch('/api/floors', { credentials: 'include' }).then(res => res.json()),
-      fetch('/api/blocks', { credentials: 'include' }).then(res => res.json()),
-      fetch('/api/buildings', { credentials: 'include' }).then(res => res.json()),
-      fetch('/api/departments', { credentials: 'include' }).then(res => res.json()),
-      fetch('/api/academic_calendars', { credentials: 'include' }).then(res => res.json()),
-      fetch('/api/timing_profiles', { credentials: 'include' }).then(res => res.json()),
-      fetch('/api/equipment', { credentials: 'include' }).then(res => res.json())
+    fetchSharedLookupJsons([
+      '/api/rooms',
+      '/api/floors',
+      '/api/blocks',
+      '/api/buildings',
+      '/api/departments',
+      '/api/academic_calendars',
+      '/api/timing_profiles',
+      '/api/equipment',
     ]).then(([roomData, floorData, blockData, buildingData, departmentData, calendarData, timingProfileData, equipmentData]) => {
       const safeRooms = Array.isArray(roomData) ? roomData : [];
       const safeFloors = Array.isArray(floorData) ? floorData : [];
@@ -10190,7 +10255,7 @@ function MaintenanceManagement() {
   const [statusFilter, setStatusFilter] = useState('');
 
   useEffect(() => {
-    fetch('/api/rooms').then(res => res.json()).then((roomData) => {
+    fetchSharedLookupJson('/api/rooms').then((roomData) => {
       const safeRooms = Array.isArray(roomData) ? roomData : [];
       setRooms(safeRooms);
       const params = new URLSearchParams(location.search);
@@ -10286,19 +10351,19 @@ function AIAllocation() {
     e.preventDefault();
     setLoading(true);
     try {
-      const [rRes, bRes, eRes, sRes, bkRes] = await Promise.all([
-        fetch('/api/rooms', { credentials: 'include' }),
-        fetch('/api/buildings', { credentials: 'include' }),
-        fetch('/api/equipment', { credentials: 'include' }),
-        fetch('/api/schedules', { credentials: 'include' }),
-        fetch('/api/bookings', { credentials: 'include' })
+      const [roomsData, buildingsData, equipmentData, schedulesData, bookingsData] = await Promise.all([
+        fetchSharedLookupJson('/api/rooms'),
+        fetchSharedLookupJson('/api/buildings'),
+        fetchSharedLookupJson('/api/equipment'),
+        apiJson('/api/schedules'),
+        apiJson('/api/bookings')
       ]);
-      
-      const rooms = (await rRes.json()).filter(isRoomReservable);
-      const buildings = await bRes.json();
-      const equipment = await eRes.json();
-      const schedules = await sRes.json();
-      const bookings = await bkRes.json();
+
+      const rooms = (Array.isArray(roomsData) ? roomsData : []).filter(isRoomReservable);
+      const buildings = Array.isArray(buildingsData) ? buildingsData : [];
+      const equipment = Array.isArray(equipmentData) ? equipmentData : [];
+      const schedules = Array.isArray(schedulesData) ? schedulesData : [];
+      const bookings = Array.isArray(bookingsData) ? bookingsData : [];
 
       const ai = getGenAIClient();
       const model = ai.models.generateContent({
@@ -11149,22 +11214,15 @@ function ReportGeneration() {
 
   const fetchUtilization = async () => {
     try {
-      const [reportRes, bookingRes, scheduleRes, academicRes, maintenanceRes, departmentAllocationRes, batchAllocationRes] = await Promise.all([
-        fetch('/api/reports/utilization', { credentials: 'include' }),
-        fetch('/api/bookings', { credentials: 'include' }),
-        fetch('/api/schedules', { credentials: 'include' }),
-        fetch('/api/academic_calendars', { credentials: 'include' }),
-        fetch('/api/maintenance', { credentials: 'include' }),
-        fetch('/api/department_allocations', { credentials: 'include' }),
-        fetch('/api/batch_room_allocations', { credentials: 'include' }),
+      const [data, bookingData, scheduleData, academicData, maintenanceData, departmentAllocationData, batchAllocationData] = await Promise.all([
+        apiJson('/api/reports/utilization'),
+        apiJson('/api/bookings'),
+        apiJson('/api/schedules'),
+        fetchSharedLookupJson('/api/academic_calendars'),
+        apiJson('/api/maintenance'),
+        fetchSharedLookupJson('/api/department_allocations'),
+        fetchSharedLookupJson('/api/batch_room_allocations'),
       ]);
-      const data = await reportRes.json();
-      const bookingData = await bookingRes.json();
-      const scheduleData = await scheduleRes.json();
-      const academicData = await academicRes.json();
-      const maintenanceData = await maintenanceRes.json();
-      const departmentAllocationData = await departmentAllocationRes.json();
-      const batchAllocationData = await batchAllocationRes.json();
       setUtilizationData(data);
       setReportBookings(Array.isArray(bookingData) ? bookingData : []);
       setReportSchedules(Array.isArray(scheduleData) ? scheduleData : []);
@@ -16147,20 +16205,14 @@ function TimetableBuilder() {
 
   const fetchData = async () => {
     try {
-      const [sRes, rRes, dRes, cRes, tpRes, baRes] = await Promise.all([
-        fetch('/api/schedules', { credentials: 'include' }),
-        fetch('/api/rooms', { credentials: 'include' }),
-        fetch('/api/departments', { credentials: 'include' }),
-        fetch('/api/academic_calendars', { credentials: 'include' }),
-        fetch('/api/timing_profiles', { credentials: 'include' }),
-        fetch('/api/batch_room_allocations', { credentials: 'include' }),
+      const [sData, rData, dData, cData, tpData, baData] = await Promise.all([
+        apiJson('/api/schedules'),
+        fetchSharedLookupJson('/api/rooms'),
+        fetchSharedLookupJson('/api/departments'),
+        fetchSharedLookupJson('/api/academic_calendars'),
+        fetchSharedLookupJson('/api/timing_profiles'),
+        fetchSharedLookupJson('/api/batch_room_allocations'),
       ]);
-      const sData = await sRes.json();
-      const rData = await rRes.json();
-      const dData = await dRes.json();
-      const cData = await cRes.json();
-      const tpData = await tpRes.json();
-      const baData = await baRes.json();
       setSchedules(deduplicateScheduleRows(Array.isArray(sData) ? sData : []));
       setRooms(rData);
       setDepartments(dData);
@@ -16784,23 +16836,20 @@ function DigitalTwin() {
 
   useEffect(() => {
     const fetchData = async () => {
-      const [cRes, bRes, blRes, fRes, rRes, mRes, sRes, bkRes, eRes, aRes, baRes, dRes, acRes] = await Promise.all([
-        fetch('/api/campuses', { credentials: 'include' }),
-        fetch('/api/buildings', { credentials: 'include' }),
-        fetch('/api/blocks', { credentials: 'include' }),
-        fetch('/api/floors', { credentials: 'include' }),
-        fetch('/api/rooms', { credentials: 'include' }),
-        fetch('/api/maintenance', { credentials: 'include' }),
-        fetch('/api/schedules', { credentials: 'include' }),
-        fetch('/api/bookings', { credentials: 'include' }),
-        fetch('/api/equipment', { credentials: 'include' }),
-        fetch('/api/department_allocations', { credentials: 'include' }),
-        fetch('/api/batch_room_allocations', { credentials: 'include' }),
-        fetch('/api/departments', { credentials: 'include' }),
-        fetch('/api/academic_calendars', { credentials: 'include' }),
-      ]);
       const [cData, bData, blData, fData, rData, mData, sData, bkData, eData, aData, baData, dData, acData] = await Promise.all([
-        cRes.json(), bRes.json(), blRes.json(), fRes.json(), rRes.json(), mRes.json(), sRes.json(), bkRes.json(), eRes.json(), aRes.json(), baRes.json(), dRes.json(), acRes.json()
+        fetchSharedLookupJson('/api/campuses'),
+        fetchSharedLookupJson('/api/buildings'),
+        fetchSharedLookupJson('/api/blocks'),
+        fetchSharedLookupJson('/api/floors'),
+        fetchSharedLookupJson('/api/rooms'),
+        apiJson('/api/maintenance'),
+        apiJson('/api/schedules'),
+        apiJson('/api/bookings'),
+        fetchSharedLookupJson('/api/equipment'),
+        fetchSharedLookupJson('/api/department_allocations'),
+        fetchSharedLookupJson('/api/batch_room_allocations'),
+        fetchSharedLookupJson('/api/departments'),
+        fetchSharedLookupJson('/api/academic_calendars'),
       ]);
       
       setCampuses(cData);
