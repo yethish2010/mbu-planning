@@ -17124,16 +17124,24 @@ function DigitalTwin() {
 
   useEffect(() => {
     const fetchData = async () => {
-      const [cData, bData, blData, fData, rData, mData, sData, bkData, eData, aData, baData, dData, acData] = await Promise.all([
+      const [
+        cData,
+        bData,
+        blData,
+        fData,
+        rData,
+        liveData,
+        aData,
+        baData,
+        dData,
+        acData,
+      ] = await Promise.all([
         fetchSharedLookupJson('/api/campuses'),
         fetchSharedLookupJson('/api/buildings'),
         fetchSharedLookupJson('/api/blocks'),
         fetchSharedLookupJson('/api/floors'),
         fetchSharedLookupJson('/api/rooms'),
-        apiJson('/api/maintenance'),
-        apiJson('/api/schedules'),
-        apiJson('/api/bookings'),
-        fetchSharedLookupJson('/api/equipment'),
+        apiJson('/api/digital-twin/live-data'),
         fetchSharedLookupJson('/api/department_allocations'),
         fetchSharedLookupJson('/api/batch_room_allocations'),
         fetchSharedLookupJson('/api/departments'),
@@ -17145,10 +17153,10 @@ function DigitalTwin() {
       setFloors(fData);
       setBuildings(bData);
       setRooms(rData);
-      setMaintenance(mData);
-      setSchedules(sData);
-      setBookings(bkData);
-      setEquipment(eData);
+      setMaintenance(Array.isArray(liveData?.maintenance) ? liveData.maintenance : []);
+      setSchedules(Array.isArray(liveData?.schedules) ? liveData.schedules : []);
+      setBookings(Array.isArray(liveData?.bookings) ? liveData.bookings : []);
+      setEquipment(Array.isArray(liveData?.equipment) ? liveData.equipment : []);
       setAllocations(aData);
       setBatchRoomAllocations(Array.isArray(baData) ? baData : []);
       setDepartments(dData);

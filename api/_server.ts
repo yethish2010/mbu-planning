@@ -4389,6 +4389,62 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
   }
 });
 
+app.get("/api/digital-twin/live-data", authenticate, async (_req, res) => {
+  try {
+    const [maintenance, schedules, bookings, equipment] = await Promise.all([
+      db.prepare(`
+        SELECT id, room_id, status
+        FROM maintenance
+        WHERE room_id IS NOT NULL
+      `).all(),
+      db.prepare(`
+        SELECT
+          id,
+          room_id,
+          department_id,
+          program,
+          specialization,
+          section,
+          course_code,
+          course_name,
+          faculty,
+          day_of_week,
+          start_time,
+          end_time,
+          year_of_study,
+          semester
+        FROM schedules
+      `).all(),
+      db.prepare(`
+        SELECT
+          id,
+          room_id,
+          department_id,
+          date,
+          start_time,
+          end_time,
+          status,
+          event_name
+        FROM bookings
+      `).all(),
+      db.prepare(`
+        SELECT room_id, name
+        FROM equipment
+        WHERE room_id IS NOT NULL
+      `).all(),
+    ]);
+
+    res.json({
+      maintenance: Array.isArray(maintenance) ? maintenance : [],
+      schedules: Array.isArray(schedules) ? schedules : [],
+      bookings: Array.isArray(bookings) ? bookings : [],
+      equipment: Array.isArray(equipment) ? equipment : [],
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --- ANALYTICS ENDPOINTS ---
 
 app.get("/api/analytics/utilization-trends", authenticate, async (req, res) => {
