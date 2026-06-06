@@ -4444,6 +4444,7 @@ function GenericCRUD({
   enableServerPagination,
   serverSearchFields,
   serverSortKey,
+  serverQueryParams,
 }: {
   type: string,
   fields: any[],
@@ -4461,6 +4462,7 @@ function GenericCRUD({
   enableServerPagination?: boolean,
   serverSearchFields?: string[],
   serverSortKey?: string,
+  serverQueryParams?: Record<string, string>,
 }) {
   const [data, setData] = useState<any[]>([]);
   const [totalCount, setTotalCount] = useState(0);
@@ -4490,6 +4492,9 @@ function GenericCRUD({
           sortDir: 'asc',
           searchFields: (serverSearchFields?.length ? serverSearchFields : fields.filter(field => !field.formOnly).map(field => field.key)).join(','),
         });
+        Object.entries(serverQueryParams || {}).forEach(([key, value]) => {
+          if (value) params.set(key, value);
+        });
         if (searchTerm.trim()) params.set('q', searchTerm.trim());
         const json = await apiJson(`${apiPath}?${params.toString()}`);
         setData(Array.isArray(json?.items) ? json.items : []);
@@ -4517,7 +4522,7 @@ function GenericCRUD({
 
   useEffect(() => {
     fetchData();
-  }, [apiPath, currentPage, pageSize, enableServerPagination]);
+  }, [apiPath, currentPage, pageSize, enableServerPagination, JSON.stringify(serverQueryParams || {})]);
 
   useEffect(() => {
     if (!enableServerPagination) return;
@@ -4632,6 +4637,9 @@ function GenericCRUD({
             sortKey: serverSortKey || fields.find(field => !field.formOnly)?.key || 'id',
             sortDir: 'asc',
             searchFields: (serverSearchFields?.length ? serverSearchFields : fields.filter(field => !field.formOnly).map(field => field.key)).join(','),
+          });
+          Object.entries(serverQueryParams || {}).forEach(([key, value]) => {
+            if (value) params.set(key, value);
           });
           if (searchTerm.trim()) params.set('q', searchTerm.trim());
           const json = await apiJson(`${apiPath}?${params.toString()}`);
@@ -8340,7 +8348,6 @@ function SchedulingManagement() {
   const scheduleDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const scheduleYearOptions = ['I Year', 'II Year', 'III Year', 'IV Year'];
   const scheduleImportStatusOptions = ['Linked', 'Unmatched Room', 'Room Missing'];
-  const scheduleDayOrder = new Map(scheduleDays.map((day, index) => [day, index]));
 
   const getScheduleRoomLocation = (room: any) => {
     const floor = floors.find(item => idsMatch(item.id, room?.floor_id));
@@ -8407,50 +8414,10 @@ function SchedulingManagement() {
       };
     });
 
-  const scheduleMatchesFilters = (schedule: any) => {
-    if (scheduleFilters.department_id && !idsMatch(schedule.department_id, scheduleFilters.department_id)) return false;
-    if (scheduleFilters.program && normalizeProgramValue(schedule?.program) !== normalizeProgramValue(scheduleFilters.program)) return false;
-    if (scheduleFilters.year && getYearDisplayLabel(schedule?.year_of_study, schedule?.semester) !== scheduleFilters.year) return false;
-    if (scheduleFilters.specialization && normalizeLookupValue(schedule?.specialization) !== normalizeLookupValue(scheduleFilters.specialization)) return false;
-    if (scheduleFilters.room_id && !idsMatch(schedule.room_id, scheduleFilters.room_id)) return false;
-    if (scheduleFilters.day_of_week && schedule.day_of_week !== scheduleFilters.day_of_week) return false;
-
-    if (scheduleFilters.campus_id || scheduleFilters.building_id || scheduleFilters.block_id || scheduleFilters.floor_id) {
-      const room = rooms.find(item => idsMatch(item.id, schedule.room_id));
-      if (!room || !roomMatchesScheduleLocationFilters(room)) return false;
-    }
-
-    return true;
-  };
-
-  const parseScheduleTimeToMinutes = (value: unknown) => {
-    const raw = value?.toString().trim() || '';
-    if (!raw.includes(':')) return Number.MAX_SAFE_INTEGER;
-    const [hour, minute] = raw.split(':').map(Number);
-    if (Number.isNaN(hour) || Number.isNaN(minute)) return Number.MAX_SAFE_INTEGER;
-    return (hour * 60) + minute;
-  };
-
-  const scheduleDataSorter = (left: any, right: any) => {
-    const dayCompare = (scheduleDayOrder.get(left?.day_of_week) ?? Number.MAX_SAFE_INTEGER) - (scheduleDayOrder.get(right?.day_of_week) ?? Number.MAX_SAFE_INTEGER);
-    if (dayCompare !== 0) return dayCompare;
-    const startCompare = parseScheduleTimeToMinutes(left?.start_time) - parseScheduleTimeToMinutes(right?.start_time);
-    if (startCompare !== 0) return startCompare;
-    const departmentCompare = compareNaturalSortValues(
-      departments.find(item => idsMatch(item.id, left?.department_id))?.name || '',
-      departments.find(item => idsMatch(item.id, right?.department_id))?.name || '',
-    );
-    if (departmentCompare !== 0) return departmentCompare;
-    const programCompare = compareNaturalSortValues(left?.program, right?.program);
-    if (programCompare !== 0) return programCompare;
-    const specializationCompare = compareNaturalSortValues(left?.specialization, right?.specialization);
-    if (specializationCompare !== 0) return specializationCompare;
-    const sectionCompare = compareNaturalSortValues(left?.section, right?.section);
-    if (sectionCompare !== 0) return sectionCompare;
-    return compareNaturalSortValues(left?.schedule_code || left?.schedule_id, right?.schedule_code || right?.schedule_id);
-  };
-
   const hasActiveScheduleFilters = Object.values(scheduleFilters).some(Boolean);
+  const scheduleServerQueryParams = Object.fromEntries(
+    Object.entries(scheduleFilters).filter(([, value]) => !!value)
+  ) as Record<string, string>;
   const scheduleFilterControls = (
     <div className="grid grid-cols-1 md:grid-cols-4 xl:grid-cols-8 gap-3 items-end">
       <div>
@@ -9142,9 +9109,11 @@ function SchedulingManagement() {
         onImport={handleImport}
         prepareFormData={prepareScheduleFormData}
         prepareSubmitData={prepareScheduleSubmitData}
-        dataFilter={scheduleMatchesFilters}
         filterControls={scheduleFilterControls}
-        dataSorter={scheduleDataSorter}
+        enableServerPagination
+        serverSearchFields={['schedule_code', 'schedule_id', 'program', 'specialization', 'section', 'course_code', 'course_name', 'faculty', 'room_label', 'day_of_week', 'start_time', 'end_time']}
+        serverSortKey="day_of_week"
+        serverQueryParams={scheduleServerQueryParams}
       />
     </div>
   );

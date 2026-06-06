@@ -2434,6 +2434,39 @@ var compareServerSortValues = (left, right) => {
   const rightValue = right == null ? "" : right.toString();
   return leftValue.localeCompare(rightValue, void 0, { numeric: true, sensitivity: "base" });
 };
+var scheduleDayOrder = /* @__PURE__ */ new Map([
+  ["monday", 0],
+  ["tuesday", 1],
+  ["wednesday", 2],
+  ["thursday", 3],
+  ["friday", 4],
+  ["saturday", 5],
+  ["sunday", 6]
+]);
+var parseScheduleTimeToMinutes = (value) => {
+  const raw = value?.toString().trim() || "";
+  if (!raw.includes(":")) return Number.MAX_SAFE_INTEGER;
+  const [hour, minute] = raw.split(":").map(Number);
+  if (Number.isNaN(hour) || Number.isNaN(minute)) return Number.MAX_SAFE_INTEGER;
+  return hour * 60 + minute;
+};
+var toRomanNumeral = (value) => {
+  const numerals = ["", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"];
+  return numerals[value] || value.toString();
+};
+var getYearNumberFromAcademicContext = (yearOfStudy, semester) => {
+  const yearKey = normalizeYearOfStudyKey(yearOfStudy);
+  if (yearKey) {
+    const parsedYear = parseInt(yearKey, 10);
+    if (Number.isFinite(parsedYear)) return parsedYear;
+  }
+  const semesterNumber = parseSemesterNumber(semester);
+  return semesterNumber ? Math.ceil(semesterNumber / 2) : null;
+};
+var getYearDisplayLabel = (yearOfStudy, semester) => {
+  const yearNumber = getYearNumberFromAcademicContext(yearOfStudy, semester);
+  return yearNumber ? `${toRomanNumeral(yearNumber)} Year` : "-";
+};
 var findMatchingImportRecord = (records, payload, uniqueFieldGroups) => {
   for (const fields of Array.isArray(uniqueFieldGroups) ? uniqueFieldGroups : []) {
     if (!Array.isArray(fields) || fields.some((field) => !hasImportMatchValue(payload?.[field]))) continue;
@@ -2673,6 +2706,48 @@ var createCrudRoutes = (tableName, idField = "id") => {
           if (requestedDate) {
             scheduleItems = await filterSchedulesByAcademicCalendar(scheduleItems, requestedDate);
           }
+          const scheduleDepartmentId = req.query.department_id?.toString() || "";
+          const scheduleProgram = req.query.program?.toString().trim() || "";
+          const scheduleYear = req.query.year?.toString().trim() || "";
+          const scheduleSpecialization = req.query.specialization?.toString().trim() || "";
+          const scheduleRoomId = req.query.room_id?.toString() || "";
+          const scheduleDay = req.query.day_of_week?.toString().trim() || "";
+          const scheduleCampusId = req.query.campus_id?.toString() || "";
+          const scheduleBuildingId = req.query.building_id?.toString() || "";
+          const scheduleBlockId = req.query.block_id?.toString() || "";
+          const scheduleFloorId = req.query.floor_id?.toString() || "";
+          if (scheduleDepartmentId || scheduleProgram || scheduleYear || scheduleSpecialization || scheduleRoomId || scheduleDay || scheduleCampusId || scheduleBuildingId || scheduleBlockId || scheduleFloorId) {
+            const rooms = await db.prepare("SELECT id, floor_id FROM rooms").all();
+            const floors = await db.prepare("SELECT id, block_id FROM floors").all();
+            const blocks = await db.prepare("SELECT id, building_id FROM blocks").all();
+            const buildings = await db.prepare("SELECT id, campus_id FROM buildings").all();
+            const roomById = new Map(rooms.map((room) => [room.id?.toString(), room]));
+            const floorById = new Map(floors.map((floor) => [floor.id?.toString(), floor]));
+            const blockById = new Map(blocks.map((block) => [block.id?.toString(), block]));
+            const buildingById = new Map(buildings.map((building) => [building.id?.toString(), building]));
+            scheduleItems = scheduleItems.filter((schedule) => {
+              if (scheduleDepartmentId && !idsEqual(schedule?.department_id, scheduleDepartmentId)) return false;
+              if (scheduleProgram && normalizeScheduleProgramValue(schedule?.program) !== normalizeScheduleProgramValue(scheduleProgram)) return false;
+              if (scheduleYear) {
+                const yearLabel = getYearDisplayLabel(schedule?.year_of_study, schedule?.semester);
+                if (yearLabel !== scheduleYear) return false;
+              }
+              if (scheduleSpecialization && normalizeImportMatchValue(schedule?.specialization) !== normalizeImportMatchValue(scheduleSpecialization)) return false;
+              if (scheduleRoomId && !idsEqual(schedule?.room_id, scheduleRoomId)) return false;
+              if (scheduleDay && normalizeImportMatchValue(schedule?.day_of_week) !== normalizeImportMatchValue(scheduleDay)) return false;
+              if (scheduleCampusId || scheduleBuildingId || scheduleBlockId || scheduleFloorId) {
+                const room = roomById.get(schedule?.room_id?.toString());
+                const floor = floorById.get(room?.floor_id?.toString());
+                const block = blockById.get(floor?.block_id?.toString());
+                const building = buildingById.get(block?.building_id?.toString());
+                if (scheduleCampusId && !idsEqual(building?.campus_id, scheduleCampusId)) return false;
+                if (scheduleBuildingId && !idsEqual(building?.id, scheduleBuildingId)) return false;
+                if (scheduleBlockId && !idsEqual(block?.id, scheduleBlockId)) return false;
+                if (scheduleFloorId && !idsEqual(floor?.id, scheduleFloorId)) return false;
+              }
+              return true;
+            });
+          }
           if (requestedSearch && allowedSearchFields.length > 0) {
             const normalizedSearch = requestedSearch.toLowerCase();
             scheduleItems = scheduleItems.filter(
@@ -2681,7 +2756,19 @@ var createCrudRoutes = (tableName, idField = "id") => {
               )
             );
           }
-          if (sortKey) {
+          if (sortKey === "day_of_week") {
+            scheduleItems = scheduleItems.slice().sort((left, right) => {
+              const dayCompare = (scheduleDayOrder.get(normalizeImportMatchValue(left?.day_of_week)) ?? Number.MAX_SAFE_INTEGER) - (scheduleDayOrder.get(normalizeImportMatchValue(right?.day_of_week)) ?? Number.MAX_SAFE_INTEGER);
+              if (dayCompare !== 0) {
+                return requestedSortDir === "desc" ? -dayCompare : dayCompare;
+              }
+              const startCompare = parseScheduleTimeToMinutes(left?.start_time) - parseScheduleTimeToMinutes(right?.start_time);
+              if (startCompare !== 0) {
+                return requestedSortDir === "desc" ? -startCompare : startCompare;
+              }
+              return compareServerSortValues(left?.schedule_code || left?.schedule_id, right?.schedule_code || right?.schedule_id);
+            });
+          } else if (sortKey) {
             scheduleItems = scheduleItems.slice().sort((left, right) => {
               const comparison = compareServerSortValues(left?.[sortKey], right?.[sortKey]);
               return requestedSortDir === "desc" ? -comparison : comparison;
