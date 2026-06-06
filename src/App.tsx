@@ -3148,6 +3148,7 @@ function Sidebar() {
     { name: 'Schedule Records', icon: Calendar, path: '/scheduling', roles: ['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)'] },
     { name: 'Timetable View', icon: Clock, path: '/timetable', roles: ['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)'] },
     { name: 'Digital Twin', icon: Globe, path: '/digital-twin', roles: ['Administrator', 'Infrastructure Manager'] },
+    { name: 'Live Availability', icon: MapIcon, path: '/live-availability', roles: ['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Faculty', 'Event Coordinator', 'Infrastructure Manager'] },
     { name: 'Room Bookings', icon: BookOpen, path: '/bookings', roles: approvalRoles },
     { name: 'Room Requests', icon: BookOpen, path: '/bookings', roles: ['Faculty', 'HOD', 'Event Coordinator'] },
     { name: 'AI Room Recommendation', icon: BrainCircuit, path: '/ai-allocation', roles: ['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)'] },
@@ -3994,6 +3995,15 @@ export default function App() {
               <Layout title="AI Smart Campus Digital Twin">
                 <DependencyGuard dependencies={[{ table: 'buildings', label: 'Buildings' }, { table: 'rooms', label: 'Rooms' }]}>
                   <DigitalTwin />
+                </DependencyGuard>
+              </Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/live-availability" element={
+            <ProtectedRoute roles={['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Faculty', 'Event Coordinator', 'Infrastructure Manager']}>
+              <Layout title="Live Room Availability">
+                <DependencyGuard dependencies={[{ table: 'rooms', label: 'Rooms' }]}>
+                  <LiveRoomAvailability />
                 </DependencyGuard>
               </Layout>
             </ProtectedRoute>
@@ -10480,6 +10490,638 @@ function BookingManagement() {
               >
                 Close
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LiveRoomAvailability() {
+  const { user } = useAuth();
+  const initialLoadRef = useRef(false);
+  const [campuses, setCampuses] = useState<any[]>([]);
+  const [buildings, setBuildings] = useState<any[]>([]);
+  const [blocks, setBlocks] = useState<any[]>([]);
+  const [floors, setFloors] = useState<any[]>([]);
+  const [rooms, setRooms] = useState<any[]>([]);
+  const [departments, setDepartments] = useState<any[]>([]);
+  const [equipment, setEquipment] = useState<any[]>([]);
+  const [loadingLookups, setLoadingLookups] = useState(true);
+  const [loadingResults, setLoadingResults] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState<{ type: 'success' | 'error', text: string } | null>(null);
+  const [viewMode, setViewMode] = useState<'cards' | 'table'>('cards');
+  const [expandedRoomId, setExpandedRoomId] = useState<string | number | null>(null);
+  const [bookingRoom, setBookingRoom] = useState<any | null>(null);
+  const [bookingForm, setBookingForm] = useState({
+    eventName: '',
+    purpose: '',
+    departmentId: '',
+    equipmentRequired: '',
+    notes: '',
+  });
+  const [filters, setFilters] = useState(() => {
+    const now = new Date();
+    const rounded = new Date(now);
+    const minutes = rounded.getMinutes();
+    const roundedMinutes = minutes < 15 ? 0 : minutes < 45 ? 30 : 60;
+    if (roundedMinutes === 60) {
+      rounded.setHours(rounded.getHours() + 1, 0, 0, 0);
+    } else {
+      rounded.setMinutes(roundedMinutes, 0, 0);
+    }
+    const startTime = `${rounded.getHours().toString().padStart(2, '0')}:${rounded.getMinutes().toString().padStart(2, '0')}`;
+    const endTimeDate = new Date(rounded);
+    endTimeDate.setHours(endTimeDate.getHours() + 1);
+    const endTime = `${endTimeDate.getHours().toString().padStart(2, '0')}:${endTimeDate.getMinutes().toString().padStart(2, '0')}`;
+
+    return {
+      date: formatLocalDate(rounded),
+      startTime,
+      endTime,
+      campusId: '',
+      buildingId: '',
+      blockId: '',
+      floorId: '',
+      departmentId: '',
+      roomType: '',
+      minCapacity: '30',
+      equipment: '',
+    };
+  });
+  const [results, setResults] = useState<any>({
+    summary: {
+      totalRooms: 0,
+      available: 0,
+      occupied: 0,
+      booked: 0,
+      maintenance: 0,
+      capacityMismatch: 0,
+      bestSuitable: 0,
+    },
+    recommendedRooms: [],
+    rooms: [],
+  });
+
+  const canDirectDecideBookings = ['Administrator', 'Dean (P&M)'].includes(user?.role);
+  const canBookRooms = ['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Faculty', 'Event Coordinator'].includes(user?.role);
+  const userDepartmentId = departments.find(dept => normalizeLookupValue(dept.name) === normalizeLookupValue(user?.department))?.id?.toString() || '';
+  const canChooseAnyRequestDepartment = canDirectDecideBookings || user?.role === 'Deputy Dean (P&M)' || user?.role === 'Administrator';
+  const bookingDepartmentOptions = canChooseAnyRequestDepartment || !user?.department
+    ? departments
+    : departments.filter(dept => normalizeLookupValue(dept.name) === normalizeLookupValue(user.department));
+
+  useEffect(() => {
+    const loadLookups = async () => {
+      const startedAt = performance.now();
+      try {
+        setLoadingLookups(true);
+        const [
+          campusData,
+          buildingData,
+          blockData,
+          floorData,
+          roomData,
+          departmentData,
+          equipmentData,
+        ] = await fetchSharedLookupJsons([
+          '/api/campuses',
+          '/api/buildings',
+          '/api/blocks',
+          '/api/floors',
+          '/api/rooms',
+          '/api/departments',
+          '/api/equipment',
+        ]);
+        setCampuses(Array.isArray(campusData) ? campusData : []);
+        setBuildings(Array.isArray(buildingData) ? buildingData : []);
+        setBlocks(Array.isArray(blockData) ? blockData : []);
+        setFloors(Array.isArray(floorData) ? floorData : []);
+        setRooms(Array.isArray(roomData) ? roomData : []);
+        setDepartments(Array.isArray(departmentData) ? departmentData : []);
+        setEquipment(Array.isArray(equipmentData) ? equipmentData : []);
+        void trackModuleLoadMetric('LiveRoomAvailability', 'lookup-load', performance.now() - startedAt, Array.isArray(roomData) ? roomData.length : 0);
+      } catch (err: any) {
+        setError(err.message || 'Failed to load availability lookups.');
+      } finally {
+        setLoadingLookups(false);
+      }
+    };
+
+    loadLookups();
+  }, []);
+
+  const selectedBuilding = buildings.find(building => idsMatch(building.id, filters.buildingId));
+  const selectedBuildingBlocks = selectedBuilding
+    ? blocks.filter(block => idsMatch(block.building_id, selectedBuilding.id))
+    : [];
+  const blockOptions = selectedBuildingBlocks;
+  const floorOptions = filters.blockId
+    ? floors.filter(floor => idsMatch(floor.block_id, filters.blockId))
+    : selectedBuildingBlocks.length > 0
+      ? floors.filter(floor => selectedBuildingBlocks.some(block => idsMatch(block.id, floor.block_id)))
+      : [];
+  const buildingOptions = filters.campusId
+    ? buildings.filter(building => idsMatch(building.campus_id, filters.campusId))
+    : buildings;
+  const equipmentOptions = Array.from(new Set(equipment.map((item: any) => item.name).filter(Boolean))).sort((left, right) =>
+    left.localeCompare(right, undefined, { sensitivity: 'base' })
+  );
+
+  const fetchAvailability = async (activeFilters = filters) => {
+    const startedAt = performance.now();
+    try {
+      setLoadingResults(true);
+      setError('');
+      setNotice(null);
+      const params = new URLSearchParams();
+      params.set('date', activeFilters.date);
+      params.set('startTime', activeFilters.startTime);
+      params.set('endTime', activeFilters.endTime);
+      if (activeFilters.campusId) params.set('campusId', activeFilters.campusId);
+      if (activeFilters.buildingId) params.set('buildingId', activeFilters.buildingId);
+      if (activeFilters.blockId) params.set('blockId', activeFilters.blockId);
+      if (activeFilters.floorId) params.set('floorId', activeFilters.floorId);
+      if (activeFilters.departmentId) params.set('departmentId', activeFilters.departmentId);
+      if (activeFilters.roomType) params.set('roomType', activeFilters.roomType);
+      if (activeFilters.minCapacity) params.set('minCapacity', activeFilters.minCapacity);
+      if (activeFilters.equipment) params.set('equipment', activeFilters.equipment);
+      const data = await apiJson(`/api/live-availability?${params.toString()}`);
+      setResults({
+        summary: data.summary || results.summary,
+        recommendedRooms: Array.isArray(data.recommendedRooms) ? data.recommendedRooms : [],
+        rooms: Array.isArray(data.rooms) ? data.rooms : [],
+      });
+      void trackModuleLoadMetric('LiveRoomAvailability', 'data-load', performance.now() - startedAt, Array.isArray(data.rooms) ? data.rooms.length : 0);
+    } catch (err: any) {
+      setError(err.message || 'Failed to load live availability.');
+      setResults(prev => ({ ...prev, recommendedRooms: [], rooms: [] }));
+    } finally {
+      setLoadingResults(false);
+    }
+  };
+
+  useEffect(() => {
+    if (loadingLookups || initialLoadRef.current) return;
+    initialLoadRef.current = true;
+    void fetchAvailability();
+  }, [loadingLookups]);
+
+  const groupedRooms = useMemo(() => {
+    const groups = new Map<string, { key: string, buildingName: string, blockName: string, floorName: string, rooms: any[] }>();
+    results.rooms.forEach((room: any) => {
+      const floorLabel = getFloorName(room.floorName);
+      const groupKey = `${room.buildingName}|${room.blockName}|${floorLabel}`;
+      if (!groups.has(groupKey)) {
+        groups.set(groupKey, {
+          key: groupKey,
+          buildingName: room.buildingName,
+          blockName: room.blockName,
+          floorName: floorLabel,
+          rooms: [],
+        });
+      }
+      groups.get(groupKey)?.rooms.push(room);
+    });
+    return Array.from(groups.values());
+  }, [results.rooms]);
+
+  const statusTheme = (status: string) => {
+    if (status === 'Best Suitable') return { card: 'border-violet-200 bg-violet-50/70', badge: 'bg-violet-100 text-violet-700 border-violet-200' };
+    if (status === 'Available') return { card: 'border-emerald-200 bg-emerald-50/70', badge: 'bg-emerald-100 text-emerald-700 border-emerald-200' };
+    if (status === 'Occupied by Timetable') return { card: 'border-rose-200 bg-rose-50/70', badge: 'bg-rose-100 text-rose-700 border-rose-200' };
+    if (status === 'Booked for Event') return { card: 'border-sky-200 bg-sky-50/70', badge: 'bg-sky-100 text-sky-700 border-sky-200' };
+    if (status === 'Under Maintenance') return { card: 'border-amber-200 bg-amber-50/70', badge: 'bg-amber-100 text-amber-700 border-amber-200' };
+    return { card: 'border-slate-200 bg-slate-50/80', badge: 'bg-slate-200 text-slate-700 border-slate-300' };
+  };
+
+  const openBookingModal = (room: any) => {
+    setBookingRoom(room);
+    setBookingForm({
+      eventName: '',
+      purpose: '',
+      departmentId: filters.departmentId || userDepartmentId,
+      equipmentRequired: filters.equipment || '',
+      notes: '',
+    });
+  };
+
+  const handleBookingSubmit = async () => {
+    if (!bookingRoom) return;
+    if (!bookingForm.eventName.trim()) {
+      setNotice({ type: 'error', text: 'Event name is required to submit the booking request.' });
+      return;
+    }
+    if (!bookingForm.departmentId) {
+      setNotice({ type: 'error', text: 'Please choose a department before booking the room.' });
+      return;
+    }
+
+    try {
+      const status = canDirectDecideBookings ? 'Approved' : 'Pending';
+      await apiJson('/api/bookings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          request_id: `REQ-${Date.now()}-${bookingRoom.id}`,
+          faculty_name: user?.name || 'Unknown',
+          department_id: bookingForm.departmentId,
+          event_name: bookingForm.eventName.trim(),
+          purpose: bookingForm.purpose.trim(),
+          notes: bookingForm.notes.trim(),
+          student_count: parseInt(filters.minCapacity, 10) || null,
+          room_type: bookingRoom.roomType,
+          room_id: bookingRoom.id,
+          equipment_required: bookingForm.equipmentRequired.trim(),
+          date: filters.date,
+          start_time: filters.startTime,
+          end_time: filters.endTime,
+          status,
+        }),
+      });
+      setBookingRoom(null);
+      setNotice({ type: 'success', text: `Booking request submitted for room ${bookingRoom.roomNumber}.` });
+      await fetchAvailability();
+    } catch (err: any) {
+      setNotice({ type: 'error', text: err.message || 'Booking request failed.' });
+    }
+  };
+
+  const roomTypeOptions = ['Classroom', 'Lab', 'Seminar Hall', 'Auditorium', 'Meeting Room', 'Other'];
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
+          <div>
+            <h2 className="text-2xl font-bold text-slate-800">Live Room Availability</h2>
+            <p className="text-sm text-slate-500 mt-1">Find rooms that are available, occupied, booked, under maintenance, or best suited for immediate booking.</p>
+          </div>
+          <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-1">
+            <button onClick={() => setViewMode('cards')} className={cn('px-4 py-2 rounded-lg text-sm font-bold transition-all', viewMode === 'cards' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500')}>
+              <LayoutGrid size={16} className="inline-block mr-2" />
+              Card View
+            </button>
+            <button onClick={() => setViewMode('table')} className={cn('px-4 py-2 rounded-lg text-sm font-bold transition-all', viewMode === 'table' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500')}>
+              <FileText size={16} className="inline-block mr-2" />
+              Table View
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
+          <div>
+            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Date</label>
+            <input type="date" value={filters.date} min={formatLocalDate(new Date())} onChange={e => setFilters(prev => ({ ...prev, date: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50" />
+          </div>
+          <div>
+            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Start Time</label>
+            <input type="time" value={filters.startTime} onChange={e => setFilters(prev => ({ ...prev, startTime: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50" />
+          </div>
+          <div>
+            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">End Time</label>
+            <input type="time" value={filters.endTime} onChange={e => setFilters(prev => ({ ...prev, endTime: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50" />
+          </div>
+          <div>
+            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Campus</label>
+            <select value={filters.campusId} onChange={e => setFilters(prev => ({ ...prev, campusId: e.target.value, buildingId: '', blockId: '', floorId: '' }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50">
+              <option value="">All Campuses</option>
+              {campuses.map((campus: any) => <option key={campus.id} value={campus.id}>{campus.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Building</label>
+            <select value={filters.buildingId} onChange={e => setFilters(prev => ({ ...prev, buildingId: e.target.value, blockId: '', floorId: '' }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50">
+              <option value="">All Buildings</option>
+              {buildingOptions.map((building: any) => <option key={building.id} value={building.id}>{building.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Block / Direct Floors</label>
+            <select value={filters.blockId} onChange={e => setFilters(prev => ({ ...prev, blockId: e.target.value, floorId: '' }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50">
+              <option value="">All Blocks</option>
+              {blockOptions.map((block: any) => <option key={block.id} value={block.id}>{getBlockDisplayLabel(block, selectedBuilding)}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Floor</label>
+            <select value={filters.floorId} onChange={e => setFilters(prev => ({ ...prev, floorId: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50">
+              <option value="">All Floors</option>
+              {floorOptions.map((floor: any) => <option key={floor.id} value={floor.id}>{getFloorName(floor.floor_number)}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Department</label>
+            <select value={filters.departmentId} onChange={e => setFilters(prev => ({ ...prev, departmentId: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50">
+              <option value="">All Departments</option>
+              {departments.map((department: any) => <option key={department.id} value={department.id}>{department.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Room Type</label>
+            <select value={filters.roomType} onChange={e => setFilters(prev => ({ ...prev, roomType: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50">
+              <option value="">All Room Types</option>
+              {roomTypeOptions.map(option => <option key={option} value={option}>{option}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Min Capacity</label>
+            <input type="number" min={0} value={filters.minCapacity} onChange={e => setFilters(prev => ({ ...prev, minCapacity: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50" />
+          </div>
+          <div className="xl:col-span-2">
+            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Preferred Equipment</label>
+            <select value={filters.equipment} onChange={e => setFilters(prev => ({ ...prev, equipment: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50">
+              <option value="">Any Equipment</option>
+              {equipmentOptions.map(name => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </div>
+        </div>
+
+        {filters.endTime <= filters.startTime && (
+          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+            End time must be later than the selected start time.
+          </div>
+        )}
+
+        <div className="mt-6 flex flex-wrap gap-3">
+          <button
+            onClick={() => void fetchAvailability()}
+            disabled={loadingLookups || loadingResults || filters.endTime <= filters.startTime}
+            className="px-5 py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 disabled:opacity-50 flex items-center gap-2"
+          >
+            <Search size={18} />
+            {loadingResults ? 'Checking Availability...' : 'Check Live Availability'}
+          </button>
+          <button
+            onClick={() => {
+              const resetFilters = {
+                ...filters,
+                campusId: '',
+                buildingId: '',
+                blockId: '',
+                floorId: '',
+                departmentId: '',
+                roomType: '',
+                minCapacity: '30',
+                equipment: '',
+              };
+              setFilters(resetFilters);
+              void fetchAvailability(resetFilters);
+            }}
+            className="px-5 py-3 bg-white text-slate-700 font-bold rounded-xl border border-slate-200 hover:bg-slate-50"
+          >
+            Clear Filters
+          </button>
+        </div>
+      </div>
+
+      {notice && (
+        <div className={cn('px-4 py-3 rounded-xl border text-sm font-medium', notice.type === 'success' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-rose-200 bg-rose-50 text-rose-700')}>
+          {notice.text}
+        </div>
+      )}
+
+      {error && (
+        <div className="px-4 py-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-700 text-sm font-medium">
+          {error}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4">
+        {[
+          { label: 'Total Rooms', value: results.summary.totalRooms, color: 'text-slate-700', bg: 'bg-slate-50' },
+          { label: 'Available Now', value: results.summary.available, color: 'text-emerald-700', bg: 'bg-emerald-50' },
+          { label: 'Occupied by Timetable', value: results.summary.occupied, color: 'text-rose-700', bg: 'bg-rose-50' },
+          { label: 'Booked Rooms', value: results.summary.booked, color: 'text-sky-700', bg: 'bg-sky-50' },
+          { label: 'Maintenance Rooms', value: results.summary.maintenance, color: 'text-amber-700', bg: 'bg-amber-50' },
+          { label: 'Best Suitable', value: results.summary.bestSuitable, color: 'text-violet-700', bg: 'bg-violet-50' },
+        ].map(card => (
+          <div key={card.label} className={cn('rounded-2xl border border-slate-200 p-5 shadow-sm', card.bg)}>
+            <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-slate-500">{card.label}</p>
+            <p className={cn('text-3xl font-extrabold mt-3', card.color)}>{card.value || 0}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+        <div className="flex items-center justify-between mb-5">
+          <div>
+            <h3 className="text-xl font-bold text-slate-800">Recommended Rooms</h3>
+            <p className="text-sm text-slate-500 mt-1">Top rooms that best fit the selected date, time, capacity, department, and equipment context.</p>
+          </div>
+          <div className="px-3 py-1 rounded-full bg-violet-50 text-violet-700 text-xs font-bold">{results.recommendedRooms.length} suggestions</div>
+        </div>
+
+        {results.recommendedRooms.length > 0 ? (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            {results.recommendedRooms.map((room: any) => (
+              <div key={`recommended-${room.id}`} className="rounded-2xl border border-violet-200 bg-violet-50/70 p-5">
+                <div className="flex justify-between items-start gap-3 mb-3">
+                  <div>
+                    <h4 className="text-lg font-bold text-slate-900">Room {room.roomNumber}</h4>
+                    <p className="text-sm text-slate-500">{room.buildingName} • {getFloorName(room.floorName)}</p>
+                  </div>
+                  <span className="px-3 py-1 rounded-full text-[11px] font-bold border bg-violet-100 text-violet-700 border-violet-200">BEST SUITABLE</span>
+                </div>
+                <div className="space-y-2 text-sm text-slate-600">
+                  <p><span className="font-bold text-slate-700">Type:</span> {room.roomType}</p>
+                  <p><span className="font-bold text-slate-700">Capacity:</span> {room.capacity}</p>
+                  <p><span className="font-bold text-slate-700">Department:</span> {room.departmentName || 'Unmapped'}</p>
+                  <p><span className="font-bold text-slate-700">Equipment:</span> {room.equipment.join(', ') || 'No equipment recorded'}</p>
+                  <p className="text-violet-700 font-medium">{room.statusReason}</p>
+                </div>
+                {canBookRooms && (
+                  <button onClick={() => openBookingModal(room)} className="mt-4 w-full py-3 rounded-xl bg-violet-600 text-white font-bold hover:bg-violet-700 transition-colors">
+                    Book Now
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-dashed border-slate-200 p-8 text-center text-slate-400">
+            Recommended rooms will appear here once matching available rooms are found.
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+        <div className="flex items-center justify-between mb-5">
+          <div>
+            <h3 className="text-xl font-bold text-slate-800">Live Availability Map</h3>
+            <p className="text-sm text-slate-500 mt-1">Grouped by building, block/direct floors, and floor to make live scanning easier.</p>
+          </div>
+          <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">{results.rooms.length} rooms</div>
+        </div>
+
+        {loadingResults ? (
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-10 text-center text-slate-500">
+            Loading live availability...
+          </div>
+        ) : results.rooms.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-slate-200 p-10 text-center text-slate-400">
+            No matching rooms found for the selected date, time, and filters.
+          </div>
+        ) : viewMode === 'table' ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left min-w-[1040px]">
+              <thead>
+                <tr className="border-b border-slate-200">
+                  {['Room', 'Building', 'Floor', 'Type', 'Capacity', 'Status', 'Current Usage', 'Next Available', 'Action'].map(header => (
+                    <th key={header} className="px-4 py-3 text-[11px] font-bold uppercase tracking-[0.2em] text-slate-500">{header}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {results.rooms.map((room: any) => {
+                  const theme = statusTheme(room.status);
+                  return (
+                    <Fragment key={`table-room-${room.id}`}>
+                      <tr className="border-b border-slate-100">
+                        <td className="px-4 py-4">
+                          <div className="font-bold text-slate-800">{room.roomNumber}</div>
+                          <div className="text-xs text-slate-500">{room.departmentName || 'Unmapped'}</div>
+                        </td>
+                        <td className="px-4 py-4 text-sm text-slate-600">{room.buildingName}{room.blockName ? ` • ${room.blockName}` : ''}</td>
+                        <td className="px-4 py-4 text-sm text-slate-600">{getFloorName(room.floorName)}</td>
+                        <td className="px-4 py-4 text-sm text-slate-600">{room.roomType}</td>
+                        <td className="px-4 py-4 text-sm text-slate-600">{room.capacity}</td>
+                        <td className="px-4 py-4">
+                          <span className={cn('px-3 py-1 rounded-full text-[11px] font-bold border', theme.badge)}>{room.status}</span>
+                        </td>
+                        <td className="px-4 py-4 text-sm text-slate-600">{room.currentUsage || '-'}</td>
+                        <td className="px-4 py-4 text-sm text-slate-600">{room.nextAvailableSlot || '-'}</td>
+                        <td className="px-4 py-4">
+                          <div className="flex items-center gap-2">
+                            {room.availableForBooking && canBookRooms ? (
+                              <button onClick={() => openBookingModal(room)} className="px-3 py-1.5 rounded-lg bg-emerald-500 text-white text-xs font-bold hover:bg-emerald-600">Book Now</button>
+                            ) : (
+                              <button onClick={() => setExpandedRoomId(prev => prev === room.id ? null : room.id)} className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-700 text-xs font-bold hover:bg-slate-200">
+                                {expandedRoomId === room.id ? 'Hide Reason' : 'View Reason'}
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                      {expandedRoomId === room.id && (
+                        <tr className="bg-slate-50">
+                          <td className="px-4 py-4 text-sm text-slate-600" colSpan={9}>
+                            <span className="font-bold text-slate-700">Reason:</span> {room.statusReason || 'No additional detail available.'}
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="space-y-6">
+            {groupedRooms.map(group => (
+              <div key={group.key} className="space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                  <div>
+                    <h4 className="text-lg font-bold text-slate-800">{group.buildingName}</h4>
+                    <p className="text-sm text-slate-500">{group.blockName || 'Direct floors'} • {group.floorName}</p>
+                  </div>
+                  <div className="text-xs font-bold uppercase tracking-[0.18em] text-slate-400">{group.rooms.length} rooms</div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {group.rooms.map((room: any) => {
+                    const theme = statusTheme(room.status);
+                    return (
+                      <div key={room.id} className={cn('rounded-2xl border p-5 shadow-sm transition-all', theme.card)}>
+                        <div className="flex justify-between items-start gap-3 mb-3">
+                          <div>
+                            <h5 className="text-lg font-bold text-slate-900">Room {room.roomNumber}</h5>
+                            <p className="text-sm text-slate-500">{room.buildingName} • {group.floorName}</p>
+                          </div>
+                          <span className={cn('px-3 py-1 rounded-full text-[11px] font-bold border', theme.badge)}>{room.status}</span>
+                        </div>
+
+                        <div className="space-y-2 text-sm text-slate-600">
+                          <p><span className="font-bold text-slate-700">Type:</span> {room.roomType}</p>
+                          <p><span className="font-bold text-slate-700">Capacity:</span> {room.capacity}</p>
+                          <p><span className="font-bold text-slate-700">Department Allocation:</span> {room.departmentName || 'Unmapped'}</p>
+                          <p><span className="font-bold text-slate-700">Current Status:</span> {room.currentUsage || room.status}</p>
+                          <p><span className="font-bold text-slate-700">Next Available:</span> {room.nextAvailableSlot || '-'}</p>
+                          <p><span className="font-bold text-slate-700">Equipment:</span> {room.equipment.join(', ') || 'No equipment recorded'}</p>
+                          {room.aliases?.length > 0 && <p className="text-xs text-blue-600">Aliases: {room.aliases.join(', ')}</p>}
+                        </div>
+
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          {room.availableForBooking && canBookRooms ? (
+                            <button onClick={() => openBookingModal(room)} className="flex-1 px-4 py-2.5 rounded-xl bg-slate-900 text-white font-bold hover:bg-slate-800">
+                              Book Now
+                            </button>
+                          ) : (
+                            <button onClick={() => setExpandedRoomId(prev => prev === room.id ? null : room.id)} className="flex-1 px-4 py-2.5 rounded-xl bg-white border border-slate-200 text-slate-700 font-bold hover:bg-slate-50">
+                              {expandedRoomId === room.id ? 'Hide Reason' : 'View Reason'}
+                            </button>
+                          )}
+                        </div>
+
+                        {expandedRoomId === room.id && (
+                          <div className="mt-3 rounded-xl border border-white/70 bg-white/80 px-4 py-3 text-sm text-slate-600">
+                            {room.statusReason || 'No additional detail available.'}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {bookingRoom && (
+        <div className="fixed inset-0 z-[90] bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-2xl rounded-3xl bg-white border border-slate-200 shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-5 border-b border-slate-100">
+              <div>
+                <h3 className="text-xl font-bold text-slate-900">Book Room {bookingRoom.roomNumber}</h3>
+                <p className="text-sm text-slate-500 mt-1">{filters.date} • {filters.startTime} to {filters.endTime}</p>
+              </div>
+              <button onClick={() => setBookingRoom(null)} className="w-10 h-10 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 flex items-center justify-center">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="md:col-span-2 rounded-xl bg-slate-50 border border-slate-100 px-4 py-3 text-sm text-slate-600">
+                This reuses the existing booking request flow and prefills the selected room, date, and time for faster submission.
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Event Name</label>
+                <input value={bookingForm.eventName} onChange={e => setBookingForm(prev => ({ ...prev, eventName: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Purpose</label>
+                <input value={bookingForm.purpose} onChange={e => setBookingForm(prev => ({ ...prev, purpose: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Department</label>
+                <select value={bookingForm.departmentId} onChange={e => setBookingForm(prev => ({ ...prev, departmentId: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50">
+                  <option value="">Select Department</option>
+                  {bookingDepartmentOptions.map((department: any) => <option key={department.id} value={department.id}>{department.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Equipment Required</label>
+                <input value={bookingForm.equipmentRequired} onChange={e => setBookingForm(prev => ({ ...prev, equipmentRequired: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50" />
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Notes</label>
+                <textarea rows={3} value={bookingForm.notes} onChange={e => setBookingForm(prev => ({ ...prev, notes: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50" />
+              </div>
+            </div>
+            <div className="px-6 py-5 border-t border-slate-100 flex gap-3">
+              <button onClick={() => setBookingRoom(null)} className="flex-1 py-3 rounded-xl bg-slate-100 text-slate-700 font-bold hover:bg-slate-200">Cancel</button>
+              <button onClick={() => void handleBookingSubmit()} className="flex-1 py-3 rounded-xl bg-emerald-500 text-white font-bold hover:bg-emerald-600">Submit Booking</button>
             </div>
           </div>
         </div>
