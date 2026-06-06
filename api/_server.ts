@@ -4672,12 +4672,20 @@ app.get("/api/live-availability", authenticate, async (req, res) => {
       .filter(Boolean) as any[];
 
     const sortedRooms = [...rows].sort((left: any, right: any) => {
-      const statusOrder = ["Best Suitable", "Available", "Occupied by Timetable", "Booked for Event", "Under Maintenance", "Capacity Mismatch"];
-      const statusDelta = statusOrder.indexOf(left.status) - statusOrder.indexOf(right.status);
-      if (statusDelta !== 0) return statusDelta;
-      if (left.buildingName !== right.buildingName) return left.buildingName.localeCompare(right.buildingName, undefined, { sensitivity: "base" });
-      if (left.blockName !== right.blockName) return left.blockName.localeCompare(right.blockName, undefined, { sensitivity: "base" });
-      if ((Number(left.floorName) || 0) !== (Number(right.floorName) || 0)) return (Number(left.floorName) || 0) - (Number(right.floorName) || 0);
+      if (left.buildingName !== right.buildingName) {
+        return left.buildingName.localeCompare(right.buildingName, undefined, { sensitivity: "base" });
+      }
+      if (left.blockName !== right.blockName) {
+        return left.blockName.localeCompare(right.blockName, undefined, { numeric: true, sensitivity: "base" });
+      }
+      const leftFloor = Number(left.floorName);
+      const rightFloor = Number(right.floorName);
+      if (Number.isFinite(leftFloor) && Number.isFinite(rightFloor) && leftFloor !== rightFloor) {
+        return leftFloor - rightFloor;
+      }
+      if ((left.floorName || "") !== (right.floorName || "")) {
+        return String(left.floorName || "").localeCompare(String(right.floorName || ""), undefined, { numeric: true, sensitivity: "base" });
+      }
       return (left.roomNumber || "").localeCompare((right.roomNumber || ""), undefined, { numeric: true, sensitivity: "base" });
     });
 
