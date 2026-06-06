@@ -4128,6 +4128,35 @@ app.get("/api/events/search-rooms", authenticate, async (req, res) => {
 
 app.get("/api/reports/utilization", authenticate, async (req, res) => {
   try {
+    const getQueryValue = (key: string) => req.query?.[key]?.toString().trim() || "";
+    const reportType = getQueryValue("reportType");
+    const dateFrom = getQueryValue("dateFrom");
+    const dateTo = getQueryValue("dateTo");
+    const campusFilter = getQueryValue("campus");
+    const buildingFilter = getQueryValue("building");
+    const blockFilter = getQueryValue("block");
+    const floorFilter = getQueryValue("floor");
+    const departmentFilter = getQueryValue("department");
+    const yearFilter = getQueryValue("year");
+    const semesterFilter = getQueryValue("semester");
+    const sectionFilter = getQueryValue("section");
+    const roomFilter = getQueryValue("room");
+    const roomTypeFilter = getQueryValue("roomType");
+    const bookingStatusFilter = getQueryValue("bookingStatus");
+    const flagFilter = getQueryValue("flag");
+    const shouldApplyBookingDateScope = Boolean(dateFrom || dateTo) && (reportType === "booking_approvals" || !!bookingStatusFilter);
+    const matchesFilterValue = (value: any, expected: string) =>
+      !expected || value?.toString().trim().toLowerCase() === expected.trim().toLowerCase();
+    const dateMatches = (dates: string[] = []) => {
+      if (!dateFrom && !dateTo) return true;
+      return dates.some((date) => {
+        if (!date) return false;
+        if (dateFrom && date < dateFrom) return false;
+        if (dateTo && date > dateTo) return false;
+        return true;
+      });
+    };
+
     const rooms = await db.prepare(`
       SELECT r.*, pr.room_number as parent_room_number, bld.name as building_name, b.name as block_name, f.floor_number, c.name as campus_name
       FROM rooms r
@@ -4164,7 +4193,7 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
       }
     });
 
-    const reports = rooms.map(room => {
+    const baseReports = rooms.map(room => {
       const roomSchedules = schedules.filter(s => idsEqual(s.room_id, room.id));
       const roomBookings = bookings.filter(b => idsEqual(b.room_id, room.id));
       const allRoomBookings = allBookings.filter(b => idsEqual(b.room_id, room.id));
@@ -4254,6 +4283,48 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
       };
     });
 
+    const filterOptions = {
+      campuses: Array.from(new Set(baseReports.map(report => report.campus).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+      buildings: Array.from(new Set(baseReports.map(report => report.building).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+      blocks: Array.from(new Set(baseReports.map(report => report.block).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+      floors: Array.from(new Set(baseReports.map(report => report.floor_number).filter((floor) => floor !== undefined && floor !== null)))
+        .sort((a: any, b: any) => Number(a) - Number(b)),
+      departments: Array.from(new Set([
+        ...departments.map((department: any) => department?.name),
+        ...baseReports.map(report => report.department),
+      ].filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+      years: Array.from(new Set(baseReports.flatMap(report => report.yearTags || []))).sort((a: any, b: any) => Number(a) - Number(b)),
+      semesters: Array.from(new Set(baseReports.flatMap(report => report.semesterTags || []))).sort((a, b) => a.localeCompare(b)),
+      sections: Array.from(new Set(baseReports.flatMap(report => report.sectionTags || []))).sort((a, b) => a.localeCompare(b)),
+      rooms: Array.from(new Set(baseReports.map(report => report.room_number?.toString().trim()).filter(Boolean)))
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" })),
+      roomTypes: Array.from(new Set(baseReports.map(report => report.room_type).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+      flags: Array.from(new Set(baseReports.flatMap(report => report.flags || []).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+    };
+
+    const reports = baseReports.filter((report) => {
+      const bookingDates = bookingStatusFilter === "Approved" ? report.approvedBookingDates : report.bookingDates;
+      if (shouldApplyBookingDateScope && !dateMatches(bookingDates || [])) return false;
+      if (!matchesFilterValue(report.campus, campusFilter)) return false;
+      if (!matchesFilterValue(report.building, buildingFilter)) return false;
+      if (!matchesFilterValue(report.block, blockFilter)) return false;
+      if (floorFilter && report.floor_number?.toString() !== floorFilter) return false;
+      if (!matchesFilterValue(report.department, departmentFilter)) return false;
+      if (yearFilter && !(report.yearTags || []).includes(yearFilter)) return false;
+      if (semesterFilter && !(report.semesterTags || []).includes(semesterFilter)) return false;
+      if (sectionFilter && !(report.sectionTags || []).includes(sectionFilter)) return false;
+      if (roomFilter && report.room_number?.toString().trim() !== roomFilter) return false;
+      if (!matchesFilterValue(report.room_type, roomTypeFilter)) return false;
+      if (bookingStatusFilter && !(report.bookingStatuses || []).includes(bookingStatusFilter)) return false;
+      if (flagFilter && !(report.flags || []).includes(flagFilter)) return false;
+      if (reportType === "underused" && !(report.flags || []).includes("Underused")) return false;
+      if (reportType === "overused" && !(report.flags || []).includes("Overused")) return false;
+      if (reportType === "maintenance_impact" && report.maintenanceIssues <= 0 && report.status !== "Maintenance") return false;
+      if (reportType === "department_allocation" && report.department === "Unmapped") return false;
+      if (reportType === "booking_approvals" && !(report.bookingStatuses || []).length) return false;
+      return true;
+    });
+
     const buildingReports = Array.from(new Set(reports.map(report => report.building))).map(building => {
       const buildingRooms = reports.filter(report => report.building === building);
       const avgUtilization = buildingRooms.reduce((acc, report) => acc + report.utilization, 0) / (buildingRooms.length || 1);
@@ -4265,9 +4336,17 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
       };
     });
 
+    const filteredRoomIds = new Set(reports.map(report => report.room_id?.toString()).filter(Boolean));
+    const filteredAllBookings = allBookings.filter((booking) => {
+      if (!filteredRoomIds.has(booking.room_id?.toString())) return false;
+      const bookingDate = booking.date?.toString();
+      if (dateFrom && (!bookingDate || bookingDate < dateFrom)) return false;
+      if (dateTo && (!bookingDate || bookingDate > dateTo)) return false;
+      return true;
+    });
     const bookingStatusReports = ["Pending", "HOD Recommended", "Approved", "Postponed", "Rejected"].map(status => ({
       name: status,
-      count: allBookings.filter(booking => booking.status === status).length
+      count: filteredAllBookings.filter(booking => booking.status === status).length
     }));
 
     // Aggregate by Department
@@ -4283,7 +4362,7 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
         avgUtilization: Math.round(avgUtilization),
         roomCount: deptRooms.length
       };
-    });
+    }).filter(report => report.roomCount > 0);
 
     // Aggregate by School (room-weighted, only schools that actually have mapped rooms)
     const schoolReports = Array.from(new Set(reports.map(report => report.school).filter(Boolean))).map((schoolName) => {
@@ -4304,7 +4383,7 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
       };
     }).sort((a, b) => b.avgUtilization - a.avgUtilization);
 
-    res.json({ roomReports: reports, deptReports, schoolReports, buildingReports, bookingStatusReports });
+    res.json({ roomReports: reports, deptReports, schoolReports, buildingReports, bookingStatusReports, filterOptions });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

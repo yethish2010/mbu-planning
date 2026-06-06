@@ -1603,6 +1603,47 @@ const fetchSharedLookupJson = async (path: string) => {
 const fetchSharedLookupJsons = async (paths: string[]) =>
   Promise.all(paths.map(path => fetchSharedLookupJson(path)));
 
+const buildUtilizationReportQueryString = (filters: Partial<{
+  reportType: string;
+  dateFrom: string;
+  dateTo: string;
+  campus: string;
+  building: string;
+  block: string;
+  floor: string;
+  department: string;
+  year: string;
+  semester: string;
+  section: string;
+  room: string;
+  roomType: string;
+  bookingStatus: string;
+  flag: string;
+}>) => {
+  const params = new URLSearchParams();
+  [
+    'reportType',
+    'dateFrom',
+    'dateTo',
+    'campus',
+    'building',
+    'block',
+    'floor',
+    'department',
+    'year',
+    'semester',
+    'section',
+    'room',
+    'roomType',
+    'bookingStatus',
+    'flag',
+  ].forEach((key) => {
+    const value = filters[key as keyof typeof filters];
+    if (value) params.set(key, value);
+  });
+  return params.toString();
+};
+
 type ImportUpsertCache = Map<string, any[]>;
 
 const createImportUpsertCache = (): ImportUpsertCache => new Map();
@@ -10862,6 +10903,7 @@ function AnalyticsDashboard() {
   const [bookings, setBookings] = useState<any[]>([]);
   const [maintenance, setMaintenance] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isRefreshingAnalyticsReport, setIsRefreshingAnalyticsReport] = useState(false);
   const [analyticsFilters, setAnalyticsFilters] = useState({
     dateFrom: '',
     dateTo: '',
@@ -10870,20 +10912,27 @@ function AnalyticsDashboard() {
     roomType: '',
     bookingStatus: ''
   });
+  const analyticsReportQueryString = buildUtilizationReportQueryString({
+    reportType: 'room_utilization',
+    dateFrom: analyticsFilters.dateFrom,
+    dateTo: analyticsFilters.dateTo,
+    building: analyticsFilters.building,
+    department: analyticsFilters.department,
+    roomType: analyticsFilters.roomType,
+    bookingStatus: analyticsFilters.bookingStatus,
+  });
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [uRes, fRes, rRes, bRes, mRes] = await Promise.all([
+        const [uRes, fRes, bRes, mRes] = await Promise.all([
           fetch('/api/analytics/utilization-trends', { credentials: 'include' }),
           fetch('/api/analytics/booking-frequency', { credentials: 'include' }),
-          fetch('/api/reports/utilization', { credentials: 'include' }),
           fetch('/api/bookings', { credentials: 'include' }),
           fetch('/api/maintenance', { credentials: 'include' })
         ]);
         setUtilizationData(await uRes.json());
         setFrequencyData(await fRes.json());
-        setReportData(await rRes.json());
         setBookings(await bRes.json());
         setMaintenance(await mRes.json());
       } catch (err) {
@@ -10894,6 +10943,22 @@ function AnalyticsDashboard() {
     };
     fetchData();
   }, []);
+
+  useEffect(() => {
+    const fetchReportData = async () => {
+      setIsRefreshingAnalyticsReport(true);
+      try {
+        const data = await apiJson(`/api/reports/utilization${analyticsReportQueryString ? `?${analyticsReportQueryString}` : ''}`);
+        setReportData(data);
+      } catch (err) {
+        console.error(err);
+        setReportData(null);
+      } finally {
+        setIsRefreshingAnalyticsReport(false);
+      }
+    };
+    void fetchReportData();
+  }, [analyticsReportQueryString]);
 
   if (loading) return <div className="p-8 text-center text-slate-400">Loading Analytics...</div>;
 
@@ -10923,16 +10988,7 @@ function AnalyticsDashboard() {
     if (analyticsFilters.roomType && !matchesAnalyticsValue(booking.room_type || roomMeta?.room_type, analyticsFilters.roomType)) return false;
     return true;
   };
-  const filteredRoomReports = roomReports.filter((room: any) => {
-    const roomBookings = getRoomBookings(room);
-    const hasBookingScopedFilters = !!(analyticsFilters.dateFrom || analyticsFilters.dateTo || analyticsFilters.bookingStatus);
-    const hasMatchingBooking = roomBookings.some(booking => bookingMatchesFilters(booking, room));
-    if (analyticsFilters.building && !matchesAnalyticsValue(room.building, analyticsFilters.building)) return false;
-    if (analyticsFilters.department && !matchesAnalyticsValue(room.department, analyticsFilters.department) && !roomBookings.some(booking => matchesAnalyticsValue(booking.department_name, analyticsFilters.department))) return false;
-    if (analyticsFilters.roomType && !matchesAnalyticsValue(room.room_type, analyticsFilters.roomType) && !roomBookings.some(booking => matchesAnalyticsValue(booking.room_type, analyticsFilters.roomType))) return false;
-    if (hasBookingScopedFilters && !hasMatchingBooking) return false;
-    return true;
-  });
+  const filteredRoomReports = roomReports;
   const filteredBookings = bookings.filter(booking => bookingMatchesFilters(booking));
   const filteredMaintenance = maintenance.filter(item => {
     const roomMeta = roomMetaById.get(item.room_id?.toString()) || roomMetaByNumber.get(item.room_number?.toString());
@@ -10982,15 +11038,15 @@ function AnalyticsDashboard() {
     ...filteredBookings.filter(booking => booking.status === 'Pending').slice(0, 3).map(booking => `${booking.event_name || 'Room request'} is still pending.`)
   ].slice(0, 6);
   const standardRoomTypes = ROOM_TYPE_OPTIONS;
-  const buildingOptions = Array.from(new Set(roomReports.map((room: any) => room.building).filter(Boolean))).sort();
+  const analyticsFilterOptions = reportData?.filterOptions || {};
+  const buildingOptions = Array.isArray(analyticsFilterOptions.buildings) ? analyticsFilterOptions.buildings : [];
   const departmentOptions = Array.from(new Set([
-    ...(reportData?.deptReports || []).map((department: any) => department.name),
-    ...roomReports.map((room: any) => room.department),
+    ...(Array.isArray(analyticsFilterOptions.departments) ? analyticsFilterOptions.departments : []),
     ...bookings.map(booking => booking.department_name)
   ].filter(Boolean))).sort();
   const roomTypeOptions = Array.from(new Set([
     ...standardRoomTypes,
-    ...roomReports.map((room: any) => room.room_type),
+    ...(Array.isArray(analyticsFilterOptions.roomTypes) ? analyticsFilterOptions.roomTypes : []),
     ...bookings.map(booking => booking.room_type)
   ].filter(Boolean))).sort();
   const exportAnalytics = async () => {
@@ -11036,10 +11092,15 @@ function AnalyticsDashboard() {
             <h3 className="text-sm font-bold text-slate-800">Analytics Filters</h3>
             <p className="text-xs text-slate-500">Filter the live dashboard by date, building, department, room type, or booking status.</p>
           </div>
-          <button onClick={exportAnalytics} className="px-4 py-2 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-xl text-xs font-bold flex items-center justify-center gap-2">
-            <FileSpreadsheet size={16} />
-            Export Analytics
-          </button>
+          <div className="flex items-center gap-2">
+            {isRefreshingAnalyticsReport && (
+              <span className="text-xs font-semibold text-emerald-600">Updating analytics...</span>
+            )}
+            <button onClick={exportAnalytics} className="px-4 py-2 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-xl text-xs font-bold flex items-center justify-center gap-2">
+              <FileSpreadsheet size={16} />
+              Export Analytics
+            </button>
+          </div>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-3">
           <input type="date" value={analyticsFilters.dateFrom} max={normalizeComparableDateValue(analyticsFilters.dateTo) || undefined} onChange={e => setAnalyticsFilters({ ...analyticsFilters, dateFrom: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500" />
@@ -11252,6 +11313,39 @@ function AnalyticsDashboard() {
 }
 
 function ReportGeneration() {
+  type ReportSupportDataKey =
+    | 'bookings'
+    | 'schedules'
+    | 'academicCalendars'
+    | 'maintenance'
+    | 'departmentAllocations'
+    | 'batchRoomAllocations';
+  const ALL_REPORT_SUPPORT_DATA_KEYS: ReportSupportDataKey[] = [
+    'bookings',
+    'schedules',
+    'academicCalendars',
+    'maintenance',
+    'departmentAllocations',
+    'batchRoomAllocations',
+  ];
+  const REPORT_SUPPORT_DATA_BY_TYPE: Partial<Record<string, ReportSupportDataKey[]>> = {
+    booking_approvals: ['bookings'],
+    maintenance_impact: ['maintenance'],
+    department_allocation: ['departmentAllocations', 'batchRoomAllocations'],
+    time_band_utilization: ['bookings', 'schedules'],
+    hourly_utilization: ['bookings', 'schedules'],
+    day_wise_utilization: ['bookings', 'schedules'],
+    date_wise_occupancy: ['bookings', 'schedules', 'academicCalendars'],
+    per_room_occupancy: ['bookings', 'schedules', 'academicCalendars'],
+    department_roomtype_demand: ['bookings', 'schedules'],
+    clash_overlap: ['bookings', 'schedules'],
+    capacity_mismatch: ['bookings'],
+    exam_impact: ['schedules', 'academicCalendars'],
+    booking_lifecycle: ['bookings'],
+    no_show_risk: ['bookings'],
+    shared_room_conflict: ['schedules'],
+    semester_peak_forecast: ['schedules'],
+  };
   const [utilizationData, setUtilizationData] = useState<any>(null);
   const [reportBookings, setReportBookings] = useState<any[]>([]);
   const [reportSchedules, setReportSchedules] = useState<any[]>([]);
@@ -11259,12 +11353,24 @@ function ReportGeneration() {
   const [reportMaintenance, setReportMaintenance] = useState<any[]>([]);
   const [reportDepartmentAllocations, setReportDepartmentAllocations] = useState<any[]>([]);
   const [reportBatchRoomAllocations, setReportBatchRoomAllocations] = useState<any[]>([]);
+  const [loadedReportSupportData, setLoadedReportSupportData] = useState<Record<ReportSupportDataKey, boolean>>({
+    bookings: false,
+    schedules: false,
+    academicCalendars: false,
+    maintenance: false,
+    departmentAllocations: false,
+    batchRoomAllocations: false,
+  });
   const [suggestions, setSuggestions] = useState<any[]>([]);
   const [suggestionError, setSuggestionError] = useState('');
   const [activeTab, setActiveTab] = useState<'utilization' | 'methodology' | 'kpis'>('utilization');
   const [loading, setLoading] = useState(true);
+  const [isRefreshingUtilization, setIsRefreshingUtilization] = useState(false);
+  const [isLoadingReportSupportData, setIsLoadingReportSupportData] = useState(false);
   const [isGeneratingSuggestions, setIsGeneratingSuggestions] = useState(false);
   const [selectedSchool, setSelectedSchool] = useState<any>(null);
+  const reportSupportDataPromisesRef = useRef<Partial<Record<ReportSupportDataKey, Promise<void>>>>({});
+  const utilizationRequestIdRef = useRef(0);
   const [filters, setFilters] = useState({
     reportType: 'room_utilization',
     dateFrom: '',
@@ -11381,26 +11487,23 @@ function ReportGeneration() {
     }
   ];
 
-  const fetchUtilization = async () => {
+  const utilizationQueryString = buildUtilizationReportQueryString(filters);
+
+  const fetchUtilization = async (queryString: string, mode: 'initial' | 'refresh' = 'refresh') => {
+    const requestId = ++utilizationRequestIdRef.current;
+    if (mode === 'initial') {
+      setLoading(true);
+    } else {
+      setIsRefreshingUtilization(true);
+    }
     try {
-      const [data, bookingData, scheduleData, academicData, maintenanceData, departmentAllocationData, batchAllocationData] = await Promise.all([
-        apiJson('/api/reports/utilization'),
-        apiJson('/api/bookings'),
-        apiJson('/api/schedules'),
-        fetchSharedLookupJson('/api/academic_calendars'),
-        apiJson('/api/maintenance'),
-        fetchSharedLookupJson('/api/department_allocations'),
-        fetchSharedLookupJson('/api/batch_room_allocations'),
-      ]);
+      const data = await apiJson(`/api/reports/utilization${queryString ? `?${queryString}` : ''}`);
+      if (utilizationRequestIdRef.current !== requestId) return;
       setUtilizationData(data);
-      setReportBookings(Array.isArray(bookingData) ? bookingData : []);
-      setReportSchedules(Array.isArray(scheduleData) ? scheduleData : []);
-      setReportAcademicCalendars(Array.isArray(academicData) ? academicData : []);
-      setReportMaintenance(Array.isArray(maintenanceData) ? maintenanceData : []);
-      setReportDepartmentAllocations(Array.isArray(departmentAllocationData) ? departmentAllocationData : []);
-      setReportBatchRoomAllocations(Array.isArray(batchAllocationData) ? batchAllocationData : []);
     } catch (err) {
       console.error(err);
+      if (utilizationRequestIdRef.current !== requestId) return;
+      setUtilizationData(null);
       setReportBookings([]);
       setReportSchedules([]);
       setReportAcademicCalendars([]);
@@ -11408,13 +11511,74 @@ function ReportGeneration() {
       setReportDepartmentAllocations([]);
       setReportBatchRoomAllocations([]);
     } finally {
+      if (utilizationRequestIdRef.current !== requestId) return;
       setLoading(false);
+      setIsRefreshingUtilization(false);
     }
   };
 
   useEffect(() => {
-    fetchUtilization();
-  }, []);
+    void fetchUtilization(utilizationQueryString, loading ? 'initial' : 'refresh');
+  }, [utilizationQueryString]);
+
+  const loadReportSupportData = async (supportKey: ReportSupportDataKey) => {
+    const existingPromise = reportSupportDataPromisesRef.current[supportKey];
+    if (existingPromise) return existingPromise;
+    const loaderPromise = (async () => {
+      try {
+        if (supportKey === 'bookings') {
+          const data = await apiJson('/api/bookings');
+          setReportBookings(Array.isArray(data) ? data : []);
+        } else if (supportKey === 'schedules') {
+          const data = await apiJson('/api/schedules');
+          setReportSchedules(Array.isArray(data) ? data : []);
+        } else if (supportKey === 'academicCalendars') {
+          const data = await fetchSharedLookupJson('/api/academic_calendars');
+          setReportAcademicCalendars(Array.isArray(data) ? data : []);
+        } else if (supportKey === 'maintenance') {
+          const data = await apiJson('/api/maintenance');
+          setReportMaintenance(Array.isArray(data) ? data : []);
+        } else if (supportKey === 'departmentAllocations') {
+          const data = await fetchSharedLookupJson('/api/department_allocations');
+          setReportDepartmentAllocations(Array.isArray(data) ? data : []);
+        } else if (supportKey === 'batchRoomAllocations') {
+          const data = await fetchSharedLookupJson('/api/batch_room_allocations');
+          setReportBatchRoomAllocations(Array.isArray(data) ? data : []);
+        }
+        setLoadedReportSupportData((current) => ({ ...current, [supportKey]: true }));
+      } catch (error) {
+        console.error(error);
+        if (supportKey === 'bookings') setReportBookings([]);
+        if (supportKey === 'schedules') setReportSchedules([]);
+        if (supportKey === 'academicCalendars') setReportAcademicCalendars([]);
+        if (supportKey === 'maintenance') setReportMaintenance([]);
+        if (supportKey === 'departmentAllocations') setReportDepartmentAllocations([]);
+        if (supportKey === 'batchRoomAllocations') setReportBatchRoomAllocations([]);
+      } finally {
+        delete reportSupportDataPromisesRef.current[supportKey];
+      }
+    })();
+    reportSupportDataPromisesRef.current[supportKey] = loaderPromise;
+    return loaderPromise;
+  };
+
+  const ensureReportSupportData = async (reportType: string, mode: 'selected' | 'all' = 'selected') => {
+    const requiredKeys = mode === 'all'
+      ? ALL_REPORT_SUPPORT_DATA_KEYS
+      : (REPORT_SUPPORT_DATA_BY_TYPE[reportType] || []);
+    const missingKeys = requiredKeys.filter((supportKey) => !loadedReportSupportData[supportKey]);
+    if (!missingKeys.length) return;
+    setIsLoadingReportSupportData(true);
+    try {
+      await Promise.all(missingKeys.map((supportKey) => loadReportSupportData(supportKey)));
+    } finally {
+      setIsLoadingReportSupportData(false);
+    }
+  };
+
+  useEffect(() => {
+    void ensureReportSupportData(filters.reportType);
+  }, [filters.reportType]);
 
   const generateSuggestions = async () => {
     if (!utilizationData) return;
@@ -11479,29 +11643,7 @@ function ReportGeneration() {
   const roomMetaByNumber = new Map<string, any>(roomReports.map((room: any) => [room.room_number?.toString(), room]));
   const getBookingRoomMeta = (booking: any) =>
     roomMetaById.get(booking.room_id?.toString()) || roomMetaByNumber.get(booking.room_number?.toString());
-  const shouldApplyBookingDateScope = Boolean(filters.dateFrom || filters.dateTo) && (filters.reportType === 'booking_approvals' || !!filters.bookingStatus);
-  const filteredRoomReports = roomReports.filter((room: any) => {
-    const bookingDates = filters.bookingStatus === 'Approved' ? room.approvedBookingDates : room.bookingDates;
-    if (shouldApplyBookingDateScope && !dateMatches(bookingDates || [])) return false;
-    if (filters.campus && room.campus !== filters.campus) return false;
-    if (filters.building && room.building !== filters.building) return false;
-    if (filters.block && room.block !== filters.block) return false;
-    if (filters.floor && room.floor_number?.toString() !== filters.floor) return false;
-    if (filters.department && room.department !== filters.department) return false;
-    if (filters.year && !(room.yearTags || []).includes(filters.year)) return false;
-    if (filters.semester && !(room.semesterTags || []).includes(filters.semester)) return false;
-    if (filters.section && !(room.sectionTags || []).includes(filters.section)) return false;
-    if (filters.room && room.room_number?.toString().trim() !== filters.room) return false;
-    if (filters.roomType && room.room_type !== filters.roomType) return false;
-    if (filters.bookingStatus && !(room.bookingStatuses || []).includes(filters.bookingStatus)) return false;
-    if (filters.flag && !(room.flags || []).includes(filters.flag)) return false;
-    if (filters.reportType === 'underused' && !(room.flags || []).includes('Underused')) return false;
-    if (filters.reportType === 'overused' && !(room.flags || []).includes('Overused')) return false;
-    if (filters.reportType === 'maintenance_impact' && room.maintenanceIssues <= 0 && room.status !== 'Maintenance') return false;
-    if (filters.reportType === 'department_allocation' && room.department === 'Unmapped') return false;
-    if (filters.reportType === 'booking_approvals' && !(room.bookingStatuses || []).length) return false;
-    return true;
-  });
+  const filteredRoomReports = roomReports;
   const filteredReportBookings = reportBookings.filter((booking: any) => {
     const roomMeta = getBookingRoomMeta(booking);
     const bookingDate = booking.date?.toString();
@@ -11543,50 +11685,21 @@ function ReportGeneration() {
   const sortedFilteredRoomReports = [...filteredRoomReports].sort((left: any, right: any) =>
     compareRoomsByNaturalOrder(left, right)
   );
-  const campusOptions = Array.from(new Set(roomReports.map((room: any) => room.campus).filter(Boolean))).sort();
-  const buildingOptions = Array.from(new Set(roomReports.map((room: any) => room.building).filter(Boolean))).sort();
-  const blockOptions = Array.from(new Set(roomReports
-    .filter((room: any) => (!filters.campus || room.campus === filters.campus) && (!filters.building || room.building === filters.building))
-    .map((room: any) => room.block)
-    .filter(Boolean))).sort();
-  const floorOptions = Array.from(new Set(roomReports
-    .filter((room: any) =>
-      (!filters.campus || room.campus === filters.campus) &&
-      (!filters.building || room.building === filters.building) &&
-      (!filters.block || room.block === filters.block))
-    .map((room: any) => room.floor_number)
-    .filter((floor: any) => floor !== undefined && floor !== null)))
-    .sort((a: any, b: any) => Number(a) - Number(b));
-  const roomOptions = Array.from(new Set(roomReports
-    .filter((room: any) =>
-      (!filters.campus || room.campus === filters.campus) &&
-      (!filters.building || room.building === filters.building) &&
-      (!filters.block || room.block === filters.block) &&
-      (!filters.floor || room.floor_number?.toString() === filters.floor) &&
-      (!filters.department || room.department === filters.department) &&
-      (!filters.year || (room.yearTags || []).includes(filters.year)) &&
-      (!filters.semester || (room.semesterTags || []).includes(filters.semester)) &&
-      (!filters.section || (room.sectionTags || []).includes(filters.section)) &&
-      (!filters.roomType || room.room_type === filters.roomType)
-    )
-    .map((room: any) => room.room_number?.toString().trim())
-    .filter(Boolean)))
-    .sort((a: any, b: any) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
-  const yearOptions = Array.from(new Set(filteredRoomReports.flatMap((room: any) => room.yearTags || [])))
-    .sort((a: any, b: any) => Number(a) - Number(b));
-  const semesterOptions = Array.from(new Set(filteredRoomReports.flatMap((room: any) => room.semesterTags || [])))
-    .sort((a: any, b: any) => a.localeCompare(b));
-  const sectionOptions = Array.from(new Set(filteredRoomReports.flatMap((room: any) => room.sectionTags || [])))
-    .sort((a: any, b: any) => a.localeCompare(b));
-  const departmentOptions = Array.from(new Set([
-    ...deptReports.map((department: any) => department.name),
-    ...roomReports.map((room: any) => room.department)
-  ].filter(Boolean))).sort();
+  const reportFilterOptions = utilizationData?.filterOptions || {};
+  const campusOptions = Array.isArray(reportFilterOptions.campuses) ? reportFilterOptions.campuses : [];
+  const buildingOptions = Array.isArray(reportFilterOptions.buildings) ? reportFilterOptions.buildings : [];
+  const blockOptions = Array.isArray(reportFilterOptions.blocks) ? reportFilterOptions.blocks : [];
+  const floorOptions = Array.isArray(reportFilterOptions.floors) ? reportFilterOptions.floors : [];
+  const roomOptions = Array.isArray(reportFilterOptions.rooms) ? reportFilterOptions.rooms : [];
+  const yearOptions = Array.isArray(reportFilterOptions.years) ? reportFilterOptions.years : [];
+  const semesterOptions = Array.isArray(reportFilterOptions.semesters) ? reportFilterOptions.semesters : [];
+  const sectionOptions = Array.isArray(reportFilterOptions.sections) ? reportFilterOptions.sections : [];
+  const departmentOptions = Array.isArray(reportFilterOptions.departments) ? reportFilterOptions.departments : [];
   const roomTypeOptions = Array.from(new Set([
     ...ROOM_TYPE_OPTIONS,
-    ...roomReports.map((room: any) => room.room_type)
-  ].filter(Boolean))).sort();
-  const flagOptions = Array.from(new Set(roomReports.flatMap((room: any) => room.flags || []))).sort();
+    ...(Array.isArray(reportFilterOptions.roomTypes) ? reportFilterOptions.roomTypes : []),
+  ].filter(Boolean))).sort((a: any, b: any) => a.localeCompare(b));
+  const flagOptions = Array.isArray(reportFilterOptions.flags) ? reportFilterOptions.flags : [];
   const bookingStatusOptions = ['Pending', 'HOD Recommended', 'Approved', 'Postponed', 'Rejected'];
   const schoolSummary = Array.from(new Set(filteredRoomReports.map((room: any) => room.school).filter(Boolean))).map((school) => {
     const schoolRooms = filteredRoomReports.filter((room: any) => room.school === school);
@@ -14049,6 +14162,7 @@ function ReportGeneration() {
     await saveExcelWorkbook(workbook, fileName);
   };
   const exportUtilizationReport = async () => {
+    await ensureReportSupportData(filters.reportType, 'all');
     const reportConfigs = buildUtilizationReportConfigs();
     await buildWorkbookFromReportConfigs(
       reportConfigs,
@@ -14476,6 +14590,7 @@ function ReportGeneration() {
   };
 
   const exportReportByType = async (reportType: string) => {
+    await ensureReportSupportData(reportType);
     const reportConfigs = buildUtilizationReportConfigs();
     const config = reportConfigs[reportType as keyof typeof reportConfigs];
     if (!config) {
@@ -14516,6 +14631,7 @@ function ReportGeneration() {
     );
   };
   const exportComprehensiveWorkbook = async () => {
+    await ensureReportSupportData(filters.reportType, 'all');
     const reportConfigs = buildUtilizationReportConfigs();
     const reportLabels = new Map(REPORT_TYPE_OPTIONS.map((option) => [option.value, option.label]));
     const reportTypesFromFilters = REPORT_TYPE_OPTIONS
@@ -14606,7 +14722,7 @@ function ReportGeneration() {
     appendExcelChartRecommendationsSheet(workbook, recommendationItems);
     await saveExcelWorkbook(workbook, buildExportFileName('Comprehensive Utilization Workbook', { includeCategory: true, includeSnapshot: true }));
   };
-  const exportCurrentReport = () => { void exportReportByType(filters.reportType); };
+  const exportCurrentReport = async () => { await exportReportByType(filters.reportType); };
   const selectedSchoolRooms = selectedSchool
     ? filteredRoomReports.filter((room: any) => room.school === selectedSchool.name)
     : [];
@@ -14647,6 +14763,9 @@ function ReportGeneration() {
             <p className="text-xs text-slate-500">Generate focused utilization reports by type, date, location, department, room type, booking status, or issue flag.</p>
           </div>
           <div className="flex items-center gap-2">
+            {isRefreshingUtilization && (
+              <span className="text-xs font-semibold text-emerald-600">Updating report data...</span>
+            )}
             <button
               onClick={exportCurrentReport}
               className="px-4 py-2 bg-blue-50 text-blue-700 border border-blue-100 rounded-xl text-xs font-bold flex items-center gap-2"
