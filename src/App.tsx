@@ -2804,6 +2804,20 @@ const formatDisplayDate = (value?: string | Date | null) => {
   return normalized;
 };
 
+const formatDisplayDateTime = (value?: string | Date | null) => {
+  if (!value) return '';
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(parsed.getTime())) return '';
+  return parsed.toLocaleString('en-GB', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+};
+
 const DEFAULT_TIMETABLE_TIME_SLOTS = [
   { start_time: '09:00', end_time: '09:55' },
   { start_time: '09:55', end_time: '10:50' },
@@ -3140,6 +3154,7 @@ function Sidebar() {
     { name: 'Maintenance', icon: Wrench, path: '/maintenance', roles: ['Administrator', 'Maintenance Staff', 'Infrastructure Manager'] },
     { name: 'Analytics', icon: BarChart3, path: '/analytics', roles: ['Administrator', 'Infrastructure Manager'] },
     { name: 'Utilization Reports', icon: FileText, path: '/reports', roles: ['Administrator', 'Infrastructure Manager'] },
+    { name: 'Performance Insights', icon: Activity, path: '/performance-insights', roles: ['Administrator', 'Infrastructure Manager'] },
   ];
 
   const filteredMenu = menuItems.filter(item => item.roles.includes(user?.role) || customAccessPaths.includes(item.path));
@@ -3964,6 +3979,7 @@ export default function App() {
           } />
           <Route path="/analytics" element={<ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}><Layout title="Infrastructure Analytics"><AnalyticsDashboard /></Layout></ProtectedRoute>} />
           <Route path="/reports" element={<ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}><Layout title="Utilization Reports"><ReportGeneration /></Layout></ProtectedRoute>} />
+          <Route path="/performance-insights" element={<ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}><Layout title="Performance Insights"><PerformanceInsights /></Layout></ProtectedRoute>} />
           <Route path="/timetable" element={
             <ProtectedRoute roles={['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)']}>
               <Layout title="Timetable View">
@@ -11343,6 +11359,166 @@ function AnalyticsDashboard() {
               </div>
             )}
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PerformanceInsights() {
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [summary, setSummary] = useState<any[]>([]);
+  const [recent, setRecent] = useState<any[]>([]);
+
+  const fetchTelemetry = async (mode: 'initial' | 'refresh' = 'refresh') => {
+    if (mode === 'initial') {
+      setLoading(true);
+    } else {
+      setRefreshing(true);
+    }
+    const loadStartedAt = performance.now();
+    try {
+      const data = await apiJson('/api/performance/module-load');
+      setSummary(Array.isArray(data?.summary) ? data.summary : []);
+      setRecent(Array.isArray(data?.recent) ? data.recent : []);
+      void trackModuleLoadMetric(
+        'PerformanceInsights',
+        mode === 'initial' ? 'initial-load' : 'refresh',
+        performance.now() - loadStartedAt,
+        Array.isArray(data?.summary) ? data.summary.length : 0,
+      );
+    } catch (error) {
+      console.error(error);
+      setSummary([]);
+      setRecent([]);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    void fetchTelemetry('initial');
+    const refreshTimer = window.setInterval(() => {
+      void fetchTelemetry('refresh');
+    }, 60000);
+    return () => window.clearInterval(refreshTimer);
+  }, []);
+
+  const slowestModules = [...summary].slice(0, 5);
+
+  if (loading) {
+    return <div className="p-8 text-center text-slate-400">Loading performance telemetry...</div>;
+  }
+
+  return (
+    <div className="space-y-8">
+      <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-bold text-slate-800">Module Load Telemetry</h3>
+            <p className="text-xs text-slate-500">Tracks module and table load timings captured after the recent performance optimizations.</p>
+          </div>
+          <div className="flex items-center gap-3">
+            {refreshing && <span className="text-xs font-semibold text-emerald-600">Refreshing telemetry...</span>}
+            <button
+              onClick={() => void fetchTelemetry('refresh')}
+              className="px-4 py-2 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-xl text-xs font-bold"
+            >
+              Refresh
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-5 gap-6">
+        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
+          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Tracked Flows</p>
+          <p className="text-3xl font-bold text-slate-800 mt-2">{summary.length}</p>
+        </div>
+        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
+          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Recent Samples</p>
+          <p className="text-3xl font-bold text-slate-800 mt-2">{recent.length}</p>
+        </div>
+        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
+          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Slowest Avg</p>
+          <p className="text-3xl font-bold text-rose-600 mt-2">{slowestModules[0]?.avgDurationMs || 0}ms</p>
+        </div>
+        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
+          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Slowest Flow</p>
+          <p className="text-lg font-bold text-slate-800 mt-2">{slowestModules[0]?.module || 'N/A'}</p>
+          <p className="text-xs text-slate-500 mt-1">{slowestModules[0]?.phase || 'No telemetry yet'}</p>
+        </div>
+        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
+          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Largest Payload</p>
+          <p className="text-3xl font-bold text-slate-800 mt-2">{Math.max(0, ...summary.map((item: any) => Number(item?.avgItemCount) || 0))}</p>
+        </div>
+      </div>
+
+      <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+        <h3 className="text-lg font-bold text-slate-800 mb-6">Slowest Module Flows</h3>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left">
+            <thead>
+              <tr className="border-b border-slate-100">
+                {['Module', 'Phase', 'Samples', 'Avg Duration', 'Max Duration', 'Last Duration', 'Avg Items', 'Last Seen'].map((column) => (
+                  <th key={column} className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">{column}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {summary.map((item: any) => (
+                <tr key={`${item.module}-${item.phase}`} className="hover:bg-slate-50/50">
+                  <td className="py-4 text-sm font-bold text-slate-700">{item.module}</td>
+                  <td className="py-4 text-sm text-slate-500">{item.phase}</td>
+                  <td className="py-4 text-sm text-slate-500">{item.samples}</td>
+                  <td className="py-4 text-sm font-bold text-slate-700">{item.avgDurationMs}ms</td>
+                  <td className="py-4 text-sm text-slate-500">{item.maxDurationMs}ms</td>
+                  <td className="py-4 text-sm text-slate-500">{item.lastDurationMs}ms</td>
+                  <td className="py-4 text-sm text-slate-500">{item.avgItemCount}</td>
+                  <td className="py-4 text-sm text-slate-500">{formatDisplayDateTime(item.lastSeenAt)}</td>
+                </tr>
+              ))}
+              {summary.length === 0 && (
+                <tr>
+                  <td colSpan={8} className="py-8 text-center text-sm text-slate-400 italic">No module telemetry has been captured yet.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+        <h3 className="text-lg font-bold text-slate-800 mb-6">Recent Telemetry Events</h3>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left">
+            <thead>
+              <tr className="border-b border-slate-100">
+                {['Module', 'Phase', 'Duration', 'Items', 'Role', 'Captured At'].map((column) => (
+                  <th key={column} className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">{column}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {recent.map((item: any, index: number) => (
+                <tr key={`${item.module}-${item.phase}-${item.createdAt}-${index}`} className="hover:bg-slate-50/50">
+                  <td className="py-4 text-sm font-bold text-slate-700">{item.module}</td>
+                  <td className="py-4 text-sm text-slate-500">{item.phase}</td>
+                  <td className="py-4 text-sm text-slate-500">{item.durationMs}ms</td>
+                  <td className="py-4 text-sm text-slate-500">{item.itemCount}</td>
+                  <td className="py-4 text-sm text-slate-500">{item.userRole || '-'}</td>
+                  <td className="py-4 text-sm text-slate-500">{formatDisplayDateTime(item.createdAt)}</td>
+                </tr>
+              ))}
+              {recent.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="py-8 text-center text-sm text-slate-400 italic">No recent telemetry events yet.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
