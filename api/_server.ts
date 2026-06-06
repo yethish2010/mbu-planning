@@ -385,6 +385,8 @@ const ensureColumn = async (tableName: string, columnName: string, definition: s
 
 const ensureBookingColumns = async () => {
   await ensureColumn("bookings", "purpose", "TEXT");
+  await ensureColumn("bookings", "purpose_type", "TEXT DEFAULT 'Non-Academic'");
+  await ensureColumn("bookings", "timing_override", "INTEGER DEFAULT 0");
   await ensureColumn("bookings", "notes", "TEXT");
   await ensureColumn("bookings", "recommended_by", "TEXT");
   await ensureColumn("bookings", "decided_by", "TEXT");
@@ -929,6 +931,103 @@ const normalizeTimingProfileWorkingDays = (value: any) => {
 const normalizeTimingProfileSlotPattern = (value: any) => {
   const normalized = value?.toString().trim().replace(/\s+/g, " ") || "";
   return normalized;
+};
+
+const parseTimingProfileSlots = (value: any) => {
+  const slotText = value?.toString().trim() || "";
+  if (!slotText) return [] as Array<{ start_time: string; end_time: string }>;
+  const slots = slotText
+    .split(/[\n,;]+/)
+    .map((part: string) => part.trim())
+    .filter(Boolean)
+    .map((part: string) => {
+      const match = part.match(/^(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})$/);
+      if (!match) return null;
+      const start = match[1].padStart(5, "0");
+      const end = match[2].padStart(5, "0");
+      if (start >= end) return null;
+      return { start_time: start, end_time: end };
+    })
+    .filter((slot): slot is { start_time: string; end_time: string } => Boolean(slot))
+    .sort((left, right) => left.start_time.localeCompare(right.start_time) || left.end_time.localeCompare(right.end_time));
+
+  return Array.from(
+    new Map<string, { start_time: string; end_time: string }>(
+      slots.map(slot => [`${slot.start_time}-${slot.end_time}`, slot] as [string, { start_time: string; end_time: string }])
+    ).values()
+  );
+};
+
+const buildTimingProfileSlotWindows = (slots: Array<{ start_time: string; end_time: string }>) => {
+  const windows: Array<{ start_time: string; end_time: string; slot_count: number }> = [];
+  for (let startIndex = 0; startIndex < slots.length; startIndex += 1) {
+    let currentEnd = slots[startIndex].end_time;
+    windows.push({
+      start_time: slots[startIndex].start_time,
+      end_time: currentEnd,
+      slot_count: 1,
+    });
+    for (let endIndex = startIndex + 1; endIndex < slots.length; endIndex += 1) {
+      if (slots[endIndex - 1].end_time !== slots[endIndex].start_time) break;
+      currentEnd = slots[endIndex].end_time;
+      windows.push({
+        start_time: slots[startIndex].start_time,
+        end_time: currentEnd,
+        slot_count: endIndex - startIndex + 1,
+      });
+    }
+  }
+  return windows;
+};
+
+const normalizeBookingPurposeType = (value: any) => {
+  const normalized = value?.toString().trim() || "";
+  if (!normalized) return "Non-Academic";
+  if (["Academic", "Academic Regular", "Academic-Regular"].includes(normalized)) return "Academic Regular";
+  if (["Academic Adjustment", "Academic-Adjustment", "Academic Adjustment / Override"].includes(normalized)) return "Academic Adjustment";
+  if (["Non Academic", "Non-Academic", "Event", "Meeting"].includes(normalized)) return "Non-Academic";
+  return normalized;
+};
+
+const resolveBookingTimingProfile = async (booking: any) => {
+  if (!booking?.department_id || !booking?.date) return null;
+
+  const linkedCalendar = await db.prepare(`
+    SELECT ac.timing_profile_id
+    FROM academic_calendars ac
+    WHERE ac.department_id = ?
+      AND ac.start_date <= ?
+      AND ac.end_date >= ?
+      AND LOWER(COALESCE(ac.event_type, '')) != 'examinations'
+      AND ac.timing_profile_id IS NOT NULL
+    ORDER BY ac.id DESC
+    LIMIT 1
+  `).get(booking.department_id, booking.date, booking.date) as any;
+
+  const directProfile = linkedCalendar?.timing_profile_id
+    ? await db.prepare("SELECT * FROM timing_profiles WHERE id = ?").get(linkedCalendar.timing_profile_id) as any
+    : null;
+  if (directProfile) return directProfile;
+
+  return await db.prepare(`
+    SELECT *
+    FROM timing_profiles
+    WHERE department_id = ?
+    ORDER BY
+      CASE WHEN specialization IS NOT NULL AND LOWER(TRIM(specialization)) = LOWER(TRIM(?)) THEN 0 ELSE 1 END,
+      id DESC
+    LIMIT 1
+  `).get(booking.department_id, booking.specialization || "") as any;
+};
+
+const getBookingTimingPolicyDetails = async (booking: any) => {
+  const purposeType = normalizeBookingPurposeType(booking?.purpose_type);
+  const timingProfile = await resolveBookingTimingProfile(booking);
+  const slots = parseTimingProfileSlots(timingProfile?.slot_pattern);
+  const slotWindows = buildTimingProfileSlotWindows(slots);
+  const matchesWindow = slotWindows.some(window => window.start_time === booking?.start_time && window.end_time === booking?.end_time);
+  const timingOverride = purposeType !== "Academic Regular" && slots.length > 0 && !matchesWindow ? 1 : 0;
+  return { purposeType, timingProfile, slots, slotWindows, matchesWindow, timingOverride };
 };
 
 const normalizeTimingProfilePayload = async (payload: any) => {
@@ -3137,7 +3236,7 @@ const getSharedAvailabilitySnapshot = async ({
         status
       FROM maintenance
     `).all() as Promise<any[]>,
-    db.prepare("SELECT room_id, faculty_name, event_name, purpose, date, start_time, end_time, status FROM bookings WHERE date = ? AND status = 'Approved'").all(date) as Promise<any[]>,
+    db.prepare("SELECT room_id, faculty_name, event_name, purpose, purpose_type, timing_override, date, start_time, end_time, status FROM bookings WHERE date = ? AND status = 'Approved'").all(date) as Promise<any[]>,
   ]);
 
   const normalizedRoomType = normalizeRoomTypeValue(roomType);
@@ -3288,6 +3387,8 @@ const getSharedAvailabilitySnapshot = async ({
             booking.event_name || "Approved booking",
             booking.faculty_name ? `Booked by ${booking.faculty_name}` : "",
             booking.purpose ? `Purpose: ${booking.purpose}` : "",
+            booking.purpose_type ? `Type: ${booking.purpose_type}` : "",
+            Number(booking.timing_override || 0) === 1 ? "Temporary timing override for this booked period only" : "",
           ].filter(Boolean).join(" • ")
         )
         .join("; ");
@@ -3982,6 +4083,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         if (!department) {
           return res.status(400).json({ error: "Please select a valid department." });
         }
+        req.body.purpose_type = normalizeBookingPurposeType(req.body.purpose_type);
         if (!["Pending", "Approved"].includes(req.body.status || "Pending")) {
           req.body.status = "Pending";
           const statusIndex = fields.indexOf("status");
@@ -4005,6 +4107,24 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         const conflictingBooking = await getApprovedBookingConflict(req.body);
         if (conflictingBooking) {
           return res.status(400).json({ error: "This room already has an approved booking for the selected time slot." });
+        }
+
+        const timingPolicy = await getBookingTimingPolicyDetails(req.body);
+        req.body.timing_override = timingPolicy.timingOverride;
+        if (timingPolicy.purposeType === "Academic Regular" && timingPolicy.slots.length > 0 && !timingPolicy.matchesWindow) {
+          return res.status(400).json({ error: "Academic Regular bookings must match the active department timing-profile slot window exactly." });
+        }
+        if (!fields.includes("purpose_type")) {
+          fields.push("purpose_type");
+          values.push(req.body.purpose_type);
+        } else {
+          values[fields.indexOf("purpose_type")] = req.body.purpose_type;
+        }
+        if (!fields.includes("timing_override")) {
+          fields.push("timing_override");
+          values.push(req.body.timing_override);
+        } else {
+          values[fields.indexOf("timing_override")] = req.body.timing_override;
         }
       }
 
@@ -4115,6 +4235,8 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         const nextBooking = { ...existingItem, ...req.body };
         const bookableError = await getBookableRoomError(nextBooking.room_id);
         if (bookableError) return res.status(400).json({ error: bookableError });
+        nextBooking.purpose_type = normalizeBookingPurposeType(nextBooking.purpose_type);
+        req.body.purpose_type = nextBooking.purpose_type;
         const requestedStatus = req.body.status;
         const role = (req as any).user.role;
         const isRequester = existingItem.faculty_name === (req as any).user.name;
@@ -4165,6 +4287,12 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
           if (conflictingBooking) {
             return res.status(400).json({ error: "This room already has an approved booking for the selected time slot." });
           }
+        }
+
+        const timingPolicy = await getBookingTimingPolicyDetails(nextBooking);
+        req.body.timing_override = timingPolicy.timingOverride;
+        if (timingPolicy.purposeType === "Academic Regular" && timingPolicy.slots.length > 0 && !timingPolicy.matchesWindow) {
+          return res.status(400).json({ error: "Academic Regular bookings must match the active department timing-profile slot window exactly." });
         }
       }
 

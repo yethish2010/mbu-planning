@@ -2829,6 +2829,7 @@ const DEFAULT_TIMETABLE_TIME_SLOTS = [
 
 const MIN_INFERRED_TIMETABLE_SLOT_MINUTES = 30;
 const DEFAULT_TIMING_PROFILE_WORKING_DAYS = 'Monday,Tuesday,Wednesday,Thursday,Friday,Saturday';
+const BOOKING_PURPOSE_TYPE_OPTIONS = ['Academic Regular', 'Academic Adjustment', 'Non-Academic'] as const;
 
 const normalizeDayLabel = (value: unknown) => {
   const normalized = normalizeLookupValue(value);
@@ -9399,6 +9400,7 @@ function BookingManagement() {
   const [bookingForm, setBookingForm] = useState({
     eventName: '',
     purpose: '',
+    purposeType: 'Non-Academic',
     departmentId: '',
     equipmentRequired: '',
     notes: '',
@@ -9501,7 +9503,7 @@ function BookingManagement() {
     searchCriteria.section ? `Section ${searchCriteria.section}` : '',
   ].filter(Boolean).join(' • ');
 
-  const selectedBookingTimingProfile = useMemo(() => resolveTimingProfileForContext({
+  const selectedSearchTimingProfile = useMemo(() => resolveTimingProfileForContext({
     timingProfiles,
     academicCalendars,
     activeDate: searchCriteria.date,
@@ -9512,6 +9514,21 @@ function BookingManagement() {
       section: searchCriteria.section,
     },
   }), [academicCalendars, searchCriteria.date, searchCriteria.departmentId, searchCriteria.section, searchCriteria.semester, timingProfiles]);
+  const selectedSearchTimingSlots = useMemo(
+    () => parseTimingProfileSlots(selectedSearchTimingProfile?.slot_pattern),
+    [selectedSearchTimingProfile],
+  );
+  const selectedBookingTimingProfile = useMemo(() => resolveTimingProfileForContext({
+    timingProfiles,
+    academicCalendars,
+    activeDate: searchCriteria.date,
+    context: {
+      department_id: bookingForm.departmentId || searchCriteria.departmentId,
+      year_of_study: normalizeYearOfStudyValue(getYearNumberFromAcademicContext('', searchCriteria.semester)?.toString() || '', ''),
+      semester: searchCriteria.semester,
+      section: searchCriteria.section,
+    },
+  }), [academicCalendars, bookingForm.departmentId, searchCriteria.date, searchCriteria.departmentId, searchCriteria.section, searchCriteria.semester, timingProfiles]);
   const selectedBookingTimingSlots = useMemo(
     () => parseTimingProfileSlots(selectedBookingTimingProfile?.slot_pattern),
     [selectedBookingTimingProfile],
@@ -9524,7 +9541,11 @@ function BookingManagement() {
     searchCriteria.time,
     searchCriteria.durationUnit === 'hours' ? searchCriteria.duration : searchCriteria.dailyDuration,
   );
-  const slotDrivenBooking = Boolean(selectedBookingTimingProfile && bookingSlotWindows.length > 0);
+  const searchWindowMatchesTimingProfile = useMemo(
+    () => buildTimingProfileSlotWindows(selectedSearchTimingSlots).some(window => window.start_time === searchCriteria.time && window.end_time === manualBookingEndTime),
+    [manualBookingEndTime, searchCriteria.time, selectedSearchTimingSlots],
+  );
+  const slotDrivenBooking = bookingForm.purposeType === 'Academic Regular' && Boolean(selectedBookingTimingProfile && bookingSlotWindows.length > 0);
   const selectedBookingSlotWindow = useMemo(
     () => bookingSlotWindows.find(window => window.key === selectedBookingSlotWindowKey) || null,
     [bookingSlotWindows, selectedBookingSlotWindowKey],
@@ -9538,7 +9559,14 @@ function BookingManagement() {
   const activeDailyDuration = slotDrivenBooking
     ? String((selectedBookingSlotWindow?.durationMinutes || getSlotDurationMinutes(bookingStartTime, bookingEndTime)) / 60)
     : (searchCriteria.durationUnit === 'hours' ? searchCriteria.duration : searchCriteria.dailyDuration);
-  const isPastBookingContext = () => {
+  const isTimingOverrideBooking = bookingForm.purposeType !== 'Academic Regular'
+    && Boolean(selectedBookingTimingProfile && selectedBookingTimingSlots.length > 0)
+    && !bookingSlotWindows.some(window => window.start_time === searchCriteria.time && window.end_time === manualBookingEndTime);
+  const isPastSearchContext = () => {
+    const selected = new Date(`${searchCriteria.date}T${searchCriteria.time}`);
+    return selected.getTime() < Date.now();
+  };
+  const isPastSelectedBookingWindow = () => {
     const selected = new Date(`${searchCriteria.date}T${bookingStartTime}`);
     return selected.getTime() < Date.now();
   };
@@ -9647,6 +9675,8 @@ function BookingManagement() {
     return `${sortedDates[0]} +${sortedDates.length - 1} more date${sortedDates.length > 2 ? 's' : ''}`;
   };
   const getBookingTimeLabel = (booking: any) => `${booking.start_time} - ${booking.end_time}`;
+  const getBookingPolicyLabel = (booking: any) => booking.purpose_type || 'Non-Academic';
+  const isTemporaryOverrideBookingRecord = (booking: any) => Number(booking.timing_override || 0) === 1;
   const selectedBuilding = buildings.find(b => b.id == searchCriteria.buildingId);
   const selectedBuildingBlocks = blocks.filter(block => block.building_id == searchCriteria.buildingId);
   const visibleBlocks = selectedBuilding ? selectedBuildingBlocks.filter(block => !isImplicitBuildingBlock(block, selectedBuilding)) : [];
@@ -9728,7 +9758,7 @@ function BookingManagement() {
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     setBookingMessage(null);
-    if (isPastBookingContext()) {
+    if (isPastSearchContext()) {
       setBookingMessage({ type: 'error', text: 'Please select a current or future date and time.' });
       setVacantRooms([]);
       setCombinedOptions([]);
@@ -9747,8 +9777,8 @@ function BookingManagement() {
       const availableByDate = await Promise.all(bookingDates.map(async date => {
         const params = new URLSearchParams({
           date,
-          time: bookingStartTime,
-          duration: activeDailyDuration,
+          time: searchCriteria.time,
+          duration: searchCriteria.durationUnit === 'hours' ? searchCriteria.duration : searchCriteria.dailyDuration,
           members: searchCriteria.members
         });
         const res = await fetch(`/api/rooms/vacant?${params.toString()}`, { credentials: 'include' });
@@ -9767,8 +9797,8 @@ function BookingManagement() {
 
       const eventParams = new URLSearchParams({
         date: searchCriteria.date,
-        startTime: bookingStartTime,
-        endTime: bookingEndTime,
+        startTime: searchCriteria.time,
+        endTime: manualBookingEndTime,
         strength: searchCriteria.members
       });
       const eventRes = await fetch(`/api/events/search-rooms?${eventParams.toString()}`, { credentials: 'include' });
@@ -9793,9 +9823,11 @@ function BookingManagement() {
 
   const openBookingModal = (bookingRooms: any[], combined = false) => {
     setBookingMessage(null);
+    setSelectedBookingSlotWindowKey('');
     setBookingForm({
       eventName: '',
       purpose: '',
+      purposeType: searchCriteria.departmentId ? 'Academic Regular' : 'Non-Academic',
       departmentId: searchCriteria.departmentId || userDepartmentId,
       equipmentRequired: searchCriteria.equipment,
       notes: '',
@@ -9808,7 +9840,7 @@ function BookingManagement() {
   const handleBook = async () => {
     if (!bookingModal) return;
     setBookingMessage(null);
-    if (isPastBookingContext()) {
+    if (isPastSelectedBookingWindow()) {
       setBookingMessage({ type: 'error', text: 'Please select a current or future date and time.' });
       return;
     }
@@ -9843,6 +9875,7 @@ function BookingManagement() {
           department_id: bookingForm.departmentId || null,
           event_name: bookingForm.eventName.trim(),
           purpose: bookingForm.purpose.trim(),
+          purpose_type: bookingForm.purposeType,
           notes: bookingForm.notes.trim(),
           student_count: parseInt(searchCriteria.members, 10),
           room_type: room.room_type,
@@ -9851,6 +9884,7 @@ function BookingManagement() {
           date,
           start_time: bookingStartTime,
           end_time: bookingEndTime,
+          timing_override: isTimingOverrideBooking ? 1 : 0,
           status
         };
         const res = await fetch('/api/bookings', {
@@ -9873,10 +9907,10 @@ function BookingManagement() {
       : {
           type: 'success',
           text: status === 'Approved'
-            ? 'Room booking saved successfully.'
+            ? `Room booking saved successfully${isTimingOverrideBooking ? ' as a temporary override.' : '.'}`
             : requestGroupId
-              ? 'Booking request submitted as a single grouped request.'
-              : 'Booking request submitted for approval.'
+              ? `Booking request submitted as a single grouped request${isTimingOverrideBooking ? ' with a temporary override.' : '.'}`
+              : `Booking request submitted for approval${isTimingOverrideBooking ? ' with a temporary override.' : '.'}`
         });
   };
 
@@ -9935,7 +9969,7 @@ function BookingManagement() {
   };
 
   const exportBookings = async () => {
-    const headers = ['Event', 'Faculty', 'Room', 'Date', 'Time', 'Status', 'Purpose', 'Notes'];
+    const headers = ['Event', 'Faculty', 'Room', 'Date', 'Time', 'Status', 'Purpose', 'Purpose Type', 'Timing Override', 'Notes'];
     const rows = filteredBookings.map(booking => ([
       booking.event_name,
       booking.faculty_name,
@@ -9944,6 +9978,8 @@ function BookingManagement() {
       getBookingTimeLabel(booking),
       getDisplayStatus(booking),
       booking.purpose || '',
+      getBookingPolicyLabel(booking),
+      isTemporaryOverrideBookingRecord(booking) ? 'Yes' : 'No',
       booking.notes || '',
     ]));
     await exportStyledWorkbook('room-bookings-report.xlsx', [
@@ -9991,24 +10027,12 @@ function BookingManagement() {
           </div>
           <div className="space-y-1">
             <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Start Time</label>
-            {slotDrivenBooking ? (
-              <select
-                value={selectedBookingSlotWindow?.key || ''}
-                onChange={e => setSelectedBookingSlotWindowKey(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-50 border border-emerald-200 rounded-lg focus:outline-none focus:border-emerald-500"
-              >
-                {bookingSlotWindows.map(window => (
-                  <option key={window.key} value={window.key}>{window.label}</option>
-                ))}
-              </select>
-            ) : (
-              <input
-                type="time"
-                value={searchCriteria.time}
-                onChange={e => setSearchCriteria({ ...searchCriteria, time: e.target.value })}
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
-              />
-            )}
+            <input
+              type="time"
+              value={searchCriteria.time}
+              onChange={e => setSearchCriteria({ ...searchCriteria, time: e.target.value })}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+            />
           </div>
           <div className="space-y-1">
             <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Duration Type</label>
@@ -10024,60 +10048,52 @@ function BookingManagement() {
           </div>
           <div className="space-y-1">
             <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
-              {slotDrivenBooking && searchCriteria.durationUnit === 'hours'
-                ? 'Academic Slot Span'
-                : searchCriteria.durationUnit === 'hours'
-                  ? 'Duration'
-                  : searchCriteria.durationUnit === 'days'
-                    ? 'Number of Days'
-                    : 'Number of Weeks'}
+              {searchCriteria.durationUnit === 'hours'
+                ? 'Duration'
+                : searchCriteria.durationUnit === 'days'
+                  ? 'Number of Days'
+                  : 'Number of Weeks'}
             </label>
-            {slotDrivenBooking && searchCriteria.durationUnit === 'hours' ? (
-              <div className="w-full px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-lg font-bold text-emerald-700">
-                {selectedBookingSlotWindow ? `${selectedBookingSlotWindow.slotCount} slot${selectedBookingSlotWindow.slotCount === 1 ? '' : 's'} • ${bookingStartTime}-${bookingEndTime}` : 'Select a slot window'}
-              </div>
-            ) : (
-              <select
-                value={searchCriteria.duration}
-                onChange={e => setSearchCriteria({ ...searchCriteria, duration: e.target.value })}
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
-              >
-                {searchCriteria.durationUnit === 'hours' ? (
-                  <>
-                    <option value="0.5">30 minutes</option>
-                    <option value="1">1 hour</option>
-                    <option value="1.5">1.5 hours</option>
-                    <option value="2">2 hours</option>
-                    <option value="2.5">2.5 hours</option>
-                    <option value="3">3 hours</option>
-                    <option value="3.5">3.5 hours</option>
-                    <option value="4">4 hours</option>
-                    <option value="4.5">4.5 hours</option>
-                    <option value="5">5 hours</option>
-                    <option value="5.5">5.5 hours</option>
-                    <option value="6">6 hours</option>
-                    <option value="6.5">6.5 hours</option>
-                    <option value="7">7 hours</option>
-                    <option value="7.5">7.5 hours</option>
-                    <option value="8">8 hours</option>
-                    <option value="8.5">8.5 hours</option>
-                    <option value="9">9 hours</option>
-                  </>
-                ) : (
-                  <>
-                    <option value="1">1</option>
-                    <option value="2">2</option>
-                    <option value="3">3</option>
-                    <option value="4">4</option>
-                    <option value="5">5</option>
-                    <option value="6">6</option>
-                    <option value="7">7</option>
-                  </>
-                )}
-              </select>
-            )}
+            <select
+              value={searchCriteria.duration}
+              onChange={e => setSearchCriteria({ ...searchCriteria, duration: e.target.value })}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+            >
+              {searchCriteria.durationUnit === 'hours' ? (
+                <>
+                  <option value="0.5">30 minutes</option>
+                  <option value="1">1 hour</option>
+                  <option value="1.5">1.5 hours</option>
+                  <option value="2">2 hours</option>
+                  <option value="2.5">2.5 hours</option>
+                  <option value="3">3 hours</option>
+                  <option value="3.5">3.5 hours</option>
+                  <option value="4">4 hours</option>
+                  <option value="4.5">4.5 hours</option>
+                  <option value="5">5 hours</option>
+                  <option value="5.5">5.5 hours</option>
+                  <option value="6">6 hours</option>
+                  <option value="6.5">6.5 hours</option>
+                  <option value="7">7 hours</option>
+                  <option value="7.5">7.5 hours</option>
+                  <option value="8">8 hours</option>
+                  <option value="8.5">8.5 hours</option>
+                  <option value="9">9 hours</option>
+                </>
+              ) : (
+                <>
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                  <option value="5">5</option>
+                  <option value="6">6</option>
+                  <option value="7">7</option>
+                </>
+              )}
+            </select>
           </div>
-          {searchCriteria.durationUnit !== 'hours' && !slotDrivenBooking && (
+          {searchCriteria.durationUnit !== 'hours' && (
             <div className="space-y-1">
               <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Daily Hours</label>
               <select
@@ -10097,14 +10113,6 @@ function BookingManagement() {
               </select>
             </div>
           )}
-          {searchCriteria.durationUnit !== 'hours' && slotDrivenBooking && (
-            <div className="space-y-1">
-              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Daily Slot Window</label>
-              <div className="w-full px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-lg font-bold text-emerald-700">
-                {selectedBookingSlotWindow ? `${selectedBookingSlotWindow.slotCount} slot${selectedBookingSlotWindow.slotCount === 1 ? '' : 's'} • ${bookingStartTime}-${bookingEndTime}` : 'Select a slot window'}
-              </div>
-            </div>
-          )}
           <div className="space-y-1">
             <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Members (Capacity)</label>
             <input
@@ -10116,7 +10124,7 @@ function BookingManagement() {
           </div>
           <div className="space-y-1">
             <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{searchCriteria.durationUnit === 'hours' ? 'End Time' : 'Daily End Time'}</label>
-            <div className="w-full px-3 py-2 bg-slate-100 border border-slate-200 rounded-lg font-bold text-slate-700">{bookingEndTime}</div>
+            <div className="w-full px-3 py-2 bg-slate-100 border border-slate-200 rounded-lg font-bold text-slate-700">{manualBookingEndTime}</div>
           </div>
           <div className="space-y-1">
             <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Building</label>
@@ -10236,22 +10244,22 @@ function BookingManagement() {
               Academic context selected: <span className="font-bold">{selectedAcademicContextLabel}</span>. Vacancy still uses actual time overlaps, and this context is carried into room schedule review and request defaults for mixed-use rooms.
             </div>
           )}
-          {selectedBookingTimingProfile && (
+          {selectedSearchTimingProfile && (
             <div className={cn(
               "md:col-span-4 rounded-xl px-3 py-2 text-xs",
-              slotDrivenBooking
+              searchWindowMatchesTimingProfile
                 ? "border border-emerald-100 bg-emerald-50 text-emerald-700"
                 : "border border-amber-100 bg-amber-50 text-amber-700"
             )}>
-              Timing profile in effect: <span className="font-bold">{getTimingProfileDisplayLabel(selectedBookingTimingProfile)}</span>.
-              {selectedBookingTimingSlots.length > 0 && (
-                <span> Preferred slots: {selectedBookingTimingSlots.map(slot => `${slot.start_time}-${slot.end_time}`).join(', ')}.</span>
+              Timing profile in effect: <span className="font-bold">{getTimingProfileDisplayLabel(selectedSearchTimingProfile)}</span>.
+              {selectedSearchTimingSlots.length > 0 && (
+                <span> Preferred slots: {selectedSearchTimingSlots.map(slot => `${slot.start_time}-${slot.end_time}`).join(', ')}.</span>
               )}
-              {slotDrivenBooking && selectedBookingSlotWindow && (
-                <span> Slot-aligned booking in effect: <span className="font-bold">{selectedBookingSlotWindow.label}</span>.</span>
+              {selectedSearchTimingSlots.length > 0 && searchWindowMatchesTimingProfile && (
+                <span> The requested search window already matches the configured academic timing profile.</span>
               )}
-              {selectedBookingTimingSlots.length > 0 && !slotDrivenBooking && (
-                <span> Choose an academic slot window so the booking aligns exactly with the configured timing profile.</span>
+              {selectedSearchTimingSlots.length > 0 && !searchWindowMatchesTimingProfile && (
+                <span> Vacancy search still uses the real requested time. If you confirm an Academic Regular booking, you will need to choose an exact slot window at booking time.</span>
               )}
             </div>
           )}
@@ -10413,6 +10421,10 @@ function BookingManagement() {
                     <p className="font-bold text-slate-800">{booking.event_name}</p>
                     <p className="text-xs text-slate-500">{booking.faculty_name}</p>
                     {booking.purpose && <p className="text-xs text-slate-400">{booking.purpose}</p>}
+                    <p className="text-xs text-slate-400">{getBookingPolicyLabel(booking)}</p>
+                    {isTemporaryOverrideBookingRecord(booking) && (
+                      <p className="text-xs font-bold text-amber-600">Temporary Override</p>
+                    )}
                   </td>
                   <td className="py-4 px-4 font-medium text-slate-700">{getBookingRoomNumber(booking)}</td>
                   <td className="py-4 px-4">
@@ -10508,16 +10520,60 @@ function BookingManagement() {
                 <input value={bookingForm.purpose} onChange={e => setBookingForm({ ...bookingForm, purpose: e.target.value })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500" />
               </div>
               <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Booking Purpose Type</label>
+                <select value={bookingForm.purposeType} onChange={e => setBookingForm({ ...bookingForm, purposeType: e.target.value as typeof BOOKING_PURPOSE_TYPE_OPTIONS[number] })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500">
+                  {BOOKING_PURPOSE_TYPE_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1">
                 <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Department</label>
                 <select required value={bookingForm.departmentId} onChange={e => setBookingForm({ ...bookingForm, departmentId: e.target.value })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500">
                   <option value="">Select Department</option>
                   {bookingDepartmentOptions.map(dept => <option key={dept.id} value={dept.id}>{dept.name}</option>)}
                 </select>
               </div>
+              {selectedBookingTimingProfile && (
+                <div className={cn(
+                  "md:col-span-2 rounded-xl px-3 py-2 text-xs",
+                  slotDrivenBooking
+                    ? "border border-emerald-100 bg-emerald-50 text-emerald-700"
+                    : isTimingOverrideBooking
+                      ? "border border-amber-100 bg-amber-50 text-amber-700"
+                      : "border border-slate-200 bg-slate-50 text-slate-600"
+                )}>
+                  Timing profile in effect: <span className="font-bold">{getTimingProfileDisplayLabel(selectedBookingTimingProfile)}</span>.
+                  {selectedBookingTimingSlots.length > 0 && (
+                    <span> Preferred slots: {selectedBookingTimingSlots.map(slot => `${slot.start_time}-${slot.end_time}`).join(', ')}.</span>
+                  )}
+                  {bookingForm.purposeType === 'Academic Regular' && slotDrivenBooking && selectedBookingSlotWindow && (
+                    <span> This booking will use the exact academic slot window <span className="font-bold">{selectedBookingSlotWindow.label}</span>.</span>
+                  )}
+                  {bookingForm.purposeType === 'Academic Adjustment' && isTimingOverrideBooking && (
+                    <span> This will be treated as a temporary timing override for this room during the booked period only.</span>
+                  )}
+                  {bookingForm.purposeType === 'Non-Academic' && isTimingOverrideBooking && (
+                    <span> This non-academic booking uses the requested real-time window and will act as a temporary override only for the booked period.</span>
+                  )}
+                </div>
+              )}
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Equipment Required</label>
                 <input value={bookingForm.equipmentRequired} onChange={e => setBookingForm({ ...bookingForm, equipmentRequired: e.target.value })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500" />
               </div>
+              {slotDrivenBooking && (
+                <div className="md:col-span-2 space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Academic Slot Window</label>
+                  <select
+                    value={selectedBookingSlotWindow?.key || ''}
+                    onChange={e => setSelectedBookingSlotWindowKey(e.target.value)}
+                    className="w-full px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-lg font-bold text-emerald-700 focus:outline-none focus:border-emerald-500"
+                  >
+                    {bookingSlotWindows.map(window => (
+                      <option key={window.key} value={window.key}>{window.label}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div className="md:col-span-2 space-y-1">
                 <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Notes</label>
                 <input value={bookingForm.notes} onChange={e => setBookingForm({ ...bookingForm, notes: e.target.value })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500" />
@@ -10611,7 +10667,10 @@ function BookingManagement() {
                           <div key={b.id} className="p-3 bg-emerald-50 border border-emerald-100 rounded-xl flex justify-between items-center">
                             <div>
                               <p className="font-bold text-emerald-800 text-sm">{b.event_name}</p>
-                              <p className="text-xs text-emerald-600">{b.faculty_name}</p>
+                              <p className="text-xs text-emerald-600">{[b.faculty_name, b.purpose_type].filter(Boolean).join(' • ')}</p>
+                              {Number(b.timing_override || 0) === 1 && (
+                                <p className="text-[10px] font-bold text-amber-600 uppercase tracking-widest">Temporary Override</p>
+                              )}
                             </div>
                             <div className="text-right">
                               <p className="text-xs font-bold text-emerald-700">{b.start_time} - {b.end_time}</p>
@@ -10670,6 +10729,7 @@ function LiveRoomAvailability() {
   const [bookingForm, setBookingForm] = useState({
     eventName: '',
     purpose: '',
+    purposeType: 'Non-Academic',
     departmentId: '',
     equipmentRequired: '',
     notes: '',
@@ -10740,7 +10800,7 @@ function LiveRoomAvailability() {
     () => buildTimingProfileSlotWindows(selectedLiveBookingTimingSlots),
     [selectedLiveBookingTimingSlots],
   );
-  const liveSlotDrivenBooking = Boolean(selectedLiveBookingTimingProfile && liveBookingSlotWindows.length > 0);
+  const liveSlotDrivenBooking = bookingForm.purposeType === 'Academic Regular' && Boolean(selectedLiveBookingTimingProfile && liveBookingSlotWindows.length > 0);
   const selectedLiveBookingSlotWindow = useMemo(
     () => liveBookingSlotWindows.find(window => window.key === selectedLiveBookingSlotWindowKey) || null,
     [liveBookingSlotWindows, selectedLiveBookingSlotWindowKey],
@@ -10751,6 +10811,9 @@ function LiveRoomAvailability() {
   const liveBookingEndTime = liveSlotDrivenBooking
     ? (selectedLiveBookingSlotWindow?.end_time || liveBookingSlotWindows[0]?.end_time || filters.endTime)
     : filters.endTime;
+  const liveTimingOverrideBooking = bookingForm.purposeType !== 'Academic Regular'
+    && Boolean(selectedLiveBookingTimingProfile && selectedLiveBookingTimingSlots.length > 0)
+    && !liveBookingSlotWindows.some(window => window.start_time === filters.startTime && window.end_time === filters.endTime);
 
   useEffect(() => {
     const loadLookups = async () => {
@@ -10901,6 +10964,7 @@ function LiveRoomAvailability() {
     setBookingForm({
       eventName: '',
       purpose: '',
+      purposeType: filters.departmentId ? 'Academic Regular' : 'Non-Academic',
       departmentId: filters.departmentId || userDepartmentId,
       equipmentRequired: filters.equipment || '',
       notes: '',
@@ -10933,6 +10997,7 @@ function LiveRoomAvailability() {
           department_id: bookingForm.departmentId,
           event_name: bookingForm.eventName.trim(),
           purpose: bookingForm.purpose.trim(),
+          purpose_type: bookingForm.purposeType,
           notes: bookingForm.notes.trim(),
           student_count: parseInt(filters.minCapacity, 10) || null,
           room_type: bookingRoom.roomType,
@@ -10941,11 +11006,12 @@ function LiveRoomAvailability() {
           date: filters.date,
           start_time: liveBookingStartTime,
           end_time: liveBookingEndTime,
+          timing_override: liveTimingOverrideBooking ? 1 : 0,
           status,
         }),
       });
       setBookingRoom(null);
-      setNotice({ type: 'success', text: `Booking request submitted for room ${bookingRoom.roomNumber}.` });
+      setNotice({ type: 'success', text: `Booking request submitted for room ${bookingRoom.roomNumber}${liveTimingOverrideBooking ? ' as a temporary override.' : '.'}` });
       await fetchAvailability();
     } catch (err: any) {
       setNotice({ type: 'error', text: err.message || 'Booking request failed.' });
@@ -11326,7 +11392,9 @@ function LiveRoomAvailability() {
                   'md:col-span-2 rounded-xl px-4 py-3 text-sm',
                   liveSlotDrivenBooking
                     ? 'border border-emerald-100 bg-emerald-50 text-emerald-700'
-                    : 'border border-amber-100 bg-amber-50 text-amber-700'
+                    : liveTimingOverrideBooking
+                      ? 'border border-amber-100 bg-amber-50 text-amber-700'
+                      : 'border border-slate-200 bg-slate-50 text-slate-600'
                 )}>
                   Timing profile in effect: <span className="font-bold">{getTimingProfileDisplayLabel(selectedLiveBookingTimingProfile)}</span>.
                   {selectedLiveBookingTimingSlots.length > 0 && (
@@ -11334,6 +11402,12 @@ function LiveRoomAvailability() {
                   )}
                   {liveSlotDrivenBooking && selectedLiveBookingSlotWindow && (
                     <span> Booking will be submitted against <span className="font-bold">{selectedLiveBookingSlotWindow.label}</span>.</span>
+                  )}
+                  {bookingForm.purposeType === 'Academic Adjustment' && liveTimingOverrideBooking && (
+                    <span> This booking will be treated as a temporary timing override for this room during the booked period only.</span>
+                  )}
+                  {bookingForm.purposeType === 'Non-Academic' && liveTimingOverrideBooking && (
+                    <span> This non-academic booking uses the requested real-time window and will act as a temporary override only for the booked period.</span>
                   )}
                 </div>
               )}
@@ -11344,6 +11418,12 @@ function LiveRoomAvailability() {
               <div>
                 <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Purpose</label>
                 <input value={bookingForm.purpose} onChange={e => setBookingForm(prev => ({ ...prev, purpose: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Booking Purpose Type</label>
+                <select value={bookingForm.purposeType} onChange={e => setBookingForm(prev => ({ ...prev, purposeType: e.target.value as typeof BOOKING_PURPOSE_TYPE_OPTIONS[number] }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50">
+                  {BOOKING_PURPOSE_TYPE_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
+                </select>
               </div>
               <div>
                 <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Department</label>
