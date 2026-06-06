@@ -2426,6 +2426,7 @@ var normalizeImportMatchValue = (value) => value?.toString().trim().toLowerCase(
 var SERVER_PAGINATION_TABLES = /* @__PURE__ */ new Set([
   "rooms",
   "academic_calendars",
+  "batch_room_allocations",
   "department_allocations",
   "schedules"
 ]);
@@ -2781,6 +2782,50 @@ var createCrudRoutes = (tableName, idField = "id") => {
           const startIndex = (requestedPage - 1) * requestedPageSize;
           return res.json({
             items: scheduleItems.slice(startIndex, startIndex + requestedPageSize),
+            total: total2,
+            page: requestedPage,
+            pageSize: requestedPageSize
+          });
+        }
+        if (tableName === "batch_room_allocations") {
+          let allocationItems = await db.prepare(`SELECT * FROM ${tableName}`).all();
+          const schoolId = req.query.school_id?.toString() || "";
+          const departmentId = req.query.department_id?.toString() || "";
+          const status = req.query.status?.toString().trim() || "";
+          if (schoolId || departmentId || status) {
+            allocationItems = allocationItems.filter((item) => {
+              const computedStatus = deriveBatchAllocationStatus(
+                normalizeIsoDate(item?.start_date),
+                normalizeIsoDate(item?.end_date),
+                item?.status
+              );
+              if (schoolId && !idsEqual(item?.school_id, schoolId)) return false;
+              if (departmentId && !idsEqual(item?.department_id, departmentId)) return false;
+              if (status && computedStatus !== status) return false;
+              return true;
+            });
+          }
+          if (requestedSearch && allowedSearchFields.length > 0) {
+            const normalizedSearch = requestedSearch.toLowerCase();
+            allocationItems = allocationItems.filter(
+              (item) => allowedSearchFields.some(
+                (field) => item?.[field] != null && item[field].toString().toLowerCase().includes(normalizedSearch)
+              )
+            );
+          }
+          if (sortKey) {
+            allocationItems = allocationItems.slice().sort((left, right) => {
+              const comparison = compareServerSortValues(left?.[sortKey], right?.[sortKey]);
+              return requestedSortDir === "desc" ? -comparison : comparison;
+            });
+          }
+          if (!wantsPagination) {
+            return res.json(allocationItems);
+          }
+          const total2 = allocationItems.length;
+          const startIndex = (requestedPage - 1) * requestedPageSize;
+          return res.json({
+            items: allocationItems.slice(startIndex, startIndex + requestedPageSize),
             total: total2,
             page: requestedPage,
             pageSize: requestedPageSize

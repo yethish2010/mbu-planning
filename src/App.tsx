@@ -7113,9 +7113,12 @@ function BatchRoomAllocationManagement() {
   const [blocks, setBlocks] = useState<any[]>([]);
   const [buildings, setBuildings] = useState<any[]>([]);
   const [calendars, setCalendars] = useState<any[]>([]);
-  const [allocations, setAllocations] = useState<any[]>([]);
   const [departmentAllocations, setDepartmentAllocations] = useState<any[]>([]);
   const [lookupFilters, setLookupFilters] = useState({ school_id: '', department_id: '', status: '' });
+  const [lookupResults, setLookupResults] = useState<any[]>([]);
+  const [lookupPage, setLookupPage] = useState(1);
+  const [lookupPageSize] = useState(25);
+  const [lookupTotal, setLookupTotal] = useState(0);
 
   const refreshBatchAllocationLookups = async () => {
     const [
@@ -7126,7 +7129,6 @@ function BatchRoomAllocationManagement() {
       blockData,
       buildingData,
       calendarData,
-      allocationData,
       departmentAllocationData,
     ] = await fetchSharedLookupJsons([
       '/api/schools',
@@ -7136,7 +7138,6 @@ function BatchRoomAllocationManagement() {
       '/api/blocks',
       '/api/buildings',
       '/api/academic_calendars',
-      '/api/batch_room_allocations',
       '/api/department_allocations',
     ]);
 
@@ -7147,7 +7148,6 @@ function BatchRoomAllocationManagement() {
     setBlocks(Array.isArray(blockData) ? blockData : []);
     setBuildings(Array.isArray(buildingData) ? buildingData : []);
     setCalendars(Array.isArray(calendarData) ? calendarData : []);
-    setAllocations(Array.isArray(allocationData) ? allocationData : []);
     setDepartmentAllocations(Array.isArray(departmentAllocationData) ? departmentAllocationData : []);
   };
 
@@ -7266,25 +7266,43 @@ function BatchRoomAllocationManagement() {
     !lookupFilters.school_id || department.school_id?.toString() === lookupFilters.school_id
   );
 
-  const lookupResults = allocations.filter(allocation => {
-    const computedStatus = getRangeLifecycleStatus(allocation.start_date, allocation.end_date, 'Released', 'Planned');
-    if (lookupFilters.school_id && allocation.school_id?.toString() !== lookupFilters.school_id) return false;
-    if (lookupFilters.department_id && allocation.department_id?.toString() !== lookupFilters.department_id) return false;
-    if (lookupFilters.status && computedStatus !== lookupFilters.status) return false;
-    return lookupFilters.school_id || lookupFilters.department_id || lookupFilters.status;
-  }).sort((left, right) => {
-    const leftDepartment = departments.find(item => idsMatch(item.id, left.department_id))?.name || '';
-    const rightDepartment = departments.find(item => idsMatch(item.id, right.department_id))?.name || '';
-    const departmentCompare = compareNaturalSortValues(leftDepartment, rightDepartment);
-    if (departmentCompare !== 0) return departmentCompare;
-    const programCompare = compareNaturalSortValues(left.program, right.program);
-    if (programCompare !== 0) return programCompare;
-    const batchCompare = compareNaturalSortValues(left.batch, right.batch);
-    if (batchCompare !== 0) return batchCompare;
-    const leftRoom = rooms.find(item => idsMatch(item.id, left.room_id));
-    const rightRoom = rooms.find(item => idsMatch(item.id, right.room_id));
-    return compareRoomsByNaturalOrder(leftRoom || left, rightRoom || right, rooms);
-  });
+  const hasActiveLookupFilters = !!(lookupFilters.school_id || lookupFilters.department_id || lookupFilters.status);
+  const lookupTotalPages = Math.max(1, Math.ceil(lookupTotal / lookupPageSize));
+
+  const refreshLookupResults = async () => {
+    if (!hasActiveLookupFilters) {
+      setLookupResults([]);
+      setLookupTotal(0);
+      return;
+    }
+    const params = new URLSearchParams({
+      paginate: '1',
+      page: lookupPage.toString(),
+      pageSize: lookupPageSize.toString(),
+      sortKey: 'start_date',
+      sortDir: 'asc',
+      school_id: lookupFilters.school_id,
+      department_id: lookupFilters.department_id,
+      status: lookupFilters.status,
+    });
+    const data = await apiJson(`/api/batch_room_allocations?${params.toString()}`);
+    setLookupResults(Array.isArray(data?.items) ? data.items : []);
+    setLookupTotal(Number(data?.total || 0));
+  };
+
+  useEffect(() => {
+    setLookupPage(1);
+  }, [lookupFilters.school_id, lookupFilters.department_id, lookupFilters.status]);
+
+  useEffect(() => {
+    refreshLookupResults();
+  }, [lookupPage, lookupFilters.school_id, lookupFilters.department_id, lookupFilters.status]);
+
+  useEffect(() => {
+    if (lookupPage > lookupTotalPages) {
+      setLookupPage(lookupTotalPages);
+    }
+  }, [lookupPage, lookupTotalPages]);
 
   const getAllocationDetails = (allocation: any) => {
     const school = schools.find(s => idsMatch(s.id, allocation.school_id));
@@ -7728,6 +7746,35 @@ function BatchRoomAllocationManagement() {
             </tbody>
           </table>
         </div>
+        {hasActiveLookupFilters && (
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-slate-500">
+              Showing {lookupResults.length === 0 ? 0 : ((lookupPage - 1) * lookupPageSize) + 1}-
+              {Math.min(lookupPage * lookupPageSize, lookupTotal)} of {lookupTotal}
+            </p>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setLookupPage(page => Math.max(1, page - 1))}
+                disabled={lookupPage <= 1}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 disabled:opacity-50"
+              >
+                Previous
+              </button>
+              <span className="text-sm font-semibold text-slate-600">
+                Page {lookupPage} / {lookupTotalPages}
+              </span>
+              <button
+                type="button"
+                onClick={() => setLookupPage(page => Math.min(lookupTotalPages, page + 1))}
+                disabled={lookupPage >= lookupTotalPages}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 disabled:opacity-50"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       <GenericCRUD
@@ -7735,9 +7782,15 @@ function BatchRoomAllocationManagement() {
         fields={fields}
         apiPath="/api/batch_room_allocations"
         onImport={handleImport}
-        onDataChanged={refreshBatchAllocationLookups}
+        onDataChanged={async () => {
+          await refreshBatchAllocationLookups();
+          await refreshLookupResults();
+        }}
         prepareFormData={prepareFormData}
         prepareSubmitData={prepareSubmitData}
+        enableServerPagination
+        serverSearchFields={['allocation_id', 'program', 'batch', 'specialization', 'academic_year', 'year_of_study', 'semester', 'allocation_mode', 'allocation_pattern', 'split_group_id', 'room_type', 'notes']}
+        serverSortKey="start_date"
       />
     </div>
   );
