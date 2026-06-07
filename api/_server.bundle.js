@@ -1690,6 +1690,34 @@ var getDepartmentNameById = async (departmentId) => {
   const department = await db.prepare("SELECT name FROM departments WHERE id = ?").get(departmentId);
   return department?.name || null;
 };
+var getDepartmentScopeByName = async (departmentName) => {
+  const normalizedDepartmentName = departmentName?.toString().trim() || "";
+  if (!normalizedDepartmentName) {
+    return { department: null, schoolId: null, departmentIdsInSchool: [] };
+  }
+  const department = await db.prepare(`
+    SELECT id, name, school_id
+    FROM departments
+    WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+    LIMIT 1
+  `).get(normalizedDepartmentName);
+  if (!department) {
+    return { department: null, schoolId: null, departmentIdsInSchool: [] };
+  }
+  if (!department.school_id) {
+    return { department, schoolId: null, departmentIdsInSchool: [department.id?.toString()].filter(Boolean) };
+  }
+  const siblingDepartments = await db.prepare(`
+    SELECT id
+    FROM departments
+    WHERE school_id = ?
+  `).all(department.school_id);
+  return {
+    department,
+    schoolId: department.school_id,
+    departmentIdsInSchool: siblingDepartments.map((item) => item?.id?.toString()).filter(Boolean)
+  };
+};
 var backfillNotificationsIfEmpty = async () => {
   await ensureNotificationsTable();
   await ensureNotificationReadsTable();
@@ -3321,6 +3349,16 @@ var createCrudRoutes = (tableName, idField = "id") => {
         `).all();
         const user = req.user;
         if (isDecisionRole(user.role)) return res.json(bookings);
+        if (user.role === "Dean") {
+          const scope = await getDepartmentScopeByName(user.department);
+          if (scope.departmentIdsInSchool.length > 0) {
+            const allowedDepartmentIds = new Set(scope.departmentIdsInSchool);
+            return res.json(bookings.filter(
+              (booking) => booking.faculty_name === user.name || booking.department_id != null && allowedDepartmentIds.has(booking.department_id.toString())
+            ));
+          }
+          return res.json(bookings.filter((booking) => booking.faculty_name === user.name));
+        }
         if (user.role === "HOD") {
           return res.json(bookings.filter(
             (booking) => booking.faculty_name === user.name || !!user.department && booking.department_name === user.department

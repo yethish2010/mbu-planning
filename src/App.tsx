@@ -3309,7 +3309,7 @@ function Sidebar() {
 
   const customAccessPaths = user?.access_paths?.split(',').map((path: string) => path.trim()).filter(Boolean) || [];
   const menuItems = [
-    { name: 'Dashboard', icon: LayoutDashboard, path: '/', roles: ['Administrator', 'Faculty', 'HOD', 'Event Coordinator', 'Dean (P&M)', 'Deputy Dean (P&M)', 'Maintenance Staff', 'Infrastructure Manager'] },
+    { name: 'Dashboard', icon: LayoutDashboard, path: '/', roles: ['Administrator', 'Faculty', 'HOD', 'Dean', 'Event Coordinator', 'Dean (P&M)', 'Deputy Dean (P&M)', 'Maintenance Staff', 'Infrastructure Manager'] },
     { name: 'User Management', icon: Users, path: '/users', roles: ['Administrator'] },
     { name: 'Campus Management', icon: Globe, path: '/campuses', roles: ['Administrator', 'Infrastructure Manager'] },
     { name: 'Building Management', icon: Building2, path: '/buildings', roles: ['Administrator', 'Infrastructure Manager'] },
@@ -3324,10 +3324,10 @@ function Sidebar() {
     { name: 'Batch Room Allocation', icon: DoorOpen, path: '/batch-room-allocations', roles: ['Administrator', 'Infrastructure Manager'] },
     { name: 'Equipment Management', icon: Wrench, path: '/equipment', roles: ['Administrator', 'Infrastructure Manager', 'Maintenance Staff'] },
     { name: 'Schedule Records', icon: Calendar, path: '/scheduling', roles: ['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)'] },
-    { name: 'Timetable View', icon: Clock, path: '/timetable', roles: ['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)'] },
-    { name: 'Digital Twin', icon: Globe, path: '/digital-twin', roles: ['Administrator', 'Infrastructure Manager'] },
-    { name: 'Live Availability', icon: MapIcon, path: '/live-availability', roles: ['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Faculty', 'Event Coordinator', 'Infrastructure Manager'] },
-    { name: 'Room Bookings', icon: BookOpen, path: '/bookings', roles: approvalRoles },
+    { name: 'Timetable View', icon: Clock, path: '/timetable', roles: ['Administrator', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD'] },
+    { name: 'Digital Twin', icon: Globe, path: '/digital-twin', roles: ['Administrator', 'Infrastructure Manager', 'Dean', 'HOD'] },
+    { name: 'Live Availability', icon: MapIcon, path: '/live-availability', roles: ['Administrator', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Faculty', 'Event Coordinator', 'Infrastructure Manager'] },
+    { name: 'Room Bookings', icon: BookOpen, path: '/bookings', roles: [...approvalRoles, 'Dean'] },
     { name: 'Room Requests', icon: BookOpen, path: '/bookings', roles: ['Faculty', 'HOD', 'Event Coordinator'] },
     { name: 'AI Room Recommendation', icon: BrainCircuit, path: '/ai-allocation', roles: ['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)'] },
     { name: 'Maintenance', icon: Wrench, path: '/maintenance', roles: ['Administrator', 'Maintenance Staff', 'Infrastructure Manager'] },
@@ -4002,9 +4002,7 @@ export default function App() {
           
           <Route path="/" element={
             <ProtectedRoute>
-              <Layout title="Digital Twin Command Center">
-                <DashboardHome />
-              </Layout>
+              <DashboardShell />
             </ProtectedRoute>
           } />
 
@@ -4130,7 +4128,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/bookings" element={
-            <ProtectedRoute roles={['Administrator', 'Faculty', 'HOD', 'Event Coordinator', 'Dean (P&M)', 'Deputy Dean (P&M)']}>
+            <ProtectedRoute roles={['Administrator', 'Faculty', 'HOD', 'Dean', 'Event Coordinator', 'Dean (P&M)', 'Deputy Dean (P&M)']}>
               <Layout title="Room Bookings">
                 <DependencyGuard dependencies={[{ table: 'rooms', label: 'Rooms' }]}>
                   <BookingManagement />
@@ -4160,7 +4158,7 @@ export default function App() {
           <Route path="/reports" element={<ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}><Layout title="Utilization Reports"><ReportGeneration /></Layout></ProtectedRoute>} />
           <Route path="/performance-insights" element={<ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}><Layout title="Performance Insights"><PerformanceInsights /></Layout></ProtectedRoute>} />
           <Route path="/timetable" element={
-            <ProtectedRoute roles={['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)']}>
+            <ProtectedRoute roles={['Administrator', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD']}>
               <Layout title="Timetable View">
                 <DependencyGuard dependencies={[{ table: 'rooms', label: 'Rooms' }]}>
                   <TimetableBuilder />
@@ -4169,7 +4167,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/digital-twin" element={
-            <ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}>
+            <ProtectedRoute roles={['Administrator', 'Infrastructure Manager', 'Dean', 'HOD']}>
               <Layout title="Smart Campus Digital Twin">
                 <DependencyGuard dependencies={[{ table: 'buildings', label: 'Buildings' }, { table: 'rooms', label: 'Rooms' }]}>
                   <DigitalTwin />
@@ -4178,7 +4176,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/live-availability" element={
-            <ProtectedRoute roles={['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Faculty', 'Event Coordinator', 'Infrastructure Manager']}>
+            <ProtectedRoute roles={['Administrator', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Faculty', 'Event Coordinator', 'Infrastructure Manager']}>
               <Layout title="Live Room Availability">
                 <DependencyGuard dependencies={[{ table: 'rooms', label: 'Rooms' }]}>
                   <LiveRoomAvailability />
@@ -4234,6 +4232,7 @@ function ProtectedRoute({ children, roles }: { children: React.ReactNode, roles?
 // --- DASHBOARD HOME ---
 
 function DashboardHome() {
+  const { user } = useAuth();
   const navigate = useNavigate();
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -4246,6 +4245,23 @@ function DashboardHome() {
   const [selectedTwinBuilding, setSelectedTwinBuilding] = useState('All');
   const [selectedTwinRoomId, setSelectedTwinRoomId] = useState('');
   const [isAnalysisPanelOpen, setIsAnalysisPanelOpen] = useState(false);
+  const [roleDashboardData, setRoleDashboardData] = useState<{
+    bookings: any[];
+    rooms: any[];
+    departments: any[];
+    schools: any[];
+    departmentAllocations: any[];
+    batchAllocations: any[];
+    schedules: any[];
+  }>({
+    bookings: [],
+    rooms: [],
+    departments: [],
+    schools: [],
+    departmentAllocations: [],
+    batchAllocations: [],
+    schedules: [],
+  });
 
   const composeInsightMessage = (statsPayload: any, schoolReportsPayload: any[]) => {
     const rankedSchools = (Array.isArray(schoolReportsPayload) ? schoolReportsPayload : [])
@@ -4312,6 +4328,48 @@ function DashboardHome() {
         setAiInsightMessage(fallbackInsight);
         setDashboardOverview(overviewData || {});
         setDigitalTwinSnapshot(overviewData?.digitalTwinSnapshot || { statusCounts: {}, statusBreakdowns: {}, buildings: [] });
+
+        if (user?.role === 'HOD' || user?.role === 'Dean') {
+          const [
+            bookingData,
+            roomData,
+            departmentData,
+            schoolData,
+            allocationData,
+            batchAllocationData,
+            scheduleData,
+          ] = await Promise.all([
+            fetchJson<any[]>('/api/bookings', []),
+            fetchSharedLookupJson('/api/rooms'),
+            fetchSharedLookupJson('/api/departments'),
+            fetchSharedLookupJson('/api/schools'),
+            fetchSharedLookupJson('/api/department_allocations'),
+            fetchSharedLookupJson('/api/batch_room_allocations'),
+            fetchJson<any[]>('/api/schedules', []),
+          ]);
+
+          if (!isActive) return;
+
+          setRoleDashboardData({
+            bookings: Array.isArray(bookingData) ? bookingData : [],
+            rooms: Array.isArray(roomData) ? roomData : [],
+            departments: Array.isArray(departmentData) ? departmentData : [],
+            schools: Array.isArray(schoolData) ? schoolData : [],
+            departmentAllocations: Array.isArray(allocationData) ? allocationData : [],
+            batchAllocations: Array.isArray(batchAllocationData) ? batchAllocationData : [],
+            schedules: Array.isArray(scheduleData) ? scheduleData : [],
+          });
+        } else {
+          setRoleDashboardData({
+            bookings: [],
+            rooms: [],
+            departments: [],
+            schools: [],
+            departmentAllocations: [],
+            batchAllocations: [],
+            schedules: [],
+          });
+        }
         void trackModuleLoadMetric(
           'DashboardHome',
           'overview',
@@ -4514,6 +4572,592 @@ function DashboardHome() {
   ];
   const dashboardLiveDate = dashboardOverview?.currentDate?.toString?.() || stats?.currentDate?.toString?.() || '';
   const dashboardLiveTime = dashboardOverview?.currentTime?.toString?.() || stats?.currentTime?.toString?.() || '';
+  const isHodDashboard = user?.role === 'HOD';
+  const isDeanDashboard = user?.role === 'Dean';
+  const currentOperationalDate = dashboardLiveDate || formatLocalDate(new Date());
+  const currentOperationalTime = dashboardLiveTime || `${new Date().getHours().toString().padStart(2, '0')}:${new Date().getMinutes().toString().padStart(2, '0')}`;
+  const currentOperationalDayName = new Date(`${currentOperationalDate}T00:00:00`).toLocaleDateString('en-US', { weekday: 'long' });
+  const allTwinRooms = useMemo(
+    () => twinBuildings.flatMap((building: any) =>
+      (Array.isArray(building?.floors) ? building.floors : []).flatMap((floor: any) =>
+        (Array.isArray(floor?.rooms) ? floor.rooms : []).map((room: any) => ({
+          ...room,
+          buildingName: building.buildingName,
+          floorName: floor.floorName,
+        })),
+      ),
+    ),
+    [twinBuildings],
+  );
+  const roleDepartmentsById = useMemo(
+    () => new Map((roleDashboardData.departments || []).map((department: any) => [department.id?.toString(), department])),
+    [roleDashboardData.departments],
+  );
+  const roleSchoolsById = useMemo(
+    () => new Map((roleDashboardData.schools || []).map((school: any) => [school.id?.toString(), school])),
+    [roleDashboardData.schools],
+  );
+  const currentStatusClass = (status: string) => (
+    status === 'Approved' ? 'bg-emerald-100 text-emerald-700' :
+    status === 'HOD Recommended' ? 'bg-indigo-100 text-indigo-700' :
+    status === 'Pending' ? 'bg-amber-100 text-amber-700' :
+    status === 'Rejected' ? 'bg-rose-100 text-rose-700' :
+    status === 'Postponed' ? 'bg-slate-200 text-slate-700' :
+    'bg-slate-100 text-slate-700'
+  );
+  const isClassroomLikeRoom = (roomType: unknown) => {
+    const normalized = normalizeRoomTypeValue(roomType);
+    return ['Classroom', 'Smart Classroom', 'Lecture Hall', 'Tutorial Room', 'Multipurpose Classroom', 'Multipurpose Lecture Hall'].includes(normalized);
+  };
+  const resolvedRoleScheduleRoomIdsBySignature = useMemo(() => {
+    const map = new Map<string, string[]>();
+    deduplicateScheduleRows(roleDashboardData.schedules || []).forEach((schedule: any) => {
+      const roomIds = new Set<string>();
+      if (schedule?.room_id !== undefined && schedule?.room_id !== null && schedule?.room_id !== '') {
+        roomIds.add(schedule.room_id.toString());
+      }
+      if (schedule?.room_label) {
+        const resolution = resolveRoomSetForImport(roleDashboardData.rooms || [], schedule.room_label);
+        resolution.rooms.forEach((room: any) => {
+          const roomKey = room?.id?.toString();
+          if (roomKey) roomIds.add(roomKey);
+        });
+      }
+      map.set(getScheduleRenderSignature(schedule), Array.from(roomIds));
+    });
+    return map;
+  }, [roleDashboardData.rooms, roleDashboardData.schedules]);
+  const getResolvedRoleScheduleRoomIds = (schedule: any) =>
+    resolvedRoleScheduleRoomIdsBySignature.get(getScheduleRenderSignature(schedule)) || [];
+  const userDepartment = useMemo(
+    () => (roleDashboardData.departments || []).find((department: any) => normalizeLookupValue(department?.name) === normalizeLookupValue(user?.department)),
+    [roleDashboardData.departments, user?.department],
+  );
+  const deanSchool = useMemo(
+    () => roleSchoolsById.get(userDepartment?.school_id?.toString?.() || '') || null,
+    [roleSchoolsById, userDepartment],
+  );
+  const schoolDepartmentIds = useMemo(
+    () => new Set(
+      (roleDashboardData.departments || [])
+        .filter((department: any) => deanSchool && idsMatch(department?.school_id, deanSchool?.id))
+        .map((department: any) => department.id?.toString())
+        .filter(Boolean),
+    ),
+    [deanSchool, roleDashboardData.departments],
+  );
+  const departmentRoomIds = useMemo(() => {
+    if (!userDepartment) return new Set<string>();
+    const roomIds = new Set<string>();
+    (roleDashboardData.departmentAllocations || []).forEach((allocation: any) => {
+      if (idsMatch(allocation?.department_id, userDepartment?.id) && allocation?.room_id != null) {
+        roomIds.add(allocation.room_id.toString());
+      }
+    });
+    (roleDashboardData.batchAllocations || []).forEach((allocation: any) => {
+      if (idsMatch(allocation?.department_id, userDepartment?.id) && allocation?.room_id != null) {
+        roomIds.add(allocation.room_id.toString());
+      }
+    });
+    deduplicateScheduleRows(roleDashboardData.schedules || []).forEach((schedule: any) => {
+      if (!idsMatch(schedule?.department_id, userDepartment?.id)) return;
+      getResolvedRoleScheduleRoomIds(schedule).forEach((roomId) => roomIds.add(roomId));
+    });
+    (roleDashboardData.bookings || []).forEach((booking: any) => {
+      if (idsMatch(booking?.department_id, userDepartment?.id) && booking?.room_id != null) {
+        roomIds.add(booking.room_id.toString());
+      }
+    });
+    return roomIds;
+  }, [getResolvedRoleScheduleRoomIds, roleDashboardData.batchAllocations, roleDashboardData.bookings, roleDashboardData.departmentAllocations, roleDashboardData.schedules, userDepartment]);
+  const schoolRoomIds = useMemo(() => {
+    if (!deanSchool) return new Set<string>();
+    const roomIds = new Set<string>();
+    (roleDashboardData.departmentAllocations || []).forEach((allocation: any) => {
+      if (allocation?.department_id != null && schoolDepartmentIds.has(allocation.department_id.toString()) && allocation?.room_id != null) {
+        roomIds.add(allocation.room_id.toString());
+      }
+    });
+    (roleDashboardData.batchAllocations || []).forEach((allocation: any) => {
+      if (allocation?.department_id != null && schoolDepartmentIds.has(allocation.department_id.toString()) && allocation?.room_id != null) {
+        roomIds.add(allocation.room_id.toString());
+      }
+    });
+    deduplicateScheduleRows(roleDashboardData.schedules || []).forEach((schedule: any) => {
+      if (schedule?.department_id == null || !schoolDepartmentIds.has(schedule.department_id.toString())) return;
+      getResolvedRoleScheduleRoomIds(schedule).forEach((roomId) => roomIds.add(roomId));
+    });
+    (roleDashboardData.bookings || []).forEach((booking: any) => {
+      if (booking?.department_id != null && schoolDepartmentIds.has(booking.department_id.toString()) && booking?.room_id != null) {
+        roomIds.add(booking.room_id.toString());
+      }
+    });
+    return roomIds;
+  }, [deanSchool, getResolvedRoleScheduleRoomIds, roleDashboardData.batchAllocations, roleDashboardData.bookings, roleDashboardData.departmentAllocations, roleDashboardData.schedules, schoolDepartmentIds]);
+  const hodTwinRooms = useMemo(
+    () => allTwinRooms.filter((room: any) => departmentRoomIds.has(room?.id?.toString?.() || '')),
+    [allTwinRooms, departmentRoomIds],
+  );
+  const deanTwinRooms = useMemo(
+    () => allTwinRooms.filter((room: any) => schoolRoomIds.has(room?.id?.toString?.() || '')),
+    [allTwinRooms, schoolRoomIds],
+  );
+  const hodBookings = useMemo(
+    () => (roleDashboardData.bookings || []).filter((booking: any) => idsMatch(booking?.department_id, userDepartment?.id)),
+    [roleDashboardData.bookings, userDepartment],
+  );
+  const deanBookings = useMemo(
+    () => (roleDashboardData.bookings || []).filter((booking: any) => booking?.department_id != null && schoolDepartmentIds.has(booking.department_id.toString())),
+    [roleDashboardData.bookings, schoolDepartmentIds],
+  );
+  const hodSchedules = useMemo(
+    () => deduplicateScheduleRows(roleDashboardData.schedules || []).filter((schedule: any) => idsMatch(schedule?.department_id, userDepartment?.id)),
+    [roleDashboardData.schedules, userDepartment],
+  );
+  const deanSchedules = useMemo(
+    () => deduplicateScheduleRows(roleDashboardData.schedules || []).filter((schedule: any) => schedule?.department_id != null && schoolDepartmentIds.has(schedule.department_id.toString())),
+    [roleDashboardData.schedules, schoolDepartmentIds],
+  );
+  const hodTodaySchedules = useMemo(
+    () => hodSchedules
+      .filter((schedule: any) => normalizeLookupValue(schedule?.day_of_week) === normalizeLookupValue(currentOperationalDayName))
+      .sort((left: any, right: any) => (left.start_time || '').localeCompare(right.start_time || '') || (left.end_time || '').localeCompare(right.end_time || '')),
+    [currentOperationalDayName, hodSchedules],
+  );
+  const deanOpenApprovalRows = useMemo(
+    () => deanBookings
+      .filter((booking: any) => ['Pending', 'HOD Recommended'].includes(booking?.status))
+      .sort((left: any, right: any) => `${left.date || ''} ${left.start_time || ''}`.localeCompare(`${right.date || ''} ${right.start_time || ''}`))
+      .slice(0, 8),
+    [deanBookings],
+  );
+  const hodBatchAllocations = useMemo(
+    () => (roleDashboardData.batchAllocations || [])
+      .filter((allocation: any) => idsMatch(allocation?.department_id, userDepartment?.id))
+      .sort((left: any, right: any) => (left.start_date || '').localeCompare(right.start_date || ''))
+      .slice(0, 8),
+    [roleDashboardData.batchAllocations, userDepartment],
+  );
+  const deanDepartmentUsageRows = useMemo(() => {
+    if (!deanSchool) return [];
+    return (roleDashboardData.departments || [])
+      .filter((department: any) => idsMatch(department?.school_id, deanSchool?.id))
+      .map((department: any) => {
+        const mappedRoomIds = new Set<string>();
+        (roleDashboardData.departmentAllocations || []).forEach((allocation: any) => {
+          if (idsMatch(allocation?.department_id, department?.id) && allocation?.room_id != null) mappedRoomIds.add(allocation.room_id.toString());
+        });
+        (roleDashboardData.batchAllocations || []).forEach((allocation: any) => {
+          if (idsMatch(allocation?.department_id, department?.id) && allocation?.room_id != null) mappedRoomIds.add(allocation.room_id.toString());
+        });
+        deanSchedules.forEach((schedule: any) => {
+          if (!idsMatch(schedule?.department_id, department?.id)) return;
+          getResolvedRoleScheduleRoomIds(schedule).forEach((roomId) => mappedRoomIds.add(roomId));
+        });
+        const departmentTwinRooms = deanTwinRooms.filter((room: any) => mappedRoomIds.has(room?.id?.toString?.() || ''));
+        const occupiedNow = departmentTwinRooms.filter((room: any) => getDigitalTwinStatusLabel(room?.status, room?.isBookable !== false) === 'Occupied').length;
+        const requestCount = deanBookings.filter((booking: any) => idsMatch(booking?.department_id, department?.id)).length;
+        return {
+          id: department.id,
+          name: department.name,
+          roomCount: departmentTwinRooms.length,
+          occupiedNow,
+          availableNow: departmentTwinRooms.filter((room: any) => getDigitalTwinStatusLabel(room?.status, room?.isBookable !== false) === 'Available').length,
+          requestCount,
+        };
+      })
+      .sort((left: any, right: any) => right.occupiedNow - left.occupiedNow || right.requestCount - left.requestCount || left.name.localeCompare(right.name))
+      .slice(0, 8);
+  }, [deanBookings, deanSchedules, deanSchool, deanTwinRooms, getResolvedRoleScheduleRoomIds, roleDashboardData.batchAllocations, roleDashboardData.departmentAllocations, roleDashboardData.departments]);
+  const deanShortageRows = useMemo(() => {
+    return deanDepartmentUsageRows
+      .map((department: any) => {
+        const pendingCount = deanBookings.filter((booking: any) => idsMatch(booking?.department_id, department.id) && ['Pending', 'HOD Recommended'].includes(booking?.status)).length;
+        const shortageType = department.roomCount === 0
+          ? 'No mapped rooms'
+          : department.availableNow === 0 && pendingCount > 0
+            ? 'No free classrooms'
+            : pendingCount > Math.max(1, department.availableNow)
+              ? 'Booking pressure'
+              : '';
+        return {
+          ...department,
+          pendingCount,
+          shortageType,
+        };
+      })
+      .filter((department: any) => !!department.shortageType)
+      .sort((left: any, right: any) => right.pendingCount - left.pendingCount || left.availableNow - right.availableNow)
+      .slice(0, 6);
+  }, [deanBookings, deanDepartmentUsageRows]);
+  const deanUnderutilizedRooms = useMemo(
+    () => lowestUsageRooms
+      .filter((room: any) => !deanSchool || schoolDepartmentIds.has(roleDashboardData.departments.find((department: any) => normalizeLookupValue(department?.name) === normalizeLookupValue(room?.department))?.id?.toString?.() || ''))
+      .slice(0, 8),
+    [deanSchool, lowestUsageRooms, roleDashboardData.departments, schoolDepartmentIds],
+  );
+
+  const renderHodDashboard = () => {
+    if (!userDepartment) {
+      return (
+        <div className="rounded-[32px] border border-amber-200 bg-amber-50 p-8 text-amber-900">
+          <h3 className="text-xl font-bold">Department mapping needed</h3>
+          <p className="text-sm mt-2">Assign this HOD user to a department in User Management so the department dashboard can scope rooms, timetable rows, and booking requests correctly.</p>
+        </div>
+      );
+    }
+
+    const freeClassrooms = hodTwinRooms
+      .filter((room: any) => getDigitalTwinStatusLabel(room?.status, room?.isBookable !== false) === 'Available' && isClassroomLikeRoom(room?.roomType))
+      .slice(0, 8);
+    const occupiedNow = hodTwinRooms.filter((room: any) => getDigitalTwinStatusLabel(room?.status, room?.isBookable !== false) === 'Occupied').length;
+    const pendingRequests = hodBookings.filter((booking: any) => ['Pending', 'HOD Recommended'].includes(booking?.status)).length;
+    const facultyTodayCount = new Set(hodTodaySchedules.map((schedule: any) => normalizeLookupValue(schedule?.faculty)).filter(Boolean)).size;
+
+    return (
+      <div className="space-y-8">
+        <div className="rounded-[36px] border border-slate-200 bg-white p-8 shadow-sm">
+          <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.24em] font-bold text-emerald-600">Department Operations</p>
+              <h3 className="text-3xl font-black text-slate-900 mt-2">{userDepartment.name}</h3>
+              <p className="text-sm text-slate-500 mt-2">Track department rooms, faculty sessions, batch allocations, and request flow from one place.</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600">
+              Live as of {formatDisplayDate(currentOperationalDate)} at {currentOperationalTime}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-5">
+          {[
+            { label: 'Department Rooms', value: hodTwinRooms.length, hint: 'Mapped rooms in scope' },
+            { label: 'Occupied Now', value: occupiedNow, hint: 'Live timetable occupancy' },
+            { label: 'Free Classrooms', value: freeClassrooms.length, hint: 'Ready for reuse now' },
+            { label: 'Booking Requests', value: pendingRequests, hint: 'Pending or recommended' },
+            { label: 'Faculty Sessions', value: facultyTodayCount, hint: `Today: ${currentOperationalDayName}` },
+          ].map((item) => (
+            <div key={item.label} className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+              <p className="text-[11px] uppercase tracking-widest font-bold text-slate-500">{item.label}</p>
+              <p className="text-3xl font-black text-slate-900 mt-3">{item.value}</p>
+              <p className="text-xs font-medium text-slate-400 mt-2">{item.hint}</p>
+            </div>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-5 gap-8">
+          <div className="xl:col-span-3 rounded-[32px] border border-slate-200 bg-white p-7 shadow-sm">
+            <div className="flex items-center justify-between gap-4 mb-5">
+              <div>
+                <h4 className="text-lg font-bold text-slate-900">Faculty Timetable</h4>
+                <p className="text-sm text-slate-500">Today&apos;s department sessions, sorted by time slot.</p>
+              </div>
+              <button type="button" onClick={() => navigate('/timetable')} className="text-xs font-bold text-emerald-700 hover:text-emerald-800">Open Timetable</button>
+            </div>
+            <div className="space-y-3">
+              {hodTodaySchedules.slice(0, 8).map((schedule: any, index: number) => (
+                <div key={`${schedule.id || schedule.schedule_id || index}`} className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+                  <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-bold text-slate-800">{schedule.faculty || 'Faculty not set'}</p>
+                      <p className="text-xs text-slate-500">{schedule.course_name || 'Scheduled class'}{schedule.section ? ` • Section ${schedule.section}` : ''}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xs font-bold text-slate-700">{schedule.start_time} - {schedule.end_time}</p>
+                      <p className="text-[11px] text-slate-500">{schedule.room_label || roleDashboardData.rooms.find((room: any) => idsMatch(room.id, schedule.room_id))?.room_number || 'Room not linked'}</p>
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {hodTodaySchedules.length === 0 && (
+                <div className="rounded-2xl border border-dashed border-slate-200 p-8 text-center text-sm text-slate-400">No faculty sessions are scheduled for this department today.</div>
+              )}
+            </div>
+          </div>
+
+          <div className="xl:col-span-2 rounded-[32px] border border-slate-200 bg-white p-7 shadow-sm">
+            <div className="flex items-center justify-between gap-4 mb-5">
+              <div>
+                <h4 className="text-lg font-bold text-slate-900">Department Booking Requests</h4>
+                <p className="text-sm text-slate-500">Requests waiting on review or already in progress.</p>
+              </div>
+              <button type="button" onClick={() => navigate('/bookings?status=Pending')} className="text-xs font-bold text-emerald-700 hover:text-emerald-800">Open Requests</button>
+            </div>
+            <div className="space-y-3">
+              {hodBookings.slice(0, 8).map((booking: any) => (
+                <div key={booking.id} className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-slate-800 truncate">{booking.event_name || booking.purpose || 'Room request'}</p>
+                      <p className="text-xs text-slate-500 truncate">{booking.faculty_name || 'Faculty'} • {booking.room_number || 'Room not set'}</p>
+                    </div>
+                    <span className={cn('px-2 py-1 rounded-full text-[10px] font-bold whitespace-nowrap', currentStatusClass(booking.status || 'Pending'))}>{booking.status || 'Pending'}</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-2">{booking.date || 'Date not set'} • {booking.start_time || '--:--'} - {booking.end_time || '--:--'}</p>
+                </div>
+              ))}
+              {hodBookings.length === 0 && (
+                <div className="rounded-2xl border border-dashed border-slate-200 p-8 text-center text-sm text-slate-400">No booking requests are mapped to this department yet.</div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-5 gap-8">
+          <div className="xl:col-span-3 rounded-[32px] border border-slate-200 bg-white p-7 shadow-sm">
+            <div className="flex items-center justify-between gap-4 mb-5">
+              <div>
+                <h4 className="text-lg font-bold text-slate-900">Batch Room Allocation</h4>
+                <p className="text-sm text-slate-500">Current department allocations by program, year, and semester.</p>
+              </div>
+            </div>
+            <div className="space-y-3">
+              {hodBatchAllocations.map((allocation: any) => (
+                <div key={allocation.id} className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+                  <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-bold text-slate-800">{[allocation.program, allocation.batch].filter(Boolean).join(' • ') || 'Batch allocation'}</p>
+                      <p className="text-xs text-slate-500">{[allocation.specialization, allocation.year_of_study, allocation.semester].filter(Boolean).join(' • ') || 'Academic context not set'}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xs font-bold text-slate-700">{roleDashboardData.rooms.find((room: any) => idsMatch(room.id, allocation.room_id))?.room_number || 'Room not linked'}</p>
+                      <p className="text-[11px] text-slate-400">{formatDisplayDate(allocation.start_date)} to {formatDisplayDate(allocation.end_date)}</p>
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {hodBatchAllocations.length === 0 && (
+                <div className="rounded-2xl border border-dashed border-slate-200 p-8 text-center text-sm text-slate-400">No active batch room allocations are assigned to this department.</div>
+              )}
+            </div>
+          </div>
+
+          <div className="xl:col-span-2 rounded-[32px] border border-slate-200 bg-white p-7 shadow-sm">
+            <div className="flex items-center justify-between gap-4 mb-5">
+              <div>
+                <h4 className="text-lg font-bold text-slate-900">Free Classrooms</h4>
+                <p className="text-sm text-slate-500">Reusable classrooms available for quick rescheduling.</p>
+              </div>
+              <button type="button" onClick={() => navigate('/live-availability')} className="text-xs font-bold text-emerald-700 hover:text-emerald-800">Open Live Availability</button>
+            </div>
+            <div className="space-y-3">
+              {freeClassrooms.map((room: any) => (
+                <div key={room.id} className="rounded-2xl border border-emerald-100 bg-emerald-50/70 px-4 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-bold text-slate-800">{room.roomNumber}</p>
+                      <p className="text-xs text-slate-500">{room.roomType} • Capacity {room.capacity || 0}</p>
+                    </div>
+                    <span className="text-[11px] font-bold text-emerald-700">Available</span>
+                  </div>
+                </div>
+              ))}
+              {freeClassrooms.length === 0 && (
+                <div className="rounded-2xl border border-dashed border-slate-200 p-8 text-center text-sm text-slate-400">No free classrooms are available in the current department scope.</div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-[32px] border border-slate-200 bg-white p-7 shadow-sm">
+          <div className="flex items-center justify-between gap-4 mb-5">
+            <div>
+              <h4 className="text-lg font-bold text-slate-900">Department Rooms</h4>
+              <p className="text-sm text-slate-500">Live room status across the department inventory.</p>
+            </div>
+            <button type="button" onClick={() => navigate('/digital-twin')} className="text-xs font-bold text-emerald-700 hover:text-emerald-800">Open Digital Twin</button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+            {hodTwinRooms.slice(0, 8).map((room: any) => {
+              const statusLabel = getDigitalTwinStatusLabel(room?.status, room?.isBookable !== false);
+              return (
+                <div key={room.id} className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-bold text-slate-800">{room.roomNumber}</p>
+                    <span className={cn('px-2 py-1 rounded-full text-[10px] font-bold', DIGITAL_TWIN_STATUS_STYLES[statusLabel].badge)}>{statusLabel}</span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-2">{room.roomType} • Capacity {room.capacity || 0}</p>
+                  <p className="text-[11px] text-slate-400 mt-2">{room.currentUsage || room.nextAvailableSlot || 'No active usage'}</p>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderDeanDashboard = () => {
+    if (!deanSchool) {
+      return (
+        <div className="rounded-[32px] border border-amber-200 bg-amber-50 p-8 text-amber-900">
+          <h3 className="text-xl font-bold">School scope needed</h3>
+          <p className="text-sm mt-2">Assign this Dean user to a department within the correct school so the dashboard can resolve school-wise usage, booking requests, and infrastructure shortage signals.</p>
+        </div>
+      );
+    }
+
+    const schoolStatusCounts = {
+      total: deanTwinRooms.length,
+      occupied: deanTwinRooms.filter((room: any) => getDigitalTwinStatusLabel(room?.status, room?.isBookable !== false) === 'Occupied').length,
+      available: deanTwinRooms.filter((room: any) => getDigitalTwinStatusLabel(room?.status, room?.isBookable !== false) === 'Available').length,
+      maintenance: deanTwinRooms.filter((room: any) => getDigitalTwinStatusLabel(room?.status, room?.isBookable !== false) === 'Maintenance').length,
+      booked: deanTwinRooms.filter((room: any) => getDigitalTwinStatusLabel(room?.status, room?.isBookable !== false) === 'Event Booked').length,
+    };
+
+    return (
+      <div className="space-y-8">
+        <div className="rounded-[36px] border border-slate-200 bg-white p-8 shadow-sm">
+          <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.24em] font-bold text-blue-600">School Oversight</p>
+              <h3 className="text-3xl font-black text-slate-900 mt-2">{deanSchool.name}</h3>
+              <p className="text-sm text-slate-500 mt-2">Monitor departmental usage, request flow, shortage hotspots, and underused inventory across the school.</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600">
+              Live as of {formatDisplayDate(currentOperationalDate)} at {currentOperationalTime}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-5">
+          {[
+            { label: 'Total School Rooms', value: schoolStatusCounts.total, hint: 'Mapped school inventory' },
+            { label: 'Occupied Now', value: schoolStatusCounts.occupied, hint: 'Current teaching load' },
+            { label: 'Available Now', value: schoolStatusCounts.available, hint: 'Ready for booking' },
+            { label: 'Maintenance Rooms', value: schoolStatusCounts.maintenance, hint: 'Unavailable infrastructure' },
+            { label: 'Event Booked', value: schoolStatusCounts.booked, hint: 'Special-use bookings' },
+          ].map((item) => (
+            <div key={item.label} className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+              <p className="text-[11px] uppercase tracking-widest font-bold text-slate-500">{item.label}</p>
+              <p className="text-3xl font-black text-slate-900 mt-3">{item.value}</p>
+              <p className="text-xs font-medium text-slate-400 mt-2">{item.hint}</p>
+            </div>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-5 gap-8">
+          <div className="xl:col-span-3 rounded-[32px] border border-slate-200 bg-white p-7 shadow-sm">
+            <div className="flex items-center justify-between gap-4 mb-5">
+              <div>
+                <h4 className="text-lg font-bold text-slate-900">School Room Usage</h4>
+                <p className="text-sm text-slate-500">Department-wise room coverage and live occupancy inside the school.</p>
+              </div>
+            </div>
+            <div className="space-y-3">
+              {deanDepartmentUsageRows.map((department: any) => (
+                <div key={department.id} className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+                  <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-bold text-slate-800">{department.name}</p>
+                      <p className="text-xs text-slate-500">{department.roomCount} room{department.roomCount === 1 ? '' : 's'} • {department.requestCount} request{department.requestCount === 1 ? '' : 's'}</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2 text-[11px] font-bold">
+                      <span className="px-2 py-1 rounded-full bg-rose-100 text-rose-700">Occupied: {department.occupiedNow}</span>
+                      <span className="px-2 py-1 rounded-full bg-emerald-100 text-emerald-700">Available: {department.availableNow}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {deanDepartmentUsageRows.length === 0 && (
+                <div className="rounded-2xl border border-dashed border-slate-200 p-8 text-center text-sm text-slate-400">No school room usage data is available yet.</div>
+              )}
+            </div>
+          </div>
+
+          <div className="xl:col-span-2 rounded-[32px] border border-slate-200 bg-white p-7 shadow-sm">
+            <div className="flex items-center justify-between gap-4 mb-5">
+              <div>
+                <h4 className="text-lg font-bold text-slate-900">Department Booking Requests</h4>
+                <p className="text-sm text-slate-500">Request load by department for the selected school.</p>
+              </div>
+              <button type="button" onClick={() => navigate('/bookings?status=Pending')} className="text-xs font-bold text-emerald-700 hover:text-emerald-800">Open Requests</button>
+            </div>
+            <div className="space-y-3">
+              {deanDepartmentUsageRows.map((department: any) => (
+                <div key={`req-${department.id}`} className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-bold text-slate-800">{department.name}</p>
+                      <p className="text-xs text-slate-500">{department.requestCount} total request{department.requestCount === 1 ? '' : 's'}</p>
+                    </div>
+                    <span className="text-sm font-black text-slate-900">{department.requestCount}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-5 gap-8">
+          <div className="xl:col-span-2 rounded-[32px] border border-slate-200 bg-white p-7 shadow-sm">
+            <h4 className="text-lg font-bold text-slate-900 mb-5">Infrastructure Shortage</h4>
+            <div className="space-y-3">
+              {deanShortageRows.map((department: any) => (
+                <div key={`short-${department.id}`} className="rounded-2xl border border-amber-100 bg-amber-50/70 px-4 py-3">
+                  <p className="text-sm font-bold text-slate-800">{department.name}</p>
+                  <p className="text-xs text-amber-800 mt-1">{department.shortageType}</p>
+                  <p className="text-[11px] text-slate-500 mt-2">Pending: {department.pendingCount} • Available now: {department.availableNow}</p>
+                </div>
+              ))}
+              {deanShortageRows.length === 0 && (
+                <div className="rounded-2xl border border-dashed border-slate-200 p-8 text-center text-sm text-slate-400">No immediate shortage hotspots were detected for this school.</div>
+              )}
+            </div>
+          </div>
+
+          <div className="xl:col-span-3 rounded-[32px] border border-slate-200 bg-white p-7 shadow-sm">
+            <h4 className="text-lg font-bold text-slate-900 mb-5">Underutilized Rooms</h4>
+            <div className="space-y-3">
+              {deanUnderutilizedRooms.map((room: any) => (
+                <div key={`under-${room.room_id}`} className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+                  <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-bold text-slate-800">Room {room.room_number}</p>
+                      <p className="text-xs text-slate-500">{room.department || 'Unmapped'} • {[room.building, room.block].filter(Boolean).join(' • ') || 'No building context'}</p>
+                    </div>
+                    <span className="text-sm font-black text-slate-700">{Math.round(Number(room.utilization) || 0)}%</span>
+                  </div>
+                </div>
+              ))}
+              {deanUnderutilizedRooms.length === 0 && (
+                <div className="rounded-2xl border border-dashed border-slate-200 p-8 text-center text-sm text-slate-400">No low-usage room signals are available for this school yet.</div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-[32px] border border-slate-200 bg-white p-7 shadow-sm">
+          <div className="flex items-center justify-between gap-4 mb-5">
+            <div>
+              <h4 className="text-lg font-bold text-slate-900">Event Approvals Queue</h4>
+              <p className="text-sm text-slate-500">School requests that still need oversight or follow-up.</p>
+            </div>
+            <button type="button" onClick={() => navigate('/bookings')} className="text-xs font-bold text-emerald-700 hover:text-emerald-800">Open Bookings</button>
+          </div>
+          <div className="space-y-3">
+            {deanOpenApprovalRows.map((booking: any) => (
+              <div key={`approval-${booking.id}`} className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-slate-800 truncate">{booking.event_name || booking.purpose || 'Room request'}</p>
+                    <p className="text-xs text-slate-500 truncate">{booking.department_name || roleDepartmentsById.get(booking.department_id?.toString?.() || '')?.name || 'Department not set'} • {booking.room_number || 'Room not set'}</p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <p className="text-[11px] text-slate-500 whitespace-nowrap">{booking.date || 'Date not set'} • {booking.start_time || '--:--'}</p>
+                    <span className={cn('px-2 py-1 rounded-full text-[10px] font-bold whitespace-nowrap', currentStatusClass(booking.status || 'Pending'))}>{booking.status || 'Pending'}</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {deanOpenApprovalRows.length === 0 && (
+              <div className="rounded-2xl border border-dashed border-slate-200 p-8 text-center text-sm text-slate-400">No pending or recommended school requests are waiting right now.</div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   if (loading) {
     return (
@@ -4521,6 +5165,14 @@ function DashboardHome() {
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-500"></div>
       </div>
     );
+  }
+
+  if (isHodDashboard) {
+    return renderHodDashboard();
+  }
+
+  if (isDeanDashboard) {
+    return renderDeanDashboard();
   }
 
   return (
@@ -5682,7 +6334,7 @@ function UserManagement() {
   const fields = [
     { key: 'full_name', label: 'Full Name' },
     { key: 'employee_id', label: 'Employee ID' },
-    { key: 'role', label: 'Role', type: 'select', options: ['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Event Coordinator', 'Faculty', 'Maintenance Staff', 'Infrastructure Manager'] },
+    { key: 'role', label: 'Role', type: 'select', options: ['Administrator', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Event Coordinator', 'Faculty', 'Maintenance Staff', 'Infrastructure Manager'] },
     { key: 'email', label: 'Email Address' },
     { key: 'department', label: 'Department', type: 'select', required: false, options: departments.map(department => department.name) },
     { key: 'password_status', label: 'Password', tableOnly: true, render: (item: any) => item.force_password_change ? 'Temporary - change required' : 'Hidden - reset in edit' },
@@ -7134,6 +7786,21 @@ function RoomManagement() {
       dataSorter={(left, right) => compareRoomsByNaturalOrder(left, right, rooms)}
       filterControls={roomFilterControls}
     />
+  );
+}
+
+function DashboardShell() {
+  const { user } = useAuth();
+  const title = user?.role === 'HOD'
+    ? 'HOD Dashboard'
+    : user?.role === 'Dean'
+      ? 'Dean Dashboard'
+      : 'Digital Twin Command Center';
+
+  return (
+    <Layout title={title}>
+      <DashboardHome />
+    </Layout>
   );
 }
 
@@ -9814,10 +10481,12 @@ function BookingManagement() {
   const [roomSchedule, setRoomSchedule] = useState<any>(null);
   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
 
+  const isSchoolDean = user?.role === 'Dean';
+
   const fetchMyBookings = async () => {
     const res = await fetch('/api/bookings', { credentials: 'include' });
     const data = await res.json();
-    setMyBookings(data.filter((b: any) => b.faculty_name === user?.name || canApproveBookings || canRecommendBookings));
+    setMyBookings(data.filter((b: any) => b.faculty_name === user?.name || canApproveBookings || canRecommendBookings || isSchoolDean));
   };
 
   useEffect(() => {
@@ -9892,7 +10561,7 @@ function BookingManagement() {
   const canDeputyDecideBookings = user?.role === 'Deputy Dean (P&M)';
   const canRecommendBookings = user?.role === 'HOD';
   const canApproveBookings = canDirectDecideBookings || canDeputyDecideBookings;
-  const canChooseAnyRequestDepartment = canApproveBookings || user?.role === 'Administrator';
+  const canChooseAnyRequestDepartment = canApproveBookings || user?.role === 'Administrator' || isSchoolDean;
   const userDepartmentId = departments.find(dept => normalizeLookupValue(dept.name) === normalizeLookupValue(user?.department))?.id?.toString() || '';
   const bookingDepartmentOptions = canChooseAnyRequestDepartment || !user?.department
     ? departments
@@ -11216,9 +11885,9 @@ function LiveRoomAvailability() {
   });
 
   const canDirectDecideBookings = ['Administrator', 'Dean (P&M)'].includes(user?.role);
-  const canBookRooms = ['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Faculty', 'Event Coordinator'].includes(user?.role);
+  const canBookRooms = ['Administrator', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Faculty', 'Event Coordinator'].includes(user?.role);
   const userDepartmentId = departments.find(dept => normalizeLookupValue(dept.name) === normalizeLookupValue(user?.department))?.id?.toString() || '';
-  const canChooseAnyRequestDepartment = canDirectDecideBookings || user?.role === 'Deputy Dean (P&M)' || user?.role === 'Administrator';
+  const canChooseAnyRequestDepartment = canDirectDecideBookings || user?.role === 'Dean' || user?.role === 'Deputy Dean (P&M)' || user?.role === 'Administrator';
   const bookingDepartmentOptions = canChooseAnyRequestDepartment || !user?.department
     ? departments
     : departments.filter(dept => normalizeLookupValue(dept.name) === normalizeLookupValue(user.department));
@@ -17932,6 +18601,7 @@ function ReportGeneration() {
 }
 
 function TimetableBuilder() {
+  const { user } = useAuth();
   const location = useLocation();
   const [schedules, setSchedules] = useState<any[]>([]);
   const [rooms, setRooms] = useState<any[]>([]);
@@ -17950,12 +18620,58 @@ function TimetableBuilder() {
     return Number(match[1]) * 60 + Number(match[2]);
   };
 
+  const scopedDepartmentIds = useMemo(() => {
+    if (user?.role === 'HOD') {
+      const department = departments.find((item: any) => normalizeLookupValue(item?.name) === normalizeLookupValue(user?.department));
+      return new Set<string>(department?.id ? [department.id.toString()] : []);
+    }
+    if (user?.role === 'Dean') {
+      const department = departments.find((item: any) => normalizeLookupValue(item?.name) === normalizeLookupValue(user?.department));
+      if (!department?.school_id) return new Set<string>();
+      return new Set<string>(
+        departments
+          .filter((item: any) => idsMatch(item?.school_id, department.school_id))
+          .map((item: any) => item.id?.toString())
+          .filter(Boolean),
+      );
+    }
+    return new Set<string>();
+  }, [departments, user?.department, user?.role]);
+
+  const visibleSchedules = useMemo(() => {
+    if (scopedDepartmentIds.size === 0) return schedules;
+    return schedules.filter((schedule: any) => schedule?.department_id != null && scopedDepartmentIds.has(schedule.department_id.toString()));
+  }, [scopedDepartmentIds, schedules]);
+
+  const visibleRoomIds = useMemo(() => {
+    if (scopedDepartmentIds.size === 0) return null;
+    const roomIds = new Set<string>();
+    visibleSchedules.forEach((schedule: any) => {
+      if (schedule?.room_id != null) {
+        roomIds.add(schedule.room_id.toString());
+      }
+      if (schedule?.room_label) {
+        const resolution = resolveRoomSetForImport(rooms, schedule.room_label);
+        resolution.rooms.forEach((room: any) => {
+          const roomKey = room?.id?.toString();
+          if (roomKey) roomIds.add(roomKey);
+        });
+      }
+    });
+    return roomIds;
+  }, [rooms, scopedDepartmentIds.size, visibleSchedules]);
+
+  const visibleRooms = useMemo(() => {
+    if (!visibleRoomIds) return rooms;
+    return rooms.filter((room: any) => visibleRoomIds.has(room?.id?.toString()) || idsMatch(room?.id, selectedRoom));
+  }, [rooms, selectedRoom, visibleRoomIds]);
+
   const activeRoom = useMemo(
-    () => rooms.find(r => r.id?.toString() === selectedRoom) ?? null,
-    [rooms, selectedRoom],
+    () => visibleRooms.find(r => r.id?.toString() === selectedRoom) ?? null,
+    [visibleRooms, selectedRoom],
   );
 
-  const roomScopedSchedules = useMemo(() => schedules.filter(schedule => {
+  const roomScopedSchedules = useMemo(() => visibleSchedules.filter(schedule => {
     if (activeRoom) {
       const resolvedRoomIds = new Set<string>();
       if (schedule?.room_id != null) {
@@ -17971,7 +18687,7 @@ function TimetableBuilder() {
       return resolvedRoomIds.has(activeRoom.id?.toString());
     }
     return schedule.room === selectedRoom;
-  }), [activeRoom, rooms, schedules, selectedRoom]);
+  }), [activeRoom, rooms, selectedRoom, visibleSchedules]);
 
   const roomDepartmentOptions = useMemo(() => Array.from(new Map(
     roomScopedSchedules
@@ -18225,9 +18941,16 @@ function TimetableBuilder() {
   };
 
   const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const timetableRoomOptions = rooms
+  const timetableRoomOptions = visibleRooms
     .filter(room => isRoomReservable(room) || idsMatch(room.id, selectedRoom))
     .sort((a, b) => getRoomDisplayLabel(a, rooms).localeCompare(getRoomDisplayLabel(b, rooms), undefined, { numeric: true }));
+
+  useEffect(() => {
+    if (!visibleRooms.length) return;
+    if (!visibleRooms.some((room: any) => idsMatch(room?.id, selectedRoom))) {
+      setSelectedRoom(visibleRooms[0].id?.toString() || '');
+    }
+  }, [selectedRoom, visibleRooms]);
 
   const weekDates = useMemo(() => getWeekDatesForReferenceDate(referenceDate), [referenceDate]);
 

@@ -1837,6 +1837,42 @@ const getDepartmentNameById = async (departmentId?: string | number | null) => {
   return department?.name || null;
 };
 
+const getDepartmentScopeByName = async (departmentName?: string | null) => {
+  const normalizedDepartmentName = departmentName?.toString().trim() || "";
+  if (!normalizedDepartmentName) {
+    return { department: null as any, schoolId: null as any, departmentIdsInSchool: [] as string[] };
+  }
+
+  const department = await db.prepare(`
+    SELECT id, name, school_id
+    FROM departments
+    WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+    LIMIT 1
+  `).get(normalizedDepartmentName) as any;
+
+  if (!department) {
+    return { department: null as any, schoolId: null as any, departmentIdsInSchool: [] as string[] };
+  }
+
+  if (!department.school_id) {
+    return { department, schoolId: null as any, departmentIdsInSchool: [department.id?.toString()].filter(Boolean) as string[] };
+  }
+
+  const siblingDepartments = await db.prepare(`
+    SELECT id
+    FROM departments
+    WHERE school_id = ?
+  `).all(department.school_id) as any[];
+
+  return {
+    department,
+    schoolId: department.school_id,
+    departmentIdsInSchool: siblingDepartments
+      .map((item: any) => item?.id?.toString())
+      .filter(Boolean),
+  };
+};
+
 const backfillNotificationsIfEmpty = async () => {
   await ensureNotificationsTable();
   await ensureNotificationReadsTable();
@@ -3832,6 +3868,17 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         `).all();
         const user = (req as any).user;
         if (isDecisionRole(user.role)) return res.json(bookings);
+        if (user.role === "Dean") {
+          const scope = await getDepartmentScopeByName(user.department);
+          if (scope.departmentIdsInSchool.length > 0) {
+            const allowedDepartmentIds = new Set(scope.departmentIdsInSchool);
+            return res.json(bookings.filter((booking: any) =>
+              booking.faculty_name === user.name ||
+              (booking.department_id != null && allowedDepartmentIds.has(booking.department_id.toString()))
+            ));
+          }
+          return res.json(bookings.filter((booking: any) => booking.faculty_name === user.name));
+        }
         if (user.role === "HOD") {
           return res.json(bookings.filter((booking: any) =>
             booking.faculty_name === user.name || (!!user.department && booking.department_name === user.department)
