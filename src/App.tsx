@@ -9380,7 +9380,7 @@ function BookingManagement() {
     section: '',
     roomType: '',
     equipment: '',
-    sortBy: 'best-fit'
+    sortBy: 'room-number'
   });
   const [vacantRooms, setVacantRooms] = useState<any[]>([]);
   const [combinedOptions, setCombinedOptions] = useState<any[]>([]);
@@ -10225,10 +10225,10 @@ function BookingManagement() {
               onChange={e => setSearchCriteria({ ...searchCriteria, sortBy: e.target.value })}
               className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
             >
+              <option value="room-number">Room number</option>
               <option value="best-fit">Best fit</option>
               <option value="largest-capacity">Largest capacity</option>
               <option value="building">Building</option>
-              <option value="room-number">Room number</option>
             </select>
           </div>
           {bookingMessage && (

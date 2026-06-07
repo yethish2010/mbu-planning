@@ -323,8 +323,11 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       start_time TEXT,
       end_time TEXT,
       status TEXT DEFAULT 'Pending',
+      purpose_type TEXT DEFAULT 'Non-Academic',
+      timing_override INTEGER DEFAULT 0,
       recommended_by TEXT,
       decided_by TEXT,
+      request_group_id TEXT,
       FOREIGN KEY(department_id) REFERENCES departments(id),
       FOREIGN KEY(room_id) REFERENCES rooms(id)
     );
@@ -393,7 +396,18 @@ const ensureBookingColumns = async () => {
   await ensureColumn("bookings", "request_group_id", "TEXT");
 };
 
-await ensureBookingColumns();
+let ensuredBookingColumnsPromise: Promise<void> | null = null;
+const ensureBookingColumnsReady = async () => {
+  if (!ensuredBookingColumnsPromise) {
+    ensuredBookingColumnsPromise = ensureBookingColumns().catch(error => {
+      ensuredBookingColumnsPromise = null;
+      throw error;
+    });
+  }
+  await ensuredBookingColumnsPromise;
+};
+
+await ensureBookingColumnsReady();
 await ensureColumn("buildings", "structure_type", "TEXT DEFAULT 'direct'");
 await ensureColumn("buildings", "planned_block_count", "INTEGER DEFAULT 0");
 await ensureColumn("buildings", "planned_floor_count", "INTEGER DEFAULT 0");
@@ -3186,6 +3200,7 @@ const getSharedAvailabilitySnapshot = async ({
   includeMaintenanceRooms?: boolean;
   markRecommendedStatus?: boolean;
 }) => {
+  await ensureBookingColumnsReady();
   const [
     roomsRaw,
     departments,
@@ -3999,7 +4014,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       req.body.force_password_change = 1;
     }
     if (tableName === "bookings") {
-      await ensureBookingColumns();
+      await ensureBookingColumnsReady();
       if (!req.body.status) {
         req.body.status = "Pending";
       }
@@ -4164,7 +4179,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       req.body.force_password_change = 1;
     }
     if (tableName === "bookings") {
-      await ensureBookingColumns();
+      await ensureBookingColumnsReady();
     }
     if (tableName === "rooms") {
       req.body = normalizeRoomPayload(req.body);
