@@ -3589,6 +3589,34 @@ const getSharedAvailabilitySnapshot = async ({
   };
 };
 
+const addMinutesToTimeValue = (time: string, minutesToAdd: number) => {
+  const [hours, minutes] = (time || "00:00").split(":").map(Number);
+  if ([hours, minutes].some(value => Number.isNaN(value))) return time || "00:00";
+  const date = new Date();
+  date.setHours(hours, minutes, 0, 0);
+  date.setMinutes(date.getMinutes() + minutesToAdd);
+  return `${date.getHours().toString().padStart(2, "0")}:${date.getMinutes().toString().padStart(2, "0")}`;
+};
+
+const getCurrentOperationalRoomSnapshot = async (date: string, time: string) => {
+  const snapshot = await getSharedAvailabilitySnapshot({
+    date,
+    startTime: time,
+    endTime: addMinutesToTimeValue(time, 1),
+    includeMaintenanceRooms: true,
+    markRecommendedStatus: false,
+    visibilityScope: "live",
+  });
+
+  return {
+    summary: snapshot.summary,
+    rooms: snapshot.rooms.map((room: any) => {
+      const { _sourceRoom, ...payload } = room;
+      return payload;
+    }),
+  };
+};
+
 const getBookingDepartmentName = async (booking: any) => {
   if (!booking?.department_id) return null;
   const department = await db.prepare("SELECT name FROM departments WHERE id = ?").get(booking.department_id) as any;
@@ -4883,58 +4911,17 @@ app.get("/api/dashboard/overview", authenticate, async (_req, res) => {
       .slice(0, 10);
 
     const reportByRoomId = new Map(baseReports.map((report: any) => [report.room_id?.toString(), report]));
-    const activeSchedulesByRoomId = new Map<string, any[]>();
-    activeSchedules.forEach((schedule: any) => {
-      const roomKey = schedule?.room_id?.toString();
-      if (!roomKey) return;
-      const next = activeSchedulesByRoomId.get(roomKey) || [];
-      next.push(schedule);
-      activeSchedulesByRoomId.set(roomKey, next);
-    });
-    const activeBookingsByRoomId = new Map<string, any[]>();
-    activeBookings.forEach((booking: any) => {
-      const roomKey = booking?.room_id?.toString();
-      if (!roomKey) return;
-      const next = activeBookingsByRoomId.get(roomKey) || [];
-      next.push(booking);
-      activeBookingsByRoomId.set(roomKey, next);
-    });
-    const activeMaintenanceByRoomId = new Map<string, any[]>();
-    maintenance
-      .filter((item: any) => item?.status !== "Completed")
-      .forEach((item: any) => {
-        const roomKey = item?.room_id?.toString();
-        if (!roomKey) return;
-        const next = activeMaintenanceByRoomId.get(roomKey) || [];
-        next.push(item);
-        activeMaintenanceByRoomId.set(roomKey, next);
-      });
+    const liveOperationalSnapshot = await getCurrentOperationalRoomSnapshot(currentDate, currentTime);
+    const liveOperationalRoomById = new Map<string, any>(
+      (Array.isArray(liveOperationalSnapshot?.rooms) ? liveOperationalSnapshot.rooms : [])
+        .map((room: any): [string, any] => [room.id?.toString() || "", room])
+        .filter((entry): entry is [string, any] => !!entry[0])
+    );
 
     const digitalTwinRoomRows = rooms.map((room: any) => {
       const roomKey = room.id?.toString() || "";
       const roomReport = reportByRoomId.get(roomKey);
-      const roomIsBookable = isBookableAvailabilityRoom(room);
-      const roomMaintenance = activeMaintenanceByRoomId.get(roomKey) || [];
-      const roomScheduleSet = activeSchedulesByRoomId.get(roomKey) || [];
-      const roomBookingSet = activeBookingsByRoomId.get(roomKey) || [];
-      let status = roomIsBookable ? "Available" : "Not Bookable";
-      let currentUsage = "";
-      let nextAvailableSlot = roomIsBookable ? "Available now" : "Not directly bookable";
-
-      if (roomMaintenance.length > 0 || room.status === "Maintenance") {
-        status = "Maintenance";
-        currentUsage = roomMaintenance[0]?.issue_description || roomMaintenance[0]?.equipment_name || "Maintenance in progress";
-        nextAvailableSlot = "After maintenance clearance";
-      } else if (roomBookingSet.length > 0) {
-        status = "Event Booked";
-        currentUsage = roomBookingSet[0]?.event_name || roomBookingSet[0]?.purpose || "Approved booking";
-        nextAvailableSlot = roomBookingSet[0]?.end_time ? `${roomBookingSet[0].end_time} onwards` : "After current booking";
-      } else if (roomScheduleSet.length > 0) {
-        status = "Occupied";
-        currentUsage = roomScheduleSet[0]?.course_name || "Scheduled class";
-        nextAvailableSlot = roomScheduleSet[0]?.end_time ? `${roomScheduleSet[0].end_time} onwards` : "After current class";
-      }
-
+      const roomSnapshot = liveOperationalRoomById.get(roomKey);
       return {
         id: room.id,
         roomNumber: room.room_number,
@@ -4945,11 +4932,11 @@ app.get("/api/dashboard/overview", authenticate, async (_req, res) => {
         blockName: room.block_name,
         floorId: room.floor_id,
         floorName: `Floor ${room.floor_number}`,
-        status,
-        isBookable: roomIsBookable,
-        currentUsage,
-        nextAvailableSlot,
-        departmentName: roomReport?.department || "Unmapped",
+        status: roomSnapshot?.status || (isBookableAvailabilityRoom(room) ? "Available" : "Not Bookable"),
+        isBookable: roomSnapshot?.availableForBooking ?? isBookableAvailabilityRoom(room),
+        currentUsage: roomSnapshot?.currentUsage || "",
+        nextAvailableSlot: roomSnapshot?.nextAvailableSlot || (isBookableAvailabilityRoom(room) ? "Available now" : "Not directly bookable"),
+        departmentName: roomSnapshot?.departmentName || roomReport?.department || "Unmapped",
       };
     });
 
@@ -5492,6 +5479,7 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
 
 app.get("/api/digital-twin/live-data", authenticate, async (_req, res) => {
   try {
+    const { date: currentDate, time: currentTime } = getCampusDateTimeParts();
     const [maintenance, schedules, bookings, equipment] = await Promise.all([
       db.prepare(`
         SELECT id, room_id, status
@@ -5534,12 +5522,17 @@ app.get("/api/digital-twin/live-data", authenticate, async (_req, res) => {
         WHERE room_id IS NOT NULL
       `).all(),
     ]);
+    const liveOperationalSnapshot = await getCurrentOperationalRoomSnapshot(currentDate, currentTime);
 
     res.json({
+      currentDate,
+      currentTime,
       maintenance: Array.isArray(maintenance) ? maintenance : [],
       schedules: Array.isArray(schedules) ? schedules : [],
       bookings: Array.isArray(bookings) ? bookings : [],
       equipment: Array.isArray(equipment) ? equipment : [],
+      liveRooms: Array.isArray(liveOperationalSnapshot?.rooms) ? liveOperationalSnapshot.rooms : [],
+      liveSummary: liveOperationalSnapshot?.summary || null,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

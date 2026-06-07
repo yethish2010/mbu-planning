@@ -18737,6 +18737,9 @@ function DigitalTwin() {
   const [schedules, setSchedules] = useState<any[]>([]);
   const [bookings, setBookings] = useState<any[]>([]);
   const [equipment, setEquipment] = useState<any[]>([]);
+  const [liveRooms, setLiveRooms] = useState<any[]>([]);
+  const [liveCurrentDate, setLiveCurrentDate] = useState('');
+  const [liveCurrentTime, setLiveCurrentTime] = useState('');
   const [allocations, setAllocations] = useState<any[]>([]);
   const [batchRoomAllocations, setBatchRoomAllocations] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
@@ -18807,6 +18810,9 @@ function DigitalTwin() {
       setSchedules(Array.isArray(liveData?.schedules) ? liveData.schedules : []);
       setBookings(Array.isArray(liveData?.bookings) ? liveData.bookings : []);
       setEquipment(Array.isArray(liveData?.equipment) ? liveData.equipment : []);
+      setLiveRooms(Array.isArray(liveData?.liveRooms) ? liveData.liveRooms : []);
+      setLiveCurrentDate(liveData?.currentDate?.toString?.() || '');
+      setLiveCurrentTime(liveData?.currentTime?.toString?.() || '');
       setAllocations(aData);
       setBatchRoomAllocations(Array.isArray(baData) ? baData : []);
       setDepartments(dData);
@@ -19004,8 +19010,8 @@ function DigitalTwin() {
   const toKey = (value: any) =>
     value === undefined || value === null ? '' : value.toString();
 
-  const currentDate = formatLocalDate(new Date());
-  const currentTime = `${new Date().getHours().toString().padStart(2, '0')}:${new Date().getMinutes().toString().padStart(2, '0')}`;
+  const currentDate = liveCurrentDate || formatLocalDate(new Date());
+  const currentTime = liveCurrentTime || `${new Date().getHours().toString().padStart(2, '0')}:${new Date().getMinutes().toString().padStart(2, '0')}`;
   const currentDayName = new Date(`${currentDate}T00:00:00`).toLocaleDateString('en-US', { weekday: 'long' });
   const scheduleDaysOrder = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const roomTypes = useMemo(
@@ -19174,6 +19180,15 @@ function DigitalTwin() {
     return labels;
   }, [allocations, departmentsById, rooms]);
 
+  const liveRoomSnapshotByRoomId = useMemo(
+    () => new Map<string, any>(
+      (Array.isArray(liveRooms) ? liveRooms : [])
+        .map((room: any): [string, any] => [toKey(room?.id), room])
+        .filter((entry): entry is [string, any] => !!entry[0])
+    ),
+    [liveRooms],
+  );
+
   const calculateUsageHours = (start?: string, end?: string) => {
     if (!start || !end) return 0;
     const [startHour, startMinute] = start.split(':').map(Number);
@@ -19282,7 +19297,10 @@ function DigitalTwin() {
     const map = new Map<string, string>();
     rooms.forEach((room: any) => {
       const roomKey = toKey(room?.id);
-      if ((activeMaintenanceByRoomId.get(roomKey)?.length || 0) > 0 || room?.status === 'Maintenance') {
+      const liveSnapshot = liveRoomSnapshotByRoomId.get(roomKey);
+      if (liveSnapshot?.status) {
+        map.set(roomKey, liveSnapshot.status);
+      } else if ((activeMaintenanceByRoomId.get(roomKey)?.length || 0) > 0 || room?.status === 'Maintenance') {
         map.set(roomKey, 'Maintenance');
       } else if (nowBookedRoomIds.has(roomKey)) {
         map.set(roomKey, 'Booked');
@@ -19293,7 +19311,7 @@ function DigitalTwin() {
       }
     });
     return map;
-  }, [rooms, bookings, currentDate, currentTime, activeMaintenanceByRoomId, roomCurrentSchedulesByRoomId]);
+  }, [rooms, bookings, currentDate, currentTime, activeMaintenanceByRoomId, roomCurrentSchedulesByRoomId, liveRoomSnapshotByRoomId]);
 
   const roomSearchTextByRoomId = useMemo(() => {
     const map = new Map<string, string>();
@@ -19359,6 +19377,9 @@ function DigitalTwin() {
 
   const getApprovedRoomBookings = (room: any) =>
     approvedBookingsByRoomId.get(toKey(room?.id)) || [];
+
+  const getLiveRoomSnapshot = (room: any) =>
+    liveRoomSnapshotByRoomId.get(toKey(room?.id)) || null;
 
   const getRoomUsageMetrics = (room: any) => {
     return roomUsageMetricsByRoomId.get(toKey(room?.id)) || {
@@ -19968,6 +19989,7 @@ function DigitalTwin() {
               const nextScheduleState = getScheduleOverlapState(nextSchedules, schedules);
               const linkContextSchedule = getRoomLinkContextSchedule(r);
               const roomContextCount = getRoomContextCount(r);
+              const liveSnapshot = getLiveRoomSnapshot(r);
               const statusTheme = DIGITAL_TWIN_STATUS_STYLES[twinStatus];
               return (
               <div 
@@ -20008,6 +20030,23 @@ function DigitalTwin() {
                       <p className="text-[10px] text-slate-400">{getCombinedClassAudienceSummary(currentSchedules, departments)}</p>
                     )}
                     <p className="text-[10px] text-slate-400">{currentSchedule.start_time} - {currentSchedule.end_time} • {currentSchedule.faculty || 'Faculty not set'}</p>
+                    </div>
+                ) : liveSnapshot?.currentUsage ? (
+                  <div className={cn(
+                    'mt-3 rounded-xl p-3',
+                    twinStatus === 'Maintenance'
+                      ? 'border border-amber-500/20 bg-amber-500/10'
+                      : twinStatus === 'Event Booked'
+                        ? 'border border-sky-500/20 bg-sky-500/10'
+                        : twinStatus === 'Occupied'
+                          ? 'border border-rose-500/20 bg-rose-500/10'
+                          : 'border border-slate-500/20 bg-slate-500/10'
+                  )}>
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-slate-200">{twinStatus}</p>
+                    <p className="mt-1 text-xs font-bold text-white line-clamp-2">{liveSnapshot.currentUsage}</p>
+                    {liveSnapshot.nextAvailableSlot && (
+                      <p className="text-[10px] text-slate-400">{liveSnapshot.nextAvailableSlot}</p>
+                    )}
                   </div>
                 ) : nextSchedule ? (
                   <div className="mt-3 rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3">
