@@ -11052,6 +11052,9 @@ function LiveRoomAvailability() {
           <span className="ml-1">
             Timing-profile rules are applied only when you confirm an <span className="font-bold">Academic Regular</span> booking.
           </span>
+          <span className="ml-1">
+            Utility rooms, storage rooms, and restrooms are hidden from this operational view by default.
+          </span>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
@@ -11252,7 +11255,7 @@ function LiveRoomAvailability() {
         <div className="flex items-center justify-between mb-5">
           <div>
             <h3 className="text-xl font-bold text-slate-800">Live Availability Map</h3>
-            <p className="text-sm text-slate-500 mt-1">Primary operational view grouped by building, block/direct floors, and floor using actual requested-time vacancy rather than timing-profile slot visibility.</p>
+            <p className="text-sm text-slate-500 mt-1">Primary operational view grouped by building, block/direct floors, and floor using actual requested-time vacancy rather than timing-profile slot visibility. Support-only spaces like restrooms, stores, and utilities are excluded.</p>
           </div>
           <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">{results.rooms.length} rooms</div>
         </div>

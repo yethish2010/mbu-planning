@@ -3171,6 +3171,31 @@ const isBookableAvailabilityRoom = (room: any) => {
   return BOOKABLE_ROOM_TYPE_VALUES.includes(roomType) || BOOKABLE_USAGE_CATEGORY_VALUES.includes(usageCategory || "");
 };
 
+const LIVE_AVAILABILITY_EXCLUDED_ROOM_TYPES = new Set([
+  "Restroom",
+  "Store",
+  "Records Room",
+  "Utility",
+  "Server Room",
+  "Electrical Room",
+  "Maintenance Room",
+]);
+
+const LIVE_AVAILABILITY_EXCLUDED_USAGE_CATEGORIES = new Set([
+  "Restroom",
+  "Storage",
+  "Utility",
+]);
+
+const isLiveAvailabilityVisibleRoom = (room: any) => {
+  if (!room) return false;
+  const roomType = normalizeRoomTypeValue(room.room_type);
+  const usageCategory = normalizeUsageCategoryValue(room.usage_category, roomType);
+  if (LIVE_AVAILABILITY_EXCLUDED_ROOM_TYPES.has(roomType)) return false;
+  if (LIVE_AVAILABILITY_EXCLUDED_USAGE_CATEGORIES.has(usageCategory || "")) return false;
+  return true;
+};
+
 const getSharedAvailabilitySnapshot = async ({
   date,
   startTime,
@@ -3185,6 +3210,7 @@ const getSharedAvailabilitySnapshot = async ({
   equipmentFilter = "",
   includeMaintenanceRooms = true,
   markRecommendedStatus = false,
+  visibilityScope = "bookable",
 }: {
   date: string;
   startTime: string;
@@ -3199,6 +3225,7 @@ const getSharedAvailabilitySnapshot = async ({
   equipmentFilter?: string;
   includeMaintenanceRooms?: boolean;
   markRecommendedStatus?: boolean;
+  visibilityScope?: "bookable" | "live";
 }) => {
   await ensureBookingColumnsReady();
   const [
@@ -3296,7 +3323,8 @@ const getSharedAvailabilitySnapshot = async ({
 
   const roomCandidates = roomsRaw.filter((room: any) => {
     const bookable = isBookableAvailabilityRoom(room);
-    if (!bookable && !(includeMaintenanceRooms && room.status === "Maintenance")) return false;
+    const visible = visibilityScope === "live" ? isLiveAvailabilityVisibleRoom(room) : bookable;
+    if (!visible && !(includeMaintenanceRooms && room.status === "Maintenance" && visibilityScope === "live" && isLiveAvailabilityVisibleRoom(room))) return false;
     if (campusId && !idsEqual(room.campus_id, campusId)) return false;
     if (buildingId && !idsEqual(room.building_id, buildingId)) return false;
     if (blockId && !idsEqual(room.block_id, blockId)) return false;
@@ -3350,6 +3378,7 @@ const getSharedAvailabilitySnapshot = async ({
 
   const roomRows = roomCandidates.map((room: any) => {
     const roomKey = room.id?.toString() || "";
+    const roomBookable = isBookableAvailabilityRoom(room);
     const roomTypeLabel = normalizeRoomTypeValue(room.room_type) || room.room_type || "Room";
     const roomCapacity = parseInt(room.capacity, 10) || 0;
     const roomEquipment = (equipmentByRoomId.get(roomKey) || []).map((item: any) => item.name).filter(Boolean);
@@ -3363,7 +3392,9 @@ const getSharedAvailabilitySnapshot = async ({
     const hasCapacityMismatch = (minCapacity || 0) > 0 && roomCapacity < (minCapacity || 0);
 
     let status = "Available";
-    let statusReason = "Physically vacant for the selected date and time. Academic timing-profile rules are checked only when an Academic Regular booking is confirmed.";
+    let statusReason = roomBookable
+      ? "Physically vacant for the selected date and time. Academic timing-profile rules are checked only when an Academic Regular booking is confirmed."
+      : "Physically vacant for the selected date and time, but this room is not configured as directly bookable.";
     let currentUsage = "";
 
     if (roomMaintenance.length > 0 || room.status === "Maintenance") {
@@ -3411,7 +3442,7 @@ const getSharedAvailabilitySnapshot = async ({
 
     let recommendationScore = 0;
     if (status === "Available") {
-      recommendationScore += 1000;
+      recommendationScore += roomBookable ? 1000 : 0;
       recommendationScore += currentDepartmentMatch ? 150 : 0;
       recommendationScore += normalizedEquipmentFilter && roomEquipment.some((label: string) => normalizeDuplicateValue(label).includes(normalizedEquipmentFilter)) ? 80 : 0;
       recommendationScore += roomCapacity >= (minCapacity || 0) ? Math.max(0, 120 - capacityGap) : 0;
@@ -3453,7 +3484,7 @@ const getSharedAvailabilitySnapshot = async ({
       nextAvailableSlot,
       equipment: roomEquipment,
       recommendationScore,
-      availableForBooking: status === "Available",
+      availableForBooking: status === "Available" && roomBookable,
       mappedToSelectedDepartment: Boolean(currentDepartmentMatch),
       aliases: getRoomAliasTokens(room.room_aliases),
       _sourceRoom: room,
@@ -4839,6 +4870,7 @@ app.get("/api/rooms/vacant", authenticate, async (req, res) => {
     minCapacity: minimumCapacity ?? 0,
     includeMaintenanceRooms: false,
     markRecommendedStatus: false,
+    visibilityScope: "bookable",
   });
 
   const vacantRooms = snapshot.rooms
@@ -4893,6 +4925,7 @@ app.get("/api/live-availability", authenticate, async (req, res) => {
       equipmentFilter,
       includeMaintenanceRooms: true,
       markRecommendedStatus: true,
+      visibilityScope: "live",
     });
 
     res.json({
@@ -4941,6 +4974,7 @@ app.get("/api/events/search-rooms", authenticate, async (req, res) => {
       minCapacity: 0,
       includeMaintenanceRooms: false,
       markRecommendedStatus: false,
+      visibilityScope: "bookable",
     });
     const vacantRooms = snapshot.rooms
       .filter((room: any) => room.availableForBooking)
