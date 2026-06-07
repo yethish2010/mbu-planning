@@ -9741,6 +9741,7 @@ function SchedulingManagement() {
 function BookingManagement() {
   const { user } = useAuth();
   const location = useLocation();
+  const initialBookingSearchRef = useRef(false);
   const getToday = () => {
     const now = new Date();
     const year = now.getFullYear();
@@ -9763,7 +9764,7 @@ function BookingManagement() {
     durationUnit: 'hours',
     duration: '1',
     dailyDuration: '8',
-    members: '30',
+    members: '',
     buildingId: '',
     blockId: '',
     floorId: '',
@@ -9980,6 +9981,14 @@ function BookingManagement() {
     const interval = window.setInterval(fetchMyBookings, 10000);
     return () => window.clearInterval(interval);
   }, [user?.name, user?.role, user?.department]);
+
+  useEffect(() => {
+    if (initialBookingSearchRef.current) return;
+    if (rooms.length === 0 || floors.length === 0 || blocks.length === 0 || buildings.length === 0) return;
+    initialBookingSearchRef.current = true;
+    void handleSearch({ preventDefault: () => {} } as React.FormEvent);
+  }, [blocks.length, buildings.length, floors.length, rooms.length]);
+
   const getBookingDates = () => {
     const count = Math.max(1, parseInt(searchCriteria.duration, 10) || 1);
     const totalDays = searchCriteria.durationUnit === 'weeks' ? count * 7 : searchCriteria.durationUnit === 'days' ? count : 1;
@@ -10124,6 +10133,7 @@ function BookingManagement() {
         return buildingCompare !== 0 ? buildingCompare : compareRoomsByNaturalOrder(a, b, rooms);
       }
       if (searchCriteria.sortBy === 'room-number') return compareRoomsByNaturalOrder(a, b, rooms);
+      if (requestedCapacity <= 0) return compareRoomsByNaturalOrder(a, b, rooms);
       const fitCompare = Math.abs((a.capacity || 0) - requestedCapacity) - Math.abs((b.capacity || 0) - requestedCapacity);
       return fitCompare !== 0 ? fitCompare : compareRoomsByNaturalOrder(a, b, rooms);
     });
@@ -10157,22 +10167,23 @@ function BookingManagement() {
       setIsSearching(false);
       return;
     }
-    if ((parseFloat(searchCriteria.duration) || 0) <= 0 || (parseFloat(activeDailyDuration) || 0) <= 0 || (parseInt(searchCriteria.members, 10) || 0) <= 0) {
-      setBookingMessage({ type: 'error', text: 'Duration and members must be greater than zero.' });
+    if ((parseFloat(searchCriteria.duration) || 0) <= 0 || (parseFloat(activeDailyDuration) || 0) <= 0) {
+      setBookingMessage({ type: 'error', text: 'Duration must be greater than zero.' });
       return;
     }
 
     setLoading(true);
     setIsSearching(true);
     try {
+      const requestedMembers = parseInt(searchCriteria.members, 10) || 0;
       const bookingDates = getBookingDates();
       const availableByDate = await Promise.all(bookingDates.map(async date => {
         const params = new URLSearchParams({
           date,
           time: searchCriteria.time,
           duration: searchCriteria.durationUnit === 'hours' ? searchCriteria.duration : searchCriteria.dailyDuration,
-          members: searchCriteria.members
         });
+        if (requestedMembers > 0) params.set('members', searchCriteria.members);
         const res = await fetch(`/api/rooms/vacant?${params.toString()}`, { credentials: 'include' });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `Failed to search vacant rooms for ${date}.`);
@@ -10187,17 +10198,20 @@ function BookingManagement() {
       const filteredRooms = filterAndSortRooms(allCandidateRooms.filter((room: any) => commonRoomIds?.has(room.id)));
       setVacantRooms(filteredRooms);
 
-      const eventParams = new URLSearchParams({
-        date: searchCriteria.date,
-        startTime: searchCriteria.time,
-        endTime: manualBookingEndTime,
-        strength: searchCriteria.members
-      });
-      const eventRes = await fetch(`/api/events/search-rooms?${eventParams.toString()}`, { credentials: 'include' });
-      const eventData = eventRes.ok ? await eventRes.json() : { multiOptions: [] };
-      const filteredCombined = (eventData.multiOptions || [])
-        .map((option: any) => ({ ...option, rooms: filterAndSortRooms((option.rooms || []).filter((room: any) => commonRoomIds?.has(room.id))) }))
-        .filter((option: any) => option.rooms.length > 1 && option.rooms.reduce((sum: number, room: any) => sum + (room.capacity || 0), 0) >= (parseInt(searchCriteria.members, 10) || 0));
+      let filteredCombined: any[] = [];
+      if (requestedMembers > 0) {
+        const eventParams = new URLSearchParams({
+          date: searchCriteria.date,
+          startTime: searchCriteria.time,
+          endTime: manualBookingEndTime,
+          strength: searchCriteria.members
+        });
+        const eventRes = await fetch(`/api/events/search-rooms?${eventParams.toString()}`, { credentials: 'include' });
+        const eventData = eventRes.ok ? await eventRes.json() : { multiOptions: [] };
+        filteredCombined = (eventData.multiOptions || [])
+          .map((option: any) => ({ ...option, rooms: filterAndSortRooms((option.rooms || []).filter((room: any) => commonRoomIds?.has(room.id))) }))
+          .filter((option: any) => option.rooms.length > 1 && option.rooms.reduce((sum: number, room: any) => sum + (room.capacity || 0), 0) >= requestedMembers);
+      }
       setCombinedOptions(filteredCombined);
       if (filteredRooms.length === 0) {
         setBookingMessage({
@@ -10269,7 +10283,7 @@ function BookingManagement() {
           purpose: bookingForm.purpose.trim(),
           purpose_type: bookingForm.purposeType,
           notes: bookingForm.notes.trim(),
-          student_count: parseInt(searchCriteria.members, 10),
+          student_count: parseInt(searchCriteria.members, 10) || null,
           room_type: room.room_type,
           room_id: room.id,
           equipment_required: bookingForm.equipmentRequired.trim(),
@@ -10405,6 +10419,9 @@ function BookingManagement() {
           <span className="ml-1">
             Need a full room-status overview first? Visit <Link to="/live-availability" className="font-bold underline">Live Availability</Link>.
           </span>
+          <span className="ml-1">
+            Optional filters like capacity, building, department, and equipment can be added only when you need to narrow the list.
+          </span>
         </div>
         <form onSubmit={handleSearch} className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <div className="space-y-1">
@@ -10506,11 +10523,12 @@ function BookingManagement() {
             </div>
           )}
           <div className="space-y-1">
-            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Members (Capacity)</label>
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Members (Optional)</label>
             <input
               type="number"
               value={searchCriteria.members}
               onChange={e => setSearchCriteria({ ...searchCriteria, members: e.target.value })}
+              placeholder="Any capacity"
               className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
             />
           </div>
@@ -10656,14 +10674,35 @@ function BookingManagement() {
             </div>
           )}
           <div className="md:col-span-4 mt-2">
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
-            >
-              <Search size={18} />
-              {loading ? 'Searching...' : 'Check Vacant Rooms'}
-            </button>
+            <div className="flex flex-col sm:flex-row gap-3">
+              <button
+                type="submit"
+                disabled={loading}
+                className="flex-1 py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                <Search size={18} />
+                {loading ? 'Searching...' : 'Check Vacant Rooms'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setSearchCriteria(prev => ({
+                  ...prev,
+                  members: '',
+                  buildingId: '',
+                  blockId: '',
+                  floorId: '',
+                  departmentId: '',
+                  semester: '',
+                  section: '',
+                  roomType: '',
+                  equipment: '',
+                  sortBy: 'room-number',
+                }))}
+                className="sm:w-auto px-5 py-3 bg-white text-slate-700 font-bold rounded-xl border border-slate-200 hover:bg-slate-50 transition-all"
+              >
+                Clear Optional Filters
+              </button>
+            </div>
           </div>
         </form>
       </div>
@@ -11151,7 +11190,7 @@ function LiveRoomAvailability() {
       floorId: '',
       departmentId: '',
       roomType: '',
-      minCapacity: '30',
+      minCapacity: '',
       equipment: '',
     };
   });
@@ -11438,6 +11477,9 @@ function LiveRoomAvailability() {
           <span className="ml-1">
             If you already know you want to book a room, use <Link to="/bookings" className="font-bold underline">Room Bookings</Link> for the faster booking-first flow.
           </span>
+          <span className="ml-1">
+            Filters are optional here, so the page opens with a broad live campus view first.
+          </span>
         </div>
 
         <div className="mb-6 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
@@ -11543,7 +11585,7 @@ function LiveRoomAvailability() {
                 floorId: '',
                 departmentId: '',
                 roomType: '',
-                minCapacity: '30',
+                minCapacity: '',
                 equipment: '',
               };
               setFilters(resetFilters);
