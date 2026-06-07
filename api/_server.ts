@@ -3196,6 +3196,44 @@ const isLiveAvailabilityVisibleRoom = (room: any) => {
   return true;
 };
 
+const LIVE_AVAILABILITY_ROOM_TYPE_GROUPS: Record<string, string[]> = {
+  Classroom: [
+    "Classroom",
+    "Smart Classroom",
+    "Lecture Hall",
+    "Tutorial Room",
+    "Multipurpose Classroom",
+    "Multipurpose Lecture Hall",
+  ],
+  Lab: [
+    "Lab",
+    "Computer Lab",
+    "Research Lab",
+    "Language Lab",
+    "Workshop",
+    "Studio",
+    "Classroom Lab",
+    "Multipurpose Lab",
+  ],
+  "Seminar Hall": ["Seminar Hall"],
+  Auditorium: ["Auditorium"],
+  "Meeting Room": ["Meeting Room", "Conference Room", "Board Room"],
+};
+
+const matchesLiveAvailabilityRoomTypeFilter = (room: any, filterValue: string) => {
+  const normalizedFilter = normalizeRoomTypeValue(filterValue);
+  if (!normalizedFilter) return true;
+  const normalizedRoomType = normalizeRoomTypeValue(room?.room_type);
+  if (!normalizedRoomType) return false;
+  if (normalizedFilter === "Other") {
+    const groupedRoomTypes = new Set(Object.values(LIVE_AVAILABILITY_ROOM_TYPE_GROUPS).flat());
+    return !groupedRoomTypes.has(normalizedRoomType);
+  }
+  const allowedRoomTypes = LIVE_AVAILABILITY_ROOM_TYPE_GROUPS[normalizedFilter];
+  if (allowedRoomTypes) return allowedRoomTypes.includes(normalizedRoomType);
+  return normalizedRoomType === normalizedFilter;
+};
+
 const getSharedAvailabilitySnapshot = async ({
   date,
   startTime,
@@ -3329,7 +3367,7 @@ const getSharedAvailabilitySnapshot = async ({
     if (buildingId && !idsEqual(room.building_id, buildingId)) return false;
     if (blockId && !idsEqual(room.block_id, blockId)) return false;
     if (floorId && !idsEqual(room.floor_id, floorId)) return false;
-    if (normalizedRoomType && normalizeRoomTypeValue(room.room_type) !== normalizedRoomType) return false;
+    if (normalizedRoomType && !matchesLiveAvailabilityRoomTypeFilter(room, normalizedRoomType)) return false;
     if (departmentId) {
       const roomDepartmentIds = allocationIdsByRoomId.get(room.id?.toString() || "");
       if (!roomDepartmentIds?.has(departmentId)) return false;
