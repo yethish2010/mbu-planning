@@ -1758,6 +1758,43 @@ var getDepartmentScopeByName = async (departmentName) => {
     departmentIdsInSchool: siblingDepartments.map((item) => item?.id?.toString()).filter(Boolean)
   };
 };
+var getScopedDepartmentIdsForUser = async (user) => {
+  const role = user?.role?.toString?.().trim() || "";
+  if (!role || isAdminRole(role) || isExecutiveViewRole(role) || ["Dean (P&M)", "Deputy Dean (P&M)", "Infrastructure Manager", "Maintenance Staff"].includes(role)) {
+    return null;
+  }
+  if (["HOD", "Faculty", "Event Coordinator"].includes(role)) {
+    const scope = await getDepartmentScopeByName(user?.department);
+    return scope.department?.id != null ? [scope.department.id.toString()] : [];
+  }
+  if (role === "Dean") {
+    const scopedSchool = user?.school ? await getSchoolRecordByName(user.school) : null;
+    if (scopedSchool?.id) {
+      const departments = await db.prepare(`
+        SELECT id
+        FROM departments
+        WHERE school_id = ?
+      `).all(scopedSchool.id);
+      return departments.map((department) => department?.id?.toString()).filter(Boolean);
+    }
+    const scope = await getDepartmentScopeByName(user?.department);
+    return scope.departmentIdsInSchool || [];
+  }
+  return null;
+};
+var getScopedMappedRoomIdsForUser = async (user) => {
+  const departmentIds = await getScopedDepartmentIdsForUser(user);
+  if (departmentIds == null) return null;
+  if (departmentIds.length === 0) return /* @__PURE__ */ new Set();
+  const placeholders = departmentIds.map(() => "?").join(", ");
+  const mappedRows = await db.prepare(`
+    SELECT DISTINCT room_id
+    FROM department_allocations
+    WHERE room_id IS NOT NULL
+      AND department_id IN (${placeholders})
+  `).all(...departmentIds);
+  return new Set(mappedRows.map((row) => row?.room_id?.toString()).filter(Boolean));
+};
 var normalizeUserPayload = async (payload, existingItem) => {
   const nextPayload = { ...existingItem || {}, ...payload || {} };
   nextPayload.full_name = nextPayload.full_name?.toString().trim() || "";
@@ -3007,7 +3044,8 @@ var getSharedAvailabilitySnapshot = async ({
   equipmentFilter = "",
   includeMaintenanceRooms = true,
   markRecommendedStatus = false,
-  visibilityScope = "bookable"
+  visibilityScope = "bookable",
+  allowedRoomIds = null
 }) => {
   await ensureBookingColumnsReady();
   const [
@@ -3099,6 +3137,8 @@ var getSharedAvailabilitySnapshot = async ({
     (allocation) => applyDepartmentContext(allocation.room_id, allocation.department_id, allocation.department_name || departmentNameById.get(allocation.department_id?.toString()))
   );
   const roomCandidates = roomsRaw.filter((room) => {
+    const roomKey = room.id?.toString() || "";
+    if (allowedRoomIds && !allowedRoomIds.has(roomKey)) return false;
     const bookable = isBookableAvailabilityRoom(room);
     const visible = visibilityScope === "live" ? isLiveAvailabilityVisibleRoom(room) : bookable;
     if (!visible && !(includeMaintenanceRooms && room.status === "Maintenance" && visibilityScope === "live" && isLiveAvailabilityVisibleRoom(room))) return false;
@@ -4244,7 +4284,10 @@ createCrudRoutes("bookings");
 createCrudRoutes("maintenance");
 app.get(`/api/rooms`, authenticate, async (req, res) => {
   try {
-    const items = await db.prepare(`SELECT * FROM rooms`).all();
+    const scopedRoomIds = await getScopedMappedRoomIdsForUser(req.user);
+    const items = (await db.prepare(`SELECT * FROM rooms`).all()).filter(
+      (room) => !scopedRoomIds || scopedRoomIds.has(room?.id?.toString?.() || "")
+    );
     const { date: currentDate, time: currentTime } = getCampusDateTimeParts();
     const activeSchedules = await getEffectiveSchedulesForDate(
       currentDate,
@@ -4279,6 +4322,10 @@ app.get(`/api/rooms`, authenticate, async (req, res) => {
 app.get(`/api/rooms/:roomId/schedule`, authenticate, async (req, res) => {
   try {
     const { roomId } = req.params;
+    const scopedRoomIds = await getScopedMappedRoomIdsForUser(req.user);
+    if (scopedRoomIds && !scopedRoomIds.has(roomId?.toString?.() || "")) {
+      return res.status(404).json({ error: "Room not found in your mapped scope." });
+    }
     const { date } = req.query;
     const schedules = await getEffectiveSchedulesForDate(date, (schedule) => idsEqual(schedule.room_id, roomId));
     const bookings = await db.prepare(`SELECT * FROM bookings WHERE room_id = ? AND date = ? AND status = 'Approved'`).all(roomId, date);
@@ -4648,6 +4695,7 @@ app.get("/api/rooms/vacant", authenticate, async (req, res) => {
   endDate.setHours(h, m || 0, 0, 0);
   endDate.setMinutes(endDate.getMinutes() + durationMinutes);
   const requestedEnd = `${endDate.getHours().toString().padStart(2, "0")}:${endDate.getMinutes().toString().padStart(2, "0")}`;
+  const scopedRoomIds = await getScopedMappedRoomIdsForUser(req.user);
   const snapshot = await getSharedAvailabilitySnapshot({
     date,
     startTime: requestedStart,
@@ -4655,7 +4703,8 @@ app.get("/api/rooms/vacant", authenticate, async (req, res) => {
     minCapacity: minimumCapacity ?? 0,
     includeMaintenanceRooms: false,
     markRecommendedStatus: false,
-    visibilityScope: "bookable"
+    visibilityScope: "bookable",
+    allowedRoomIds: scopedRoomIds
   });
   const vacantRooms = snapshot.rooms.filter((room) => room.availableForBooking).map((room) => room._sourceRoom);
   res.json(vacantRooms);
@@ -4686,6 +4735,7 @@ app.get("/api/live-availability", authenticate, async (req, res) => {
     return res.status(400).json({ error: "Minimum capacity must be a valid non-negative number." });
   }
   try {
+    const scopedRoomIds = await getScopedMappedRoomIdsForUser(req.user);
     const snapshot = await getSharedAvailabilitySnapshot({
       date,
       startTime,
@@ -4700,7 +4750,8 @@ app.get("/api/live-availability", authenticate, async (req, res) => {
       equipmentFilter,
       includeMaintenanceRooms: true,
       markRecommendedStatus: true,
-      visibilityScope: "live"
+      visibilityScope: "live",
+      allowedRoomIds: scopedRoomIds
     });
     res.json({
       summary: snapshot.summary,
@@ -4733,6 +4784,7 @@ app.get("/api/events/search-rooms", authenticate, async (req, res) => {
     return res.status(400).json({ error: "Strength must be a valid positive number." });
   }
   try {
+    const scopedRoomIds = await getScopedMappedRoomIdsForUser(req.user);
     const snapshot = await getSharedAvailabilitySnapshot({
       date,
       startTime,
@@ -4740,7 +4792,8 @@ app.get("/api/events/search-rooms", authenticate, async (req, res) => {
       minCapacity: 0,
       includeMaintenanceRooms: false,
       markRecommendedStatus: false,
-      visibilityScope: "bookable"
+      visibilityScope: "bookable",
+      allowedRoomIds: scopedRoomIds
     });
     const vacantRooms = snapshot.rooms.filter((room) => room.availableForBooking).map((room) => room._sourceRoom);
     const singleOptions = vacantRooms.filter((r) => r.capacity >= targetStrength).sort((a, b) => a.capacity - b.capacity);

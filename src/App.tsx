@@ -240,6 +240,53 @@ const isExecutiveRole = (role: unknown) => EXECUTIVE_ROLE_SET.has(normalizeLooku
 const isSchoolScopedRole = (role: unknown) => SCHOOL_SCOPED_ROLE_SET.has(normalizeLookupValue(role));
 const isDepartmentScopedRole = (role: unknown) => DEPARTMENT_SCOPED_ROLE_SET.has(normalizeLookupValue(role));
 
+const getScopedMappedRoomIds = ({
+  role,
+  departmentName,
+  schoolName,
+  departments,
+  schools,
+  departmentAllocations,
+}: {
+  role: unknown;
+  departmentName?: unknown;
+  schoolName?: unknown;
+  departments: any[];
+  schools: any[];
+  departmentAllocations: any[];
+}) => {
+  const normalizedRole = normalizeLookupValue(role);
+  if (!normalizedRole || isAdminRole(role) || isExecutiveRole(role) || ['dean (p&m)', 'deputy dean (p&m)', 'infrastructure manager', 'maintenance staff'].includes(normalizedRole)) {
+    return null;
+  }
+
+  const scopedDepartmentIds = new Set<string>();
+  if (isDepartmentScopedRole(role)) {
+    const department = (departments || []).find((item: any) => normalizeLookupValue(item?.name) === normalizeLookupValue(departmentName));
+    const departmentId = department?.id?.toString();
+    if (departmentId) scopedDepartmentIds.add(departmentId);
+  } else if (isSchoolScopedRole(role)) {
+    const selectedSchool = (schools || []).find((item: any) => normalizeLookupValue(item?.name) === normalizeLookupValue(schoolName));
+    const fallbackDepartment = (departments || []).find((item: any) => normalizeLookupValue(item?.name) === normalizeLookupValue(departmentName));
+    const schoolId = selectedSchool?.id?.toString() || fallbackDepartment?.school_id?.toString?.() || '';
+    (departments || []).forEach((item: any) => {
+      const departmentId = item?.id?.toString?.() || '';
+      if (departmentId && schoolId && idsMatch(item?.school_id, schoolId)) {
+        scopedDepartmentIds.add(departmentId);
+      }
+    });
+  } else {
+    return null;
+  }
+
+  return new Set(
+    (departmentAllocations || [])
+      .filter((allocation: any) => allocation?.department_id != null && scopedDepartmentIds.has(allocation.department_id.toString()))
+      .map((allocation: any) => allocation?.room_id?.toString?.())
+      .filter(Boolean),
+  );
+};
+
 const ROOM_IMPORT_OPTIONAL_PLACEHOLDERS = new Set([
   '-',
   '--',
@@ -4666,26 +4713,6 @@ function DashboardHome() {
     const normalized = normalizeRoomTypeValue(roomType);
     return ['Classroom', 'Smart Classroom', 'Lecture Hall', 'Tutorial Room', 'Multipurpose Classroom', 'Multipurpose Lecture Hall'].includes(normalized);
   };
-  const resolvedRoleScheduleRoomIdsBySignature = useMemo(() => {
-    const map = new Map<string, string[]>();
-    deduplicateScheduleRows(roleDashboardData.schedules || []).forEach((schedule: any) => {
-      const roomIds = new Set<string>();
-      if (schedule?.room_id !== undefined && schedule?.room_id !== null && schedule?.room_id !== '') {
-        roomIds.add(schedule.room_id.toString());
-      }
-      if (schedule?.room_label) {
-        const resolution = resolveRoomSetForImport(roleDashboardData.rooms || [], schedule.room_label);
-        resolution.rooms.forEach((room: any) => {
-          const roomKey = room?.id?.toString();
-          if (roomKey) roomIds.add(roomKey);
-        });
-      }
-      map.set(getScheduleRenderSignature(schedule), Array.from(roomIds));
-    });
-    return map;
-  }, [roleDashboardData.rooms, roleDashboardData.schedules]);
-  const getResolvedRoleScheduleRoomIds = (schedule: any) =>
-    resolvedRoleScheduleRoomIdsBySignature.get(getScheduleRenderSignature(schedule)) || [];
   const userDepartment = useMemo(
     () => (roleDashboardData.departments || []).find((department: any) => normalizeLookupValue(department?.name) === normalizeLookupValue(user?.department)),
     [roleDashboardData.departments, user?.department],
@@ -4707,54 +4734,28 @@ function DashboardHome() {
     ),
     [deanSchool, roleDashboardData.departments],
   );
-  const departmentRoomIds = useMemo(() => {
-    if (!userDepartment) return new Set<string>();
-    const roomIds = new Set<string>();
-    (roleDashboardData.departmentAllocations || []).forEach((allocation: any) => {
-      if (idsMatch(allocation?.department_id, userDepartment?.id) && allocation?.room_id != null) {
-        roomIds.add(allocation.room_id.toString());
-      }
-    });
-    (roleDashboardData.batchAllocations || []).forEach((allocation: any) => {
-      if (idsMatch(allocation?.department_id, userDepartment?.id) && allocation?.room_id != null) {
-        roomIds.add(allocation.room_id.toString());
-      }
-    });
-    deduplicateScheduleRows(roleDashboardData.schedules || []).forEach((schedule: any) => {
-      if (!idsMatch(schedule?.department_id, userDepartment?.id)) return;
-      getResolvedRoleScheduleRoomIds(schedule).forEach((roomId) => roomIds.add(roomId));
-    });
-    (roleDashboardData.bookings || []).forEach((booking: any) => {
-      if (idsMatch(booking?.department_id, userDepartment?.id) && booking?.room_id != null) {
-        roomIds.add(booking.room_id.toString());
-      }
-    });
-    return roomIds;
-  }, [getResolvedRoleScheduleRoomIds, roleDashboardData.batchAllocations, roleDashboardData.bookings, roleDashboardData.departmentAllocations, roleDashboardData.schedules, userDepartment]);
-  const schoolRoomIds = useMemo(() => {
-    if (!deanSchool) return new Set<string>();
-    const roomIds = new Set<string>();
-    (roleDashboardData.departmentAllocations || []).forEach((allocation: any) => {
-      if (allocation?.department_id != null && schoolDepartmentIds.has(allocation.department_id.toString()) && allocation?.room_id != null) {
-        roomIds.add(allocation.room_id.toString());
-      }
-    });
-    (roleDashboardData.batchAllocations || []).forEach((allocation: any) => {
-      if (allocation?.department_id != null && schoolDepartmentIds.has(allocation.department_id.toString()) && allocation?.room_id != null) {
-        roomIds.add(allocation.room_id.toString());
-      }
-    });
-    deduplicateScheduleRows(roleDashboardData.schedules || []).forEach((schedule: any) => {
-      if (schedule?.department_id == null || !schoolDepartmentIds.has(schedule.department_id.toString())) return;
-      getResolvedRoleScheduleRoomIds(schedule).forEach((roomId) => roomIds.add(roomId));
-    });
-    (roleDashboardData.bookings || []).forEach((booking: any) => {
-      if (booking?.department_id != null && schoolDepartmentIds.has(booking.department_id.toString()) && booking?.room_id != null) {
-        roomIds.add(booking.room_id.toString());
-      }
-    });
-    return roomIds;
-  }, [deanSchool, getResolvedRoleScheduleRoomIds, roleDashboardData.batchAllocations, roleDashboardData.bookings, roleDashboardData.departmentAllocations, roleDashboardData.schedules, schoolDepartmentIds]);
+  const departmentRoomIds = useMemo(
+    () => getScopedMappedRoomIds({
+      role: 'HOD',
+      departmentName: userDepartment?.name,
+      schoolName: '',
+      departments: roleDashboardData.departments || [],
+      schools: roleDashboardData.schools || [],
+      departmentAllocations: roleDashboardData.departmentAllocations || [],
+    }) || new Set<string>(),
+    [roleDashboardData.departmentAllocations, roleDashboardData.departments, roleDashboardData.schools, userDepartment?.name],
+  );
+  const schoolRoomIds = useMemo(
+    () => getScopedMappedRoomIds({
+      role: 'Dean',
+      departmentName: userDepartment?.name,
+      schoolName: deanSchool?.name,
+      departments: roleDashboardData.departments || [],
+      schools: roleDashboardData.schools || [],
+      departmentAllocations: roleDashboardData.departmentAllocations || [],
+    }) || new Set<string>(),
+    [deanSchool?.name, roleDashboardData.departmentAllocations, roleDashboardData.departments, roleDashboardData.schools, userDepartment?.name],
+  );
   const hodTwinRooms = useMemo(
     () => allTwinRooms.filter((room: any) => departmentRoomIds.has(room?.id?.toString?.() || '')),
     [allTwinRooms, departmentRoomIds],
@@ -4808,13 +4809,6 @@ function DashboardHome() {
         (roleDashboardData.departmentAllocations || []).forEach((allocation: any) => {
           if (idsMatch(allocation?.department_id, department?.id) && allocation?.room_id != null) mappedRoomIds.add(allocation.room_id.toString());
         });
-        (roleDashboardData.batchAllocations || []).forEach((allocation: any) => {
-          if (idsMatch(allocation?.department_id, department?.id) && allocation?.room_id != null) mappedRoomIds.add(allocation.room_id.toString());
-        });
-        deanSchedules.forEach((schedule: any) => {
-          if (!idsMatch(schedule?.department_id, department?.id)) return;
-          getResolvedRoleScheduleRoomIds(schedule).forEach((roomId) => mappedRoomIds.add(roomId));
-        });
         const departmentTwinRooms = deanTwinRooms.filter((room: any) => mappedRoomIds.has(room?.id?.toString?.() || ''));
         const occupiedNow = departmentTwinRooms.filter((room: any) => getDigitalTwinStatusLabel(room?.status, room?.isBookable !== false) === 'Occupied').length;
         const requestCount = deanBookings.filter((booking: any) => idsMatch(booking?.department_id, department?.id)).length;
@@ -4829,7 +4823,7 @@ function DashboardHome() {
       })
       .sort((left: any, right: any) => right.occupiedNow - left.occupiedNow || right.requestCount - left.requestCount || left.name.localeCompare(right.name))
       .slice(0, 8);
-  }, [deanBookings, deanSchedules, deanSchool, deanTwinRooms, getResolvedRoleScheduleRoomIds, roleDashboardData.batchAllocations, roleDashboardData.departmentAllocations, roleDashboardData.departments]);
+  }, [deanBookings, deanSchool, deanTwinRooms, roleDashboardData.departmentAllocations, roleDashboardData.departments]);
   const deanShortageRows = useMemo(() => {
     return deanDepartmentUsageRows
       .map((department: any) => {
@@ -18736,6 +18730,7 @@ function TimetableBuilder() {
   const [academicCalendars, setAcademicCalendars] = useState<any[]>([]);
   const [timingProfiles, setTimingProfiles] = useState<any[]>([]);
   const [batchRoomAllocations, setBatchRoomAllocations] = useState<any[]>([]);
+  const [departmentAllocations, setDepartmentAllocations] = useState<any[]>([]);
   const [selectedRoom, setSelectedRoom] = useState<string>('');
   const [referenceDate, setReferenceDate] = useState(formatLocalDate(new Date()));
   const [timetableContext, setTimetableContext] = useState({ department_id: '', program: '', year: '', semester: '', specialization: '', section: '' });
@@ -18781,21 +18776,13 @@ function TimetableBuilder() {
 
   const visibleRoomIds = useMemo(() => {
     if (scopedDepartmentIds.size === 0) return null;
-    const roomIds = new Set<string>();
-    visibleSchedules.forEach((schedule: any) => {
-      if (schedule?.room_id != null) {
-        roomIds.add(schedule.room_id.toString());
-      }
-      if (schedule?.room_label) {
-        const resolution = resolveRoomSetForImport(rooms, schedule.room_label);
-        resolution.rooms.forEach((room: any) => {
-          const roomKey = room?.id?.toString();
-          if (roomKey) roomIds.add(roomKey);
-        });
-      }
-    });
-    return roomIds;
-  }, [rooms, scopedDepartmentIds.size, visibleSchedules]);
+    return new Set(
+      (departmentAllocations || [])
+        .filter((allocation: any) => allocation?.department_id != null && scopedDepartmentIds.has(allocation.department_id.toString()))
+        .map((allocation: any) => allocation?.room_id?.toString?.())
+        .filter(Boolean),
+    );
+  }, [departmentAllocations, scopedDepartmentIds]);
 
   const visibleRooms = useMemo(() => {
     if (!visibleRoomIds) return rooms;
@@ -19014,7 +19001,7 @@ function TimetableBuilder() {
 
   const fetchData = async () => {
     try {
-      const [sData, rData, schoolData, dData, cData, tpData, baData] = await Promise.all([
+      const [sData, rData, schoolData, dData, cData, tpData, baData, daData] = await Promise.all([
         apiJson('/api/schedules'),
         fetchSharedLookupJson('/api/rooms'),
         fetchSharedLookupJson('/api/schools'),
@@ -19022,6 +19009,7 @@ function TimetableBuilder() {
         fetchSharedLookupJson('/api/academic_calendars'),
         fetchSharedLookupJson('/api/timing_profiles'),
         fetchSharedLookupJson('/api/batch_room_allocations'),
+        fetchSharedLookupJson('/api/department_allocations'),
       ]);
       setSchedules(deduplicateScheduleRows(Array.isArray(sData) ? sData : []));
       setRooms(rData);
@@ -19030,6 +19018,7 @@ function TimetableBuilder() {
       setAcademicCalendars(Array.isArray(cData) ? cData : []);
       setTimingProfiles(Array.isArray(tpData) ? tpData : []);
       setBatchRoomAllocations(Array.isArray(baData) ? baData : []);
+      setDepartmentAllocations(Array.isArray(daData) ? daData : []);
       const params = new URLSearchParams(location.search);
       const requestedRoomId = params.get('roomId');
       const requestedRoomLabel = params.get('room');
