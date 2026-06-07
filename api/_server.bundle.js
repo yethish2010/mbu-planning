@@ -194,6 +194,8 @@ var allowedOrigins = new Set(
     "http://localhost:3000"
   ].map(normalizeOrigin).filter(Boolean)
 );
+var moduleLoadTelemetry = [];
+var MAX_MODULE_LOAD_TELEMETRY = 250;
 var getCampusDateTimeParts = (value = /* @__PURE__ */ new Date()) => {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: APP_TIME_ZONE,
@@ -450,8 +452,11 @@ var getPrimarySchemaSql = (dialect) => {
       start_time TEXT,
       end_time TEXT,
       status TEXT DEFAULT 'Pending',
+      purpose_type TEXT DEFAULT 'Non-Academic',
+      timing_override INTEGER DEFAULT 0,
       recommended_by TEXT,
       decided_by TEXT,
+      request_group_id TEXT,
       FOREIGN KEY(department_id) REFERENCES departments(id),
       FOREIGN KEY(room_id) REFERENCES rooms(id)
     );
@@ -505,12 +510,24 @@ var ensureColumn = async (tableName, columnName, definition) => {
 };
 var ensureBookingColumns = async () => {
   await ensureColumn("bookings", "purpose", "TEXT");
+  await ensureColumn("bookings", "purpose_type", "TEXT DEFAULT 'Non-Academic'");
+  await ensureColumn("bookings", "timing_override", "INTEGER DEFAULT 0");
   await ensureColumn("bookings", "notes", "TEXT");
   await ensureColumn("bookings", "recommended_by", "TEXT");
   await ensureColumn("bookings", "decided_by", "TEXT");
   await ensureColumn("bookings", "request_group_id", "TEXT");
 };
-await ensureBookingColumns();
+var ensuredBookingColumnsPromise = null;
+var ensureBookingColumnsReady = async () => {
+  if (!ensuredBookingColumnsPromise) {
+    ensuredBookingColumnsPromise = ensureBookingColumns().catch((error) => {
+      ensuredBookingColumnsPromise = null;
+      throw error;
+    });
+  }
+  await ensuredBookingColumnsPromise;
+};
+await ensureBookingColumnsReady();
 await ensureColumn("buildings", "structure_type", "TEXT DEFAULT 'direct'");
 await ensureColumn("buildings", "planned_block_count", "INTEGER DEFAULT 0");
 await ensureColumn("buildings", "planned_floor_count", "INTEGER DEFAULT 0");
@@ -805,15 +822,6 @@ var normalizeRoomAliases = (value) => Array.from(new Set(
   value?.toString().split(/[\n,;|/]+/).map((alias) => alias.trim()).filter((alias) => alias.length > 0 && !ROOM_ALIAS_PLACEHOLDER_VALUES.has(normalizeDuplicateValue(alias))) || []
 )).join(", ");
 var getRoomAliasTokens = (value) => normalizeRoomAliases(value).split(",").map((alias) => normalizeDuplicateValue(alias)).filter(Boolean);
-var isReservableRoomRecord = (room) => {
-  if (!room) return false;
-  if (room.status && room.status !== "Available") return false;
-  if (room.is_bookable === 0) return false;
-  const roomType = normalizeRoomTypeValue(room.room_type);
-  if (isNonCapacityRoomType(roomType)) return false;
-  const usageCategory = normalizeUsageCategoryValue(room.usage_category, roomType);
-  return BOOKABLE_ROOM_TYPE_VALUES.includes(roomType) || BOOKABLE_USAGE_CATEGORY_VALUES.includes(usageCategory || "");
-};
 var normalizeRoomPayload = (payload) => {
   const nextPayload = { ...payload };
   nextPayload.room_type = normalizeRoomTypeValue(nextPayload.room_type);
@@ -988,6 +996,86 @@ var normalizeTimingProfileWorkingDays = (value) => {
 var normalizeTimingProfileSlotPattern = (value) => {
   const normalized = value?.toString().trim().replace(/\s+/g, " ") || "";
   return normalized;
+};
+var parseTimingProfileSlots = (value) => {
+  const slotText = value?.toString().trim() || "";
+  if (!slotText) return [];
+  const slots = slotText.split(/[\n,;]+/).map((part) => part.trim()).filter(Boolean).map((part) => {
+    const match = part.match(/^(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})$/);
+    if (!match) return null;
+    const start = match[1].padStart(5, "0");
+    const end = match[2].padStart(5, "0");
+    if (start >= end) return null;
+    return { start_time: start, end_time: end };
+  }).filter((slot) => Boolean(slot)).sort((left, right) => left.start_time.localeCompare(right.start_time) || left.end_time.localeCompare(right.end_time));
+  return Array.from(
+    new Map(
+      slots.map((slot) => [`${slot.start_time}-${slot.end_time}`, slot])
+    ).values()
+  );
+};
+var buildTimingProfileSlotWindows = (slots) => {
+  const windows = [];
+  for (let startIndex = 0; startIndex < slots.length; startIndex += 1) {
+    let currentEnd = slots[startIndex].end_time;
+    windows.push({
+      start_time: slots[startIndex].start_time,
+      end_time: currentEnd,
+      slot_count: 1
+    });
+    for (let endIndex = startIndex + 1; endIndex < slots.length; endIndex += 1) {
+      if (slots[endIndex - 1].end_time !== slots[endIndex].start_time) break;
+      currentEnd = slots[endIndex].end_time;
+      windows.push({
+        start_time: slots[startIndex].start_time,
+        end_time: currentEnd,
+        slot_count: endIndex - startIndex + 1
+      });
+    }
+  }
+  return windows;
+};
+var normalizeBookingPurposeType = (value) => {
+  const normalized = value?.toString().trim() || "";
+  if (!normalized) return "Non-Academic";
+  if (["Academic", "Academic Regular", "Academic-Regular"].includes(normalized)) return "Academic Regular";
+  if (["Academic Adjustment", "Academic-Adjustment", "Academic Adjustment / Override"].includes(normalized)) return "Academic Adjustment";
+  if (["Non Academic", "Non-Academic", "Event", "Meeting"].includes(normalized)) return "Non-Academic";
+  return normalized;
+};
+var resolveBookingTimingProfile = async (booking) => {
+  if (!booking?.department_id || !booking?.date) return null;
+  const linkedCalendar = await db.prepare(`
+    SELECT ac.timing_profile_id
+    FROM academic_calendars ac
+    WHERE ac.department_id = ?
+      AND ac.start_date <= ?
+      AND ac.end_date >= ?
+      AND LOWER(COALESCE(ac.event_type, '')) != 'examinations'
+      AND ac.timing_profile_id IS NOT NULL
+    ORDER BY ac.id DESC
+    LIMIT 1
+  `).get(booking.department_id, booking.date, booking.date);
+  const directProfile = linkedCalendar?.timing_profile_id ? await db.prepare("SELECT * FROM timing_profiles WHERE id = ?").get(linkedCalendar.timing_profile_id) : null;
+  if (directProfile) return directProfile;
+  return await db.prepare(`
+    SELECT *
+    FROM timing_profiles
+    WHERE department_id = ?
+    ORDER BY
+      CASE WHEN specialization IS NOT NULL AND LOWER(TRIM(specialization)) = LOWER(TRIM(?)) THEN 0 ELSE 1 END,
+      id DESC
+    LIMIT 1
+  `).get(booking.department_id, booking.specialization || "");
+};
+var getBookingTimingPolicyDetails = async (booking) => {
+  const purposeType = normalizeBookingPurposeType(booking?.purpose_type);
+  const timingProfile = await resolveBookingTimingProfile(booking);
+  const slots = parseTimingProfileSlots(timingProfile?.slot_pattern);
+  const slotWindows = buildTimingProfileSlotWindows(slots);
+  const matchesWindow = slotWindows.some((window) => window.start_time === booking?.start_time && window.end_time === booking?.end_time);
+  const timingOverride = purposeType !== "Academic Regular" && slots.length > 0 && !matchesWindow ? 1 : 0;
+  return { purposeType, timingProfile, slots, slotWindows, matchesWindow, timingOverride };
 };
 var normalizeTimingProfilePayload = async (payload) => {
   const nextPayload = { ...payload };
@@ -2060,6 +2148,69 @@ ${JSON.stringify(snapshot)}`;
     res.status(500).json({ error: err.message || "Failed to generate utilization optimization suggestions." });
   }
 });
+app.post("/api/performance/module-load", authenticate, async (req, res) => {
+  try {
+    const moduleName = req.body?.module?.toString().trim() || "";
+    const phase = req.body?.phase?.toString().trim() || "default";
+    const durationMs = Number(req.body?.durationMs);
+    const itemCount = Number(req.body?.itemCount || 0);
+    if (!moduleName) {
+      return res.status(400).json({ error: "Module name is required." });
+    }
+    if (!Number.isFinite(durationMs) || durationMs < 0) {
+      return res.status(400).json({ error: "Duration must be a valid non-negative number." });
+    }
+    moduleLoadTelemetry.push({
+      module: moduleName,
+      phase,
+      durationMs: Math.round(durationMs),
+      itemCount: Number.isFinite(itemCount) ? Math.max(0, Math.round(itemCount)) : 0,
+      createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+      userRole: req.user?.role || ""
+    });
+    if (moduleLoadTelemetry.length > MAX_MODULE_LOAD_TELEMETRY) {
+      moduleLoadTelemetry.splice(0, moduleLoadTelemetry.length - MAX_MODULE_LOAD_TELEMETRY);
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+app.get("/api/performance/module-load", authenticate, async (_req, res) => {
+  try {
+    const grouped = /* @__PURE__ */ new Map();
+    moduleLoadTelemetry.forEach((record) => {
+      const key = `${record.module}::${record.phase}`;
+      const existing = grouped.get(key);
+      if (!existing) {
+        grouped.set(key, {
+          module: record.module,
+          phase: record.phase,
+          samples: 1,
+          avgDurationMs: record.durationMs,
+          maxDurationMs: record.durationMs,
+          lastDurationMs: record.durationMs,
+          avgItemCount: record.itemCount,
+          lastSeenAt: record.createdAt
+        });
+        return;
+      }
+      const nextSamples = existing.samples + 1;
+      existing.avgDurationMs = Math.round((existing.avgDurationMs * existing.samples + record.durationMs) / nextSamples);
+      existing.avgItemCount = Math.round((existing.avgItemCount * existing.samples + record.itemCount) / nextSamples);
+      existing.maxDurationMs = Math.max(existing.maxDurationMs, record.durationMs);
+      existing.lastDurationMs = record.durationMs;
+      existing.samples = nextSamples;
+      existing.lastSeenAt = record.createdAt;
+    });
+    res.json({
+      summary: Array.from(grouped.values()).sort((left, right) => right.avgDurationMs - left.avgDurationMs),
+      recent: moduleLoadTelemetry.slice(-50).reverse()
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 app.post("/api/ai/extract-timetable", authenticate, async (req, res) => {
   try {
     if (!GEMINI_API_KEY) {
@@ -2595,6 +2746,379 @@ var isPastDateTime = (date, time) => {
   const value = /* @__PURE__ */ new Date(`${date}T${time}`);
   return Number.isNaN(value.getTime()) || value.getTime() < Date.now();
 };
+var timesOverlap = (existingStart, existingEnd, selectedStart, selectedEnd) => {
+  if (!existingStart || !existingEnd || !selectedStart || !selectedEnd) return false;
+  return existingStart < selectedEnd && existingEnd > selectedStart;
+};
+var isBookableAvailabilityRoom = (room) => {
+  if (!room) return false;
+  if (room.is_bookable === 0) return false;
+  const roomType = normalizeRoomTypeValue(room.room_type);
+  if (isNonCapacityRoomType(roomType)) return false;
+  const usageCategory = normalizeUsageCategoryValue(room.usage_category, roomType);
+  return BOOKABLE_ROOM_TYPE_VALUES.includes(roomType) || BOOKABLE_USAGE_CATEGORY_VALUES.includes(usageCategory || "");
+};
+var LIVE_AVAILABILITY_EXCLUDED_ROOM_TYPES = /* @__PURE__ */ new Set([
+  "Restroom",
+  "Store",
+  "Records Room",
+  "Utility",
+  "Server Room",
+  "Electrical Room",
+  "Maintenance Room"
+]);
+var LIVE_AVAILABILITY_EXCLUDED_USAGE_CATEGORIES = /* @__PURE__ */ new Set([
+  "Restroom",
+  "Storage",
+  "Utility"
+]);
+var isLiveAvailabilityVisibleRoom = (room) => {
+  if (!room) return false;
+  const roomType = normalizeRoomTypeValue(room.room_type);
+  const usageCategory = normalizeUsageCategoryValue(room.usage_category, roomType);
+  if (LIVE_AVAILABILITY_EXCLUDED_ROOM_TYPES.has(roomType)) return false;
+  if (LIVE_AVAILABILITY_EXCLUDED_USAGE_CATEGORIES.has(usageCategory || "")) return false;
+  return true;
+};
+var LIVE_AVAILABILITY_ROOM_TYPE_GROUPS = {
+  Classroom: [
+    "Classroom",
+    "Smart Classroom",
+    "Lecture Hall",
+    "Tutorial Room",
+    "Multipurpose Classroom",
+    "Multipurpose Lecture Hall"
+  ],
+  Lab: [
+    "Lab",
+    "Computer Lab",
+    "Research Lab",
+    "Language Lab",
+    "Workshop",
+    "Studio",
+    "Classroom Lab",
+    "Multipurpose Lab"
+  ],
+  "Seminar Hall": ["Seminar Hall"],
+  Auditorium: ["Auditorium"],
+  "Meeting Room": ["Meeting Room", "Conference Room", "Board Room"]
+};
+var matchesLiveAvailabilityRoomTypeFilter = (room, filterValue) => {
+  const normalizedFilter = normalizeRoomTypeValue(filterValue);
+  if (!normalizedFilter) return true;
+  const normalizedRoomType = normalizeRoomTypeValue(room?.room_type);
+  if (!normalizedRoomType) return false;
+  if (normalizedFilter === "Other") {
+    const groupedRoomTypes = new Set(Object.values(LIVE_AVAILABILITY_ROOM_TYPE_GROUPS).flat());
+    return !groupedRoomTypes.has(normalizedRoomType);
+  }
+  const allowedRoomTypes = LIVE_AVAILABILITY_ROOM_TYPE_GROUPS[normalizedFilter];
+  if (allowedRoomTypes) return allowedRoomTypes.includes(normalizedRoomType);
+  return normalizedRoomType === normalizedFilter;
+};
+var getSharedAvailabilitySnapshot = async ({
+  date,
+  startTime,
+  endTime,
+  campusId = "",
+  buildingId = "",
+  blockId = "",
+  floorId = "",
+  departmentId = "",
+  roomType = "",
+  minCapacity = 0,
+  equipmentFilter = "",
+  includeMaintenanceRooms = true,
+  markRecommendedStatus = false,
+  visibilityScope = "bookable"
+}) => {
+  await ensureBookingColumnsReady();
+  const [
+    roomsRaw,
+    departments,
+    departmentAllocations,
+    batchAllocations,
+    equipment,
+    maintenance,
+    approvedBookings
+  ] = await Promise.all([
+    db.prepare(`
+      SELECT
+        r.*,
+        f.floor_number,
+        b.id as block_id,
+        b.name as block_name,
+        bld.id as building_id,
+        bld.name as building_name,
+        c.id as campus_id,
+        c.name as campus_name
+      FROM rooms r
+      JOIN floors f ON r.floor_id = f.id
+      JOIN blocks b ON f.block_id = b.id
+      JOIN buildings bld ON b.building_id = bld.id
+      JOIN campuses c ON bld.campus_id = c.id
+    `).all(),
+    db.prepare("SELECT id, name FROM departments").all(),
+    db.prepare(`
+      SELECT da.id, da.room_id, da.department_id, da.semester, d.name as department_name
+      FROM department_allocations da
+      JOIN departments d ON da.department_id = d.id
+      ORDER BY da.id DESC
+    `).all(),
+    db.prepare(`
+      SELECT bra.id, bra.room_id, bra.department_id, bra.program, bra.batch, bra.specialization, bra.academic_year, bra.year_of_study, bra.semester, d.name as department_name
+      FROM batch_room_allocations bra
+      JOIN departments d ON bra.department_id = d.id
+      WHERE bra.start_date <= ? AND bra.end_date >= ? AND bra.status != ?
+      ORDER BY bra.id DESC
+    `).all(date, date, "Released"),
+    db.prepare("SELECT room_id, name, type, condition FROM equipment").all(),
+    db.prepare(`
+      SELECT
+        room_id,
+        equipment_name,
+        issue_description,
+        reported_date,
+        assigned_staff,
+        status
+      FROM maintenance
+    `).all(),
+    db.prepare("SELECT room_id, faculty_name, event_name, purpose, purpose_type, timing_override, date, start_time, end_time, status FROM bookings WHERE date = ? AND status = 'Approved'").all(date)
+  ]);
+  const normalizedRoomType = normalizeRoomTypeValue(roomType);
+  const normalizedEquipmentFilter = normalizeDuplicateValue(equipmentFilter || "");
+  const departmentNameById = new Map(departments.map((department) => [department.id?.toString(), department.name]));
+  const equipmentByRoomId = /* @__PURE__ */ new Map();
+  equipment.forEach((item) => {
+    const key = item.room_id?.toString();
+    if (!key) return;
+    if (!equipmentByRoomId.has(key)) equipmentByRoomId.set(key, []);
+    equipmentByRoomId.get(key)?.push(item);
+  });
+  const activeMaintenanceByRoomId = /* @__PURE__ */ new Map();
+  maintenance.forEach((item) => {
+    if (item.status === "Completed") return;
+    const key = item.room_id?.toString();
+    if (!key) return;
+    if (!activeMaintenanceByRoomId.has(key)) activeMaintenanceByRoomId.set(key, []);
+    activeMaintenanceByRoomId.get(key)?.push(item);
+  });
+  const allocationNamesByRoomId = /* @__PURE__ */ new Map();
+  const allocationIdsByRoomId = /* @__PURE__ */ new Map();
+  const applyDepartmentContext = (roomId, nextDepartmentId, nextDepartmentName) => {
+    const key = roomId?.toString();
+    if (!key) return;
+    if (!allocationNamesByRoomId.has(key)) allocationNamesByRoomId.set(key, []);
+    if (!allocationIdsByRoomId.has(key)) allocationIdsByRoomId.set(key, /* @__PURE__ */ new Set());
+    if (nextDepartmentName && !allocationNamesByRoomId.get(key)?.includes(nextDepartmentName)) {
+      allocationNamesByRoomId.get(key)?.push(nextDepartmentName);
+    }
+    if (nextDepartmentId) allocationIdsByRoomId.get(key)?.add(nextDepartmentId.toString());
+  };
+  departmentAllocations.forEach(
+    (allocation) => applyDepartmentContext(allocation.room_id, allocation.department_id, allocation.department_name || departmentNameById.get(allocation.department_id?.toString()))
+  );
+  batchAllocations.forEach(
+    (allocation) => applyDepartmentContext(allocation.room_id, allocation.department_id, allocation.department_name || departmentNameById.get(allocation.department_id?.toString()))
+  );
+  const roomCandidates = roomsRaw.filter((room) => {
+    const bookable = isBookableAvailabilityRoom(room);
+    const visible = visibilityScope === "live" ? isLiveAvailabilityVisibleRoom(room) : bookable;
+    if (!visible && !(includeMaintenanceRooms && room.status === "Maintenance" && visibilityScope === "live" && isLiveAvailabilityVisibleRoom(room))) return false;
+    if (campusId && !idsEqual(room.campus_id, campusId)) return false;
+    if (buildingId && !idsEqual(room.building_id, buildingId)) return false;
+    if (blockId && !idsEqual(room.block_id, blockId)) return false;
+    if (floorId && !idsEqual(room.floor_id, floorId)) return false;
+    if (normalizedRoomType && !matchesLiveAvailabilityRoomTypeFilter(room, normalizedRoomType)) return false;
+    if (departmentId) {
+      const roomDepartmentIds = allocationIdsByRoomId.get(room.id?.toString() || "");
+      if (!roomDepartmentIds?.has(departmentId)) return false;
+    }
+    if (normalizedEquipmentFilter) {
+      const labels = (equipmentByRoomId.get(room.id?.toString() || "") || []).map((item) => normalizeDuplicateValue(item.name));
+      if (!labels.some((label) => label.includes(normalizedEquipmentFilter))) return false;
+    }
+    return true;
+  });
+  const roomIds = roomCandidates.map((room) => room.id);
+  const busySchedules = await getEffectiveSchedulesForDate(
+    date,
+    (schedule) => roomIds.some((roomId) => idsEqual(schedule.room_id, roomId)) && timesOverlap(schedule.start_time, schedule.end_time, startTime, endTime)
+  );
+  const scheduleByRoomId = /* @__PURE__ */ new Map();
+  busySchedules.forEach((schedule) => {
+    const key = schedule.room_id?.toString();
+    if (!key) return;
+    if (!scheduleByRoomId.has(key)) scheduleByRoomId.set(key, []);
+    scheduleByRoomId.get(key)?.push(schedule);
+  });
+  const approvedBookingsByRoomId = /* @__PURE__ */ new Map();
+  approvedBookings.filter((booking) => timesOverlap(booking.start_time, booking.end_time, startTime, endTime)).forEach((booking) => {
+    const key = booking.room_id?.toString();
+    if (!key) return;
+    if (!approvedBookingsByRoomId.has(key)) approvedBookingsByRoomId.set(key, []);
+    approvedBookingsByRoomId.get(key)?.push(booking);
+  });
+  const getAudienceLabel = (schedule) => {
+    const parts = [
+      schedule.program,
+      schedule.specialization,
+      schedule.section ? `Section ${schedule.section}` : "",
+      schedule.year_of_study,
+      schedule.semester
+    ].filter(Boolean);
+    return parts.join(" \u2022 ");
+  };
+  const roomRows = roomCandidates.map((room) => {
+    const roomKey = room.id?.toString() || "";
+    const roomBookable = isBookableAvailabilityRoom(room);
+    const roomTypeLabel = normalizeRoomTypeValue(room.room_type) || room.room_type || "Room";
+    const roomCapacity = parseInt(room.capacity, 10) || 0;
+    const roomEquipment = (equipmentByRoomId.get(roomKey) || []).map((item) => item.name).filter(Boolean);
+    const roomMaintenance = activeMaintenanceByRoomId.get(roomKey) || [];
+    const roomSchedules = scheduleByRoomId.get(roomKey) || [];
+    const roomBookings = approvedBookingsByRoomId.get(roomKey) || [];
+    const roomDepartments = allocationNamesByRoomId.get(roomKey) || [];
+    const currentDepartmentMatch = departmentId && allocationIdsByRoomId.get(roomKey)?.has(departmentId);
+    const usageCount = roomSchedules.length + roomBookings.length;
+    const capacityGap = Math.max(0, roomCapacity - (minCapacity || 0));
+    const hasCapacityMismatch = (minCapacity || 0) > 0 && roomCapacity < (minCapacity || 0);
+    let status = roomBookable ? "Available" : "Not Bookable";
+    let statusReason = roomBookable ? "Physically vacant for the selected date and time. Academic timing-profile rules are checked only when an Academic Regular booking is confirmed." : "Physically vacant for the selected date and time, but this room is not configured as directly bookable.";
+    let currentUsage = "";
+    if (roomMaintenance.length > 0 || room.status === "Maintenance") {
+      status = "Maintenance";
+      statusReason = roomMaintenance.map((item) => `${item.equipment_name || "Maintenance issue"}${item.issue_description ? ` - ${item.issue_description}` : ""}${item.status ? ` (${item.status})` : ""}${item.reported_date ? ` [Reported ${item.reported_date}]` : ""}`).join("; ") || "Room is marked under maintenance.";
+    } else if (hasCapacityMismatch) {
+      status = "Capacity Mismatch";
+      statusReason = `Room capacity is ${roomCapacity}, below the required ${minCapacity}.`;
+    } else if (roomSchedules.length > 0) {
+      const sameSession = roomSchedules.length > 1 && roomSchedules.every(
+        (schedule) => normalizeDuplicateValue(schedule.course_name) === normalizeDuplicateValue(roomSchedules[0]?.course_name) && normalizeDuplicateValue(schedule.faculty) === normalizeDuplicateValue(roomSchedules[0]?.faculty)
+      );
+      status = "Occupied";
+      currentUsage = `${sameSession ? "Combined Class" : "Scheduled"}: ${roomSchedules[0]?.course_name || "Class"}`;
+      statusReason = roomSchedules.map((schedule) => {
+        const contextLabel = getAudienceLabel(schedule);
+        const departmentName = departmentNameById.get(schedule.department_id?.toString()) || "";
+        return [
+          schedule.course_name || "Scheduled class",
+          schedule.faculty ? `Faculty: ${schedule.faculty}` : "",
+          departmentName,
+          contextLabel
+        ].filter(Boolean).join(" \u2022 ");
+      }).join("; ");
+    } else if (roomBookings.length > 0) {
+      status = "Event Booked";
+      currentUsage = roomBookings[0]?.event_name || "Approved booking";
+      statusReason = roomBookings.map(
+        (booking) => [
+          booking.event_name || "Approved booking",
+          booking.faculty_name ? `Booked by ${booking.faculty_name}` : "",
+          booking.purpose ? `Purpose: ${booking.purpose}` : "",
+          booking.purpose_type ? `Type: ${booking.purpose_type}` : "",
+          Number(booking.timing_override || 0) === 1 ? "Temporary timing override for this booked period only" : ""
+        ].filter(Boolean).join(" \u2022 ")
+      ).join("; ");
+    }
+    let recommendationScore = 0;
+    if (status === "Available") {
+      recommendationScore += roomBookable ? 1e3 : 0;
+      recommendationScore += currentDepartmentMatch ? 150 : 0;
+      recommendationScore += normalizedEquipmentFilter && roomEquipment.some((label) => normalizeDuplicateValue(label).includes(normalizedEquipmentFilter)) ? 80 : 0;
+      recommendationScore += roomCapacity >= (minCapacity || 0) ? Math.max(0, 120 - capacityGap) : 0;
+      recommendationScore += Math.max(0, 40 - usageCount * 10);
+    }
+    let nextAvailableSlot = "Available for selected time";
+    if (status !== "Available" && status !== "Best Suitable") {
+      const blockingEndTimes = [
+        ...roomSchedules.map((schedule) => schedule.end_time).filter(Boolean),
+        ...roomBookings.map((booking) => booking.end_time).filter(Boolean)
+      ].sort();
+      if (status === "Maintenance") {
+        nextAvailableSlot = "Available after maintenance clearance";
+      } else if (blockingEndTimes.length > 0) {
+        nextAvailableSlot = `${blockingEndTimes[blockingEndTimes.length - 1]} onwards`;
+      }
+    }
+    return {
+      id: room.id,
+      roomId: room.room_id,
+      roomNumber: room.room_number,
+      roomName: room.room_name || "",
+      roomType: roomTypeLabel,
+      capacity: roomCapacity,
+      campusId: room.campus_id,
+      campusName: room.campus_name,
+      buildingId: room.building_id,
+      buildingName: room.building_name,
+      blockId: room.block_id,
+      blockName: room.block_name,
+      floorId: room.floor_id,
+      floorName: room.floor_number,
+      departmentName: roomDepartments.join(", "),
+      status,
+      statusReason,
+      currentUsage,
+      nextAvailableSlot,
+      equipment: roomEquipment,
+      recommendationScore,
+      availableForBooking: status === "Available" && roomBookable,
+      mappedToSelectedDepartment: Boolean(currentDepartmentMatch),
+      aliases: getRoomAliasTokens(room.room_aliases),
+      _sourceRoom: room
+    };
+  });
+  const recommendedRooms = roomRows.filter((room) => room.availableForBooking).sort((left, right) => right.recommendationScore - left.recommendationScore).slice(0, 3).map((room, index) => ({
+    ...room,
+    status: "Best Suitable",
+    availableForBooking: true,
+    statusReason: [
+      `Recommended because capacity is ${room.capacity}.`,
+      room.mappedToSelectedDepartment ? "Mapped to the selected department." : "",
+      normalizedEquipmentFilter && room.equipment.some((label) => normalizeDuplicateValue(label).includes(normalizedEquipmentFilter)) ? `${equipmentFilter} is available.` : "",
+      "Physically vacant for the selected real-time window with no timetable clash, no approved booking, and not under maintenance."
+    ].filter(Boolean).join(" "),
+    currentUsage: `Recommendation rank #${index + 1}`
+  }));
+  const recommendedRoomIds = new Set(recommendedRooms.map((room) => room.id?.toString()));
+  const statusAdjustedRooms = roomRows.map((room) => {
+    if (!markRecommendedStatus || !recommendedRoomIds.has(room.id?.toString())) return room;
+    const recommendedRoom = recommendedRooms.find((item) => idsEqual(item.id, room.id));
+    return recommendedRoom ? { ...room, ...recommendedRoom } : room;
+  });
+  const sortedRooms = [...statusAdjustedRooms].sort((left, right) => {
+    if (left.buildingName !== right.buildingName) {
+      return left.buildingName.localeCompare(right.buildingName, void 0, { sensitivity: "base" });
+    }
+    if (left.blockName !== right.blockName) {
+      return left.blockName.localeCompare(right.blockName, void 0, { numeric: true, sensitivity: "base" });
+    }
+    const leftFloor = Number(left.floorName);
+    const rightFloor = Number(right.floorName);
+    if (Number.isFinite(leftFloor) && Number.isFinite(rightFloor) && leftFloor !== rightFloor) {
+      return leftFloor - rightFloor;
+    }
+    if ((left.floorName || "") !== (right.floorName || "")) {
+      return String(left.floorName || "").localeCompare(String(right.floorName || ""), void 0, { numeric: true, sensitivity: "base" });
+    }
+    return (left.roomNumber || "").localeCompare(right.roomNumber || "", void 0, { numeric: true, sensitivity: "base" });
+  });
+  return {
+    summary: {
+      totalRooms: sortedRooms.length,
+      available: sortedRooms.filter((room) => room.status === "Available").length,
+      occupied: sortedRooms.filter((room) => room.status === "Occupied").length,
+      booked: sortedRooms.filter((room) => room.status === "Event Booked").length,
+      maintenance: sortedRooms.filter((room) => room.status === "Maintenance").length,
+      notBookable: sortedRooms.filter((room) => room.status === "Not Bookable").length,
+      capacityMismatch: sortedRooms.filter((room) => room.status === "Capacity Mismatch").length,
+      bestSuitable: recommendedRooms.length
+    },
+    recommendedRooms,
+    rooms: sortedRooms
+  };
+};
 var getBookingDepartmentName = async (booking) => {
   if (!booking?.department_id) return null;
   const department = await db.prepare("SELECT name FROM departments WHERE id = ?").get(booking.department_id);
@@ -3046,7 +3570,7 @@ var createCrudRoutes = (tableName, idField = "id") => {
       req.body.force_password_change = 1;
     }
     if (tableName === "bookings") {
-      await ensureBookingColumns();
+      await ensureBookingColumnsReady();
       if (!req.body.status) {
         req.body.status = "Pending";
       }
@@ -3122,6 +3646,7 @@ var createCrudRoutes = (tableName, idField = "id") => {
         if (!department) {
           return res.status(400).json({ error: "Please select a valid department." });
         }
+        req.body.purpose_type = normalizeBookingPurposeType(req.body.purpose_type);
         if (!["Pending", "Approved"].includes(req.body.status || "Pending")) {
           req.body.status = "Pending";
           const statusIndex = fields.indexOf("status");
@@ -3142,6 +3667,23 @@ var createCrudRoutes = (tableName, idField = "id") => {
         const conflictingBooking = await getApprovedBookingConflict(req.body);
         if (conflictingBooking) {
           return res.status(400).json({ error: "This room already has an approved booking for the selected time slot." });
+        }
+        const timingPolicy = await getBookingTimingPolicyDetails(req.body);
+        req.body.timing_override = timingPolicy.timingOverride;
+        if (timingPolicy.purposeType === "Academic Regular" && timingPolicy.slots.length > 0 && !timingPolicy.matchesWindow) {
+          return res.status(400).json({ error: "Academic Regular bookings must match the active department timing-profile slot window exactly." });
+        }
+        if (!fields.includes("purpose_type")) {
+          fields.push("purpose_type");
+          values.push(req.body.purpose_type);
+        } else {
+          values[fields.indexOf("purpose_type")] = req.body.purpose_type;
+        }
+        if (!fields.includes("timing_override")) {
+          fields.push("timing_override");
+          values.push(req.body.timing_override);
+        } else {
+          values[fields.indexOf("timing_override")] = req.body.timing_override;
         }
       }
       const info = await db.prepare(`INSERT INTO ${tableName} (${fields.join(", ")}) VALUES (${placeholders})`).run(...values);
@@ -3179,7 +3721,7 @@ var createCrudRoutes = (tableName, idField = "id") => {
       req.body.force_password_change = 1;
     }
     if (tableName === "bookings") {
-      await ensureBookingColumns();
+      await ensureBookingColumnsReady();
     }
     if (tableName === "rooms") {
       req.body = normalizeRoomPayload(req.body);
@@ -3244,6 +3786,8 @@ var createCrudRoutes = (tableName, idField = "id") => {
         const nextBooking = { ...existingItem, ...req.body };
         const bookableError = await getBookableRoomError(nextBooking.room_id);
         if (bookableError) return res.status(400).json({ error: bookableError });
+        nextBooking.purpose_type = normalizeBookingPurposeType(nextBooking.purpose_type);
+        req.body.purpose_type = nextBooking.purpose_type;
         const requestedStatus = req.body.status;
         const role = req.user.role;
         const isRequester = existingItem.faculty_name === req.user.name;
@@ -3291,6 +3835,11 @@ var createCrudRoutes = (tableName, idField = "id") => {
           if (conflictingBooking) {
             return res.status(400).json({ error: "This room already has an approved booking for the selected time slot." });
           }
+        }
+        const timingPolicy = await getBookingTimingPolicyDetails(nextBooking);
+        req.body.timing_override = timingPolicy.timingOverride;
+        if (timingPolicy.purposeType === "Academic Regular" && timingPolicy.slots.length > 0 && !timingPolicy.matchesWindow) {
+          return res.status(400).json({ error: "Academic Regular bookings must match the active department timing-profile slot window exactly." });
         }
       }
       fields = Object.keys(req.body);
@@ -3527,6 +4076,311 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+app.get("/api/dashboard/overview", authenticate, async (_req, res) => {
+  try {
+    const totalBuildings = await db.prepare("SELECT COUNT(*) as count FROM buildings").get();
+    const totalRooms = await db.prepare("SELECT COUNT(*) as count FROM rooms").get();
+    const maintenanceRooms = await db.prepare("SELECT COUNT(*) as count FROM rooms WHERE status = 'Maintenance'").get();
+    const equipmentIssues = await db.prepare("SELECT COUNT(*) as count FROM maintenance WHERE status = 'Pending'").get();
+    const pendingBookings = await db.prepare("SELECT COUNT(*) as count FROM bookings WHERE status = 'Pending'").get();
+    const { date: currentDate, time: currentTime } = getCampusDateTimeParts();
+    const daySchedules = await getEffectiveSchedulesForDate(currentDate);
+    const activeSchedules = daySchedules.filter(
+      (schedule) => schedule.start_time <= currentTime && schedule.end_time > currentTime
+    );
+    const activeBookings = await db.prepare(`
+      SELECT room_id, event_name, purpose, faculty_name, start_time, end_time FROM bookings
+      WHERE date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
+    `).all(currentDate, currentTime, currentTime);
+    const activeScheduleRoomIds = new Set(activeSchedules.map((item) => item.room_id).filter(Boolean));
+    const dayScheduleRoomIds = new Set(daySchedules.map((item) => item.room_id).filter(Boolean));
+    const activeBookingRoomIds = new Set(activeBookings.map((item) => item.room_id).filter(Boolean));
+    const occupiedRoomIds = /* @__PURE__ */ new Set([...activeScheduleRoomIds, ...activeBookingRoomIds]);
+    const availableNow = Math.max(0, totalRooms.count - maintenanceRooms.count - occupiedRoomIds.size);
+    const recentAlerts = await db.prepare(`
+      SELECT m.*, r.room_number, bld.name as building_name
+      FROM maintenance m
+      JOIN rooms r ON m.room_id = r.id
+      JOIN floors f ON r.floor_id = f.id
+      JOIN blocks b ON f.block_id = b.id
+      JOIN buildings bld ON b.building_id = bld.id
+      ORDER BY m.reported_date DESC
+      LIMIT 5
+    `).all();
+    const rooms = await db.prepare(`
+      SELECT r.id, r.room_number, r.room_type, r.parent_room_id, r.room_layout, r.room_name, r.usage_category, r.is_bookable,
+             r.lab_name, r.restroom_type, r.capacity, r.status, f.id as floor_id, f.floor_number,
+             bld.id as building_id, bld.name as building_name, b.id as block_id, b.name as block_name
+      FROM rooms r
+      JOIN floors f ON r.floor_id = f.id
+      JOIN blocks b ON f.block_id = b.id
+      JOIN buildings bld ON b.building_id = bld.id
+    `).all();
+    const schedules = await db.prepare("SELECT room_id, department_id, year_of_study, semester, section, start_time, end_time FROM schedules").all();
+    const approvedBookings = await db.prepare("SELECT room_id, date, start_time, end_time FROM bookings WHERE status = 'Approved'").all();
+    const allBookings = await db.prepare("SELECT room_id, status, date FROM bookings").all();
+    const maintenance = await db.prepare("SELECT room_id, status FROM maintenance").all();
+    const departments = await db.prepare("SELECT id, name, school_id FROM departments").all();
+    const schools = await db.prepare("SELECT id, name FROM schools").all();
+    const allocations = await db.prepare(`
+      SELECT room_id, department_id, school_id, id
+      FROM department_allocations
+      ORDER BY id DESC
+    `).all();
+    const latestAllocationByRoom = /* @__PURE__ */ new Map();
+    allocations.forEach((allocation) => {
+      const roomKey = allocation.room_id?.toString();
+      if (roomKey && !latestAllocationByRoom.has(roomKey)) {
+        latestAllocationByRoom.set(roomKey, allocation);
+      }
+    });
+    const calculateHours = (start, end) => {
+      if (!start || !end) return 0;
+      const [h1, m1] = start.split(":").map(Number);
+      const [h2, m2] = end.split(":").map(Number);
+      return h2 + m2 / 60 - (h1 + m1 / 60);
+    };
+    const baseReports = rooms.map((room) => {
+      const roomSchedules = schedules.filter((schedule) => idsEqual(schedule.room_id, room.id));
+      const roomApprovedBookings = approvedBookings.filter((booking) => idsEqual(booking.room_id, room.id));
+      const roomAllBookings = allBookings.filter((booking) => idsEqual(booking.room_id, room.id));
+      const allocation = latestAllocationByRoom.get(room.id?.toString());
+      const inferredDepartmentCounts = /* @__PURE__ */ new Map();
+      [...roomSchedules, ...roomAllBookings].forEach((entry) => {
+        if (!entry.department_id) return;
+        inferredDepartmentCounts.set(entry.department_id, (inferredDepartmentCounts.get(entry.department_id) || 0) + 1);
+      });
+      const inferredDepartmentId = Array.from(inferredDepartmentCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0];
+      const resolvedDepartmentId = allocation?.department_id || inferredDepartmentId || null;
+      const department = departments.find((dept) => dept.id === resolvedDepartmentId);
+      const school = schools.find((item) => item.id === (allocation?.school_id || department?.school_id || null));
+      const maintenanceIssues = maintenance.filter((item) => idsEqual(item.room_id, room.id) && item.status !== "Completed").length;
+      const scheduledHours = roomSchedules.reduce((acc, schedule) => acc + calculateHours(schedule.start_time, schedule.end_time), 0);
+      const bookedHours = roomApprovedBookings.reduce((acc, booking) => acc + calculateHours(booking.start_time, booking.end_time), 0);
+      const utilization = (scheduledHours + bookedHours) / 72 * 100;
+      const yearTags = Array.from(new Set(roomSchedules.map((schedule) => {
+        const normalizedYear = normalizeYearOfStudyKey(schedule?.year_of_study);
+        if (normalizedYear) return normalizedYear;
+        const semesterNumber = parseSemesterNumber(schedule?.semester);
+        return semesterNumber ? Math.ceil(semesterNumber / 2).toString() : "";
+      }).filter(Boolean)));
+      const semesterTags = Array.from(new Set(roomSchedules.map((schedule) => normalizeSemesterKey(schedule?.semester)).filter(Boolean))).map((tag) => tag === "odd" ? "Odd" : tag === "even" ? "Even" : tag);
+      const sectionTags = Array.from(new Set(roomSchedules.map((schedule) => schedule?.section?.toString().trim()).filter(Boolean)));
+      return {
+        room_id: room.id,
+        room_number: room.room_number,
+        building: room.building_name,
+        block: room.block_name,
+        department: department?.name || "Unmapped",
+        school: school?.name || "Unmapped",
+        room_type: room.room_type,
+        status: room.status,
+        utilization: Math.min(100, Math.round(utilization)),
+        maintenanceIssues,
+        bookingStatuses: Array.from(new Set(roomAllBookings.map((booking) => booking.status).filter(Boolean))),
+        bookingDates: roomAllBookings.map((booking) => booking.date).filter(Boolean),
+        approvedBookingDates: roomApprovedBookings.map((booking) => booking.date).filter(Boolean),
+        yearTags,
+        semesterTags,
+        sectionTags
+      };
+    });
+    const classifyRoomMix = (roomTypeValue) => {
+      const roomType = normalizeRoomTypeValue(roomTypeValue);
+      if ([
+        "Classroom",
+        "Smart Classroom",
+        "Lecture Hall",
+        "Tutorial Room",
+        "Multipurpose Classroom",
+        "Multipurpose Lecture Hall"
+      ].includes(roomType)) return "classroom";
+      if ([
+        "Lab",
+        "Computer Lab",
+        "Research Lab",
+        "Language Lab",
+        "Workshop",
+        "Studio",
+        "Classroom Lab",
+        "Multipurpose Lab"
+      ].includes(roomType)) return "lab";
+      return "";
+    };
+    const roomMix = baseReports.reduce((acc, room) => {
+      const bucket = classifyRoomMix(room.room_type);
+      if (bucket === "classroom") acc.classrooms += 1;
+      if (bucket === "lab") acc.labs += 1;
+      return acc;
+    }, { classrooms: 0, labs: 0 });
+    const schoolReports = Array.from(new Set(baseReports.map((report) => report.school).filter(Boolean))).map((schoolName) => {
+      const schoolRooms = baseReports.filter((report) => report.school === schoolName);
+      const deptCount = new Set(
+        schoolRooms.map((report) => report.department).filter((departmentName) => departmentName && departmentName !== "Unmapped")
+      ).size;
+      const avgUtilization = schoolRooms.reduce((acc, report) => acc + report.utilization, 0) / (schoolRooms.length || 1);
+      const roomTypeAverage = (allowedTypes) => {
+        const matchingRooms = schoolRooms.filter((report) => allowedTypes.includes(normalizeRoomTypeValue(report.room_type)));
+        if (!matchingRooms.length) return 0;
+        return Math.round(matchingRooms.reduce((sum, report) => sum + report.utilization, 0) / matchingRooms.length);
+      };
+      return {
+        name: schoolName,
+        avgUtilization: Math.round(avgUtilization),
+        deptCount,
+        roomCount: schoolRooms.length,
+        classroomUtilization: roomTypeAverage(["Classroom", "Seminar Hall"]),
+        labUtilization: roomTypeAverage(["Lab"])
+      };
+    }).sort((a, b) => b.avgUtilization - a.avgUtilization);
+    const topBusyRooms = [...baseReports].filter((room) => Number(room.utilization) > 0).sort((a, b) => (Number(b.utilization) || 0) - (Number(a.utilization) || 0)).slice(0, 5).map((room) => ({
+      room_id: room.room_id,
+      room_number: room.room_number,
+      building: room.building,
+      block: room.block,
+      utilization: room.utilization
+    }));
+    const lowestUsageRooms = [...baseReports].filter((room) => Number(room.utilization) >= 0).sort((a, b) => (Number(a.utilization) || 0) - (Number(b.utilization) || 0)).slice(0, 5).map((room) => ({
+      room_id: room.room_id,
+      room_number: room.room_number,
+      building: room.building,
+      block: room.block,
+      utilization: room.utilization
+    }));
+    const utilizationTrend = [...baseReports].map((room) => ({ name: room.room_number, utilization: room.utilization })).sort((a, b) => (Number(b.utilization) || 0) - (Number(a.utilization) || 0)).slice(0, 10);
+    const reportByRoomId = new Map(baseReports.map((report) => [report.room_id?.toString(), report]));
+    const activeSchedulesByRoomId = /* @__PURE__ */ new Map();
+    activeSchedules.forEach((schedule) => {
+      const roomKey = schedule?.room_id?.toString();
+      if (!roomKey) return;
+      const next = activeSchedulesByRoomId.get(roomKey) || [];
+      next.push(schedule);
+      activeSchedulesByRoomId.set(roomKey, next);
+    });
+    const activeBookingsByRoomId = /* @__PURE__ */ new Map();
+    activeBookings.forEach((booking) => {
+      const roomKey = booking?.room_id?.toString();
+      if (!roomKey) return;
+      const next = activeBookingsByRoomId.get(roomKey) || [];
+      next.push(booking);
+      activeBookingsByRoomId.set(roomKey, next);
+    });
+    const activeMaintenanceByRoomId = /* @__PURE__ */ new Map();
+    maintenance.filter((item) => item?.status !== "Completed").forEach((item) => {
+      const roomKey = item?.room_id?.toString();
+      if (!roomKey) return;
+      const next = activeMaintenanceByRoomId.get(roomKey) || [];
+      next.push(item);
+      activeMaintenanceByRoomId.set(roomKey, next);
+    });
+    const digitalTwinRoomRows = rooms.map((room) => {
+      const roomKey = room.id?.toString() || "";
+      const roomReport = reportByRoomId.get(roomKey);
+      const roomIsBookable = isBookableAvailabilityRoom(room);
+      const roomMaintenance = activeMaintenanceByRoomId.get(roomKey) || [];
+      const roomScheduleSet = activeSchedulesByRoomId.get(roomKey) || [];
+      const roomBookingSet = activeBookingsByRoomId.get(roomKey) || [];
+      let status = roomIsBookable ? "Available" : "Not Bookable";
+      let currentUsage = "";
+      let nextAvailableSlot = roomIsBookable ? "Available now" : "Not directly bookable";
+      if (roomMaintenance.length > 0 || room.status === "Maintenance") {
+        status = "Maintenance";
+        currentUsage = roomMaintenance[0]?.issue_description || roomMaintenance[0]?.equipment_name || "Maintenance in progress";
+        nextAvailableSlot = "After maintenance clearance";
+      } else if (roomBookingSet.length > 0) {
+        status = "Event Booked";
+        currentUsage = roomBookingSet[0]?.event_name || roomBookingSet[0]?.purpose || "Approved booking";
+        nextAvailableSlot = roomBookingSet[0]?.end_time ? `${roomBookingSet[0].end_time} onwards` : "After current booking";
+      } else if (roomScheduleSet.length > 0) {
+        status = "Occupied";
+        currentUsage = roomScheduleSet[0]?.course_name || "Scheduled class";
+        nextAvailableSlot = roomScheduleSet[0]?.end_time ? `${roomScheduleSet[0].end_time} onwards` : "After current class";
+      }
+      return {
+        id: room.id,
+        roomNumber: room.room_number,
+        roomType: normalizeRoomTypeValue(room.room_type) || room.room_type || "Room",
+        capacity: parseInt(room.capacity, 10) || 0,
+        buildingId: room.building_id,
+        buildingName: room.building_name,
+        blockName: room.block_name,
+        floorId: room.floor_id,
+        floorName: `Floor ${room.floor_number}`,
+        status,
+        isBookable: roomIsBookable,
+        currentUsage,
+        nextAvailableSlot,
+        departmentName: roomReport?.department || "Unmapped"
+      };
+    });
+    const digitalTwinBuildings = Array.from(
+      digitalTwinRoomRows.reduce((acc, room) => {
+        const buildingKey = room.buildingId?.toString() || room.buildingName;
+        if (!acc.has(buildingKey)) {
+          acc.set(buildingKey, {
+            buildingId: room.buildingId,
+            buildingName: room.buildingName,
+            floors: /* @__PURE__ */ new Map()
+          });
+        }
+        const buildingEntry = acc.get(buildingKey);
+        const floorKey = room.floorId?.toString() || room.floorName;
+        if (!buildingEntry.floors.has(floorKey)) {
+          buildingEntry.floors.set(floorKey, {
+            floorId: room.floorId,
+            floorName: room.floorName,
+            rooms: []
+          });
+        }
+        buildingEntry.floors.get(floorKey).rooms.push(room);
+        return acc;
+      }, /* @__PURE__ */ new Map())
+    ).map(([, building]) => ({
+      buildingId: building.buildingId,
+      buildingName: building.buildingName,
+      floors: Array.from(building.floors.values()).map((floor) => ({
+        ...floor,
+        rooms: floor.rooms.sort(
+          (left, right) => (left.roomNumber || "").localeCompare(right.roomNumber || "", void 0, { numeric: true, sensitivity: "base" })
+        )
+      })).sort((left, right) => left.floorName.localeCompare(right.floorName, void 0, { numeric: true, sensitivity: "base" }))
+    })).sort((left, right) => left.buildingName.localeCompare(right.buildingName, void 0, { sensitivity: "base" }));
+    const digitalTwinStatusCounts = {
+      available: digitalTwinRoomRows.filter((room) => room.status === "Available").length,
+      occupied: digitalTwinRoomRows.filter((room) => room.status === "Occupied").length,
+      maintenance: digitalTwinRoomRows.filter((room) => room.status === "Maintenance").length,
+      eventBooked: digitalTwinRoomRows.filter((room) => room.status === "Event Booked").length,
+      notBookable: digitalTwinRoomRows.filter((room) => room.status === "Not Bookable").length
+    };
+    res.json({
+      stats: {
+        totalBuildings: totalBuildings.count,
+        availableNow,
+        equipmentIssues: equipmentIssues.count,
+        pendingBookings: pendingBookings.count,
+        scheduledRooms: dayScheduleRoomIds.size,
+        activeScheduledRooms: activeScheduleRoomIds.size,
+        bookedRooms: activeBookingRoomIds.size,
+        occupiedRooms: occupiedRoomIds.size,
+        occupiedNow: activeScheduleRoomIds.size,
+        eventBookedNow: activeBookingRoomIds.size,
+        notBookableRooms: digitalTwinStatusCounts.notBookable,
+        recentAlerts
+      },
+      utilizationTrend,
+      schoolReports,
+      roomMix,
+      topBusyRooms,
+      lowestUsageRooms,
+      digitalTwinSnapshot: {
+        statusCounts: digitalTwinStatusCounts,
+        buildings: digitalTwinBuildings
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 app.get("/api/rooms/vacant", authenticate, async (req, res) => {
   const { date, time, duration, members } = req.query;
   if (!date || !time || !duration) {
@@ -3546,26 +4400,74 @@ app.get("/api/rooms/vacant", authenticate, async (req, res) => {
   endDate.setHours(h, m || 0, 0, 0);
   endDate.setMinutes(endDate.getMinutes() + durationMinutes);
   const requestedEnd = `${endDate.getHours().toString().padStart(2, "0")}:${endDate.getMinutes().toString().padStart(2, "0")}`;
-  const allRoomsRaw = await db.prepare("SELECT * FROM rooms WHERE status = 'Available' AND COALESCE(is_bookable, 1) != 0").all();
-  const allRooms = allRoomsRaw.filter(
-    (room) => isReservableRoomRecord(room) && (minimumCapacity === null || (parseInt(room.capacity, 10) || 0) >= minimumCapacity)
-  );
-  const busySchedules = await getEffectiveSchedulesForDate(
+  const snapshot = await getSharedAvailabilitySnapshot({
     date,
-    (schedule) => !(schedule.end_time <= requestedStart || schedule.start_time >= requestedEnd)
-  );
-  const busyBookings = await db.prepare(`
-    SELECT room_id FROM bookings 
-    WHERE date = ? 
-    AND status = 'Approved'
-    AND NOT (end_time <= ? OR start_time >= ?)
-  `).all(date, requestedStart, requestedEnd);
-  const busyRoomIds = /* @__PURE__ */ new Set([
-    ...busySchedules.map((s) => s.room_id),
-    ...busyBookings.map((b) => b.room_id)
-  ]);
-  const vacantRooms = allRooms.filter((r) => !busyRoomIds.has(r.id));
+    startTime: requestedStart,
+    endTime: requestedEnd,
+    minCapacity: minimumCapacity ?? 0,
+    includeMaintenanceRooms: false,
+    markRecommendedStatus: false,
+    visibilityScope: "bookable"
+  });
+  const vacantRooms = snapshot.rooms.filter((room) => room.availableForBooking).map((room) => room._sourceRoom);
   res.json(vacantRooms);
+});
+app.get("/api/live-availability", authenticate, async (req, res) => {
+  const date = normalizeIsoDate(req.query.date);
+  const startTime = req.query.startTime?.toString().trim() || "";
+  const endTime = req.query.endTime?.toString().trim() || "";
+  const campusId = req.query.campusId?.toString().trim() || "";
+  const buildingId = req.query.buildingId?.toString().trim() || "";
+  const blockId = req.query.blockId?.toString().trim() || "";
+  const floorId = req.query.floorId?.toString().trim() || "";
+  const departmentId = req.query.departmentId?.toString().trim() || "";
+  const roomType = normalizeRoomTypeValue(req.query.roomType);
+  const minCapacityRaw = req.query.minCapacity?.toString().trim() || "";
+  const equipmentFilter = req.query.equipment?.toString().trim() || "";
+  if (!date || !startTime || !endTime) {
+    return res.status(400).json({ error: "Date, start time, and end time are required." });
+  }
+  if (isPastDateTime(date, startTime)) {
+    return res.status(400).json({ error: "Past availability checks are not allowed." });
+  }
+  if (startTime >= endTime) {
+    return res.status(400).json({ error: "End time must be later than start time." });
+  }
+  const minCapacity = minCapacityRaw ? parseInt(minCapacityRaw, 10) : 0;
+  if (minCapacityRaw && (!Number.isInteger(minCapacity) || minCapacity < 0)) {
+    return res.status(400).json({ error: "Minimum capacity must be a valid non-negative number." });
+  }
+  try {
+    const snapshot = await getSharedAvailabilitySnapshot({
+      date,
+      startTime,
+      endTime,
+      campusId,
+      buildingId,
+      blockId,
+      floorId,
+      departmentId,
+      roomType,
+      minCapacity,
+      equipmentFilter,
+      includeMaintenanceRooms: true,
+      markRecommendedStatus: true,
+      visibilityScope: "live"
+    });
+    res.json({
+      summary: snapshot.summary,
+      recommendedRooms: snapshot.recommendedRooms.map((room) => {
+        const { _sourceRoom, ...payload } = room;
+        return payload;
+      }),
+      rooms: snapshot.rooms.map((room) => {
+        const { _sourceRoom, ...payload } = room;
+        return payload;
+      })
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 app.get("/api/events/search-rooms", authenticate, async (req, res) => {
   const { date, startTime, endTime, strength } = req.query;
@@ -3583,24 +4485,16 @@ app.get("/api/events/search-rooms", authenticate, async (req, res) => {
     return res.status(400).json({ error: "Strength must be a valid positive number." });
   }
   try {
-    const allRoomsRaw = await db.prepare("SELECT * FROM rooms WHERE status = 'Available' AND COALESCE(is_bookable, 1) != 0").all();
-    const allRooms = allRoomsRaw.filter(isReservableRoomRecord);
-    const busyInSchedules = await getEffectiveSchedulesForDate(
+    const snapshot = await getSharedAvailabilitySnapshot({
       date,
-      (schedule) => schedule.start_time < endTime && schedule.end_time > startTime || schedule.start_time < startTime && schedule.end_time > endTime || schedule.start_time >= startTime && schedule.start_time < endTime
-    );
-    const busyRoomIdsSchedules = new Set(busyInSchedules.map((s) => s.room_id));
-    const busyInBookings = await db.prepare(`
-      SELECT DISTINCT room_id FROM bookings 
-      WHERE date = ? AND status = 'Approved'
-      AND (
-        (start_time < ? AND end_time > ?) OR
-        (start_time < ? AND end_time > ?) OR
-        (start_time >= ? AND start_time < ?)
-      )
-    `).all(date, endTime, startTime, startTime, endTime, startTime, endTime);
-    const busyRoomIdsBookings = new Set(busyInBookings.map((b) => b.room_id));
-    const vacantRooms = allRooms.filter((r) => !busyRoomIdsSchedules.has(r.id) && !busyRoomIdsBookings.has(r.id));
+      startTime,
+      endTime,
+      minCapacity: 0,
+      includeMaintenanceRooms: false,
+      markRecommendedStatus: false,
+      visibilityScope: "bookable"
+    });
+    const vacantRooms = snapshot.rooms.filter((room) => room.availableForBooking).map((room) => room._sourceRoom);
     const singleOptions = vacantRooms.filter((r) => r.capacity >= targetStrength).sort((a, b) => a.capacity - b.capacity);
     const multiOptions = [];
     if (singleOptions.length === 0) {
@@ -3627,6 +4521,33 @@ app.get("/api/events/search-rooms", authenticate, async (req, res) => {
 });
 app.get("/api/reports/utilization", authenticate, async (req, res) => {
   try {
+    const getQueryValue = (key) => req.query?.[key]?.toString().trim() || "";
+    const reportType = getQueryValue("reportType");
+    const dateFrom = getQueryValue("dateFrom");
+    const dateTo = getQueryValue("dateTo");
+    const campusFilter = getQueryValue("campus");
+    const buildingFilter = getQueryValue("building");
+    const blockFilter = getQueryValue("block");
+    const floorFilter = getQueryValue("floor");
+    const departmentFilter = getQueryValue("department");
+    const yearFilter = getQueryValue("year");
+    const semesterFilter = getQueryValue("semester");
+    const sectionFilter = getQueryValue("section");
+    const roomFilter = getQueryValue("room");
+    const roomTypeFilter = getQueryValue("roomType");
+    const bookingStatusFilter = getQueryValue("bookingStatus");
+    const flagFilter = getQueryValue("flag");
+    const shouldApplyBookingDateScope = Boolean(dateFrom || dateTo) && (reportType === "booking_approvals" || !!bookingStatusFilter);
+    const matchesFilterValue = (value, expected) => !expected || value?.toString().trim().toLowerCase() === expected.trim().toLowerCase();
+    const dateMatches = (dates = []) => {
+      if (!dateFrom && !dateTo) return true;
+      return dates.some((date) => {
+        if (!date) return false;
+        if (dateFrom && date < dateFrom) return false;
+        if (dateTo && date > dateTo) return false;
+        return true;
+      });
+    };
     const rooms = await db.prepare(`
       SELECT r.*, pr.room_number as parent_room_number, bld.name as building_name, b.name as block_name, f.floor_number, c.name as campus_name
       FROM rooms r
@@ -3660,7 +4581,7 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
         latestAllocationByRoom.set(roomKey, allocation);
       }
     });
-    const reports = rooms.map((room) => {
+    const baseReports = rooms.map((room) => {
       const roomSchedules = schedules.filter((s) => idsEqual(s.room_id, room.id));
       const roomBookings = bookings.filter((b) => idsEqual(b.room_id, room.id));
       const allRoomBookings = allBookings.filter((b) => idsEqual(b.room_id, room.id));
@@ -3735,6 +4656,44 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
         ].filter(Boolean)
       };
     });
+    const filterOptions = {
+      campuses: Array.from(new Set(baseReports.map((report) => report.campus).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+      buildings: Array.from(new Set(baseReports.map((report) => report.building).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+      blocks: Array.from(new Set(baseReports.map((report) => report.block).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+      floors: Array.from(new Set(baseReports.map((report) => report.floor_number).filter((floor) => floor !== void 0 && floor !== null))).sort((a, b) => Number(a) - Number(b)),
+      departments: Array.from(new Set([
+        ...departments.map((department) => department?.name),
+        ...baseReports.map((report) => report.department)
+      ].filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+      years: Array.from(new Set(baseReports.flatMap((report) => report.yearTags || []))).sort((a, b) => Number(a) - Number(b)),
+      semesters: Array.from(new Set(baseReports.flatMap((report) => report.semesterTags || []))).sort((a, b) => a.localeCompare(b)),
+      sections: Array.from(new Set(baseReports.flatMap((report) => report.sectionTags || []))).sort((a, b) => a.localeCompare(b)),
+      rooms: Array.from(new Set(baseReports.map((report) => report.room_number?.toString().trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, void 0, { numeric: true, sensitivity: "base" })),
+      roomTypes: Array.from(new Set(baseReports.map((report) => report.room_type).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+      flags: Array.from(new Set(baseReports.flatMap((report) => report.flags || []).filter(Boolean))).sort((a, b) => a.localeCompare(b))
+    };
+    const reports = baseReports.filter((report) => {
+      const bookingDates = bookingStatusFilter === "Approved" ? report.approvedBookingDates : report.bookingDates;
+      if (shouldApplyBookingDateScope && !dateMatches(bookingDates || [])) return false;
+      if (!matchesFilterValue(report.campus, campusFilter)) return false;
+      if (!matchesFilterValue(report.building, buildingFilter)) return false;
+      if (!matchesFilterValue(report.block, blockFilter)) return false;
+      if (floorFilter && report.floor_number?.toString() !== floorFilter) return false;
+      if (!matchesFilterValue(report.department, departmentFilter)) return false;
+      if (yearFilter && !(report.yearTags || []).includes(yearFilter)) return false;
+      if (semesterFilter && !(report.semesterTags || []).includes(semesterFilter)) return false;
+      if (sectionFilter && !(report.sectionTags || []).includes(sectionFilter)) return false;
+      if (roomFilter && report.room_number?.toString().trim() !== roomFilter) return false;
+      if (!matchesFilterValue(report.room_type, roomTypeFilter)) return false;
+      if (bookingStatusFilter && !(report.bookingStatuses || []).includes(bookingStatusFilter)) return false;
+      if (flagFilter && !(report.flags || []).includes(flagFilter)) return false;
+      if (reportType === "underused" && !(report.flags || []).includes("Underused")) return false;
+      if (reportType === "overused" && !(report.flags || []).includes("Overused")) return false;
+      if (reportType === "maintenance_impact" && report.maintenanceIssues <= 0 && report.status !== "Maintenance") return false;
+      if (reportType === "department_allocation" && report.department === "Unmapped") return false;
+      if (reportType === "booking_approvals" && !(report.bookingStatuses || []).length) return false;
+      return true;
+    });
     const buildingReports = Array.from(new Set(reports.map((report) => report.building))).map((building) => {
       const buildingRooms = reports.filter((report) => report.building === building);
       const avgUtilization = buildingRooms.reduce((acc, report) => acc + report.utilization, 0) / (buildingRooms.length || 1);
@@ -3745,9 +4704,17 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
         maintenanceIssues: buildingRooms.reduce((acc, report) => acc + report.maintenanceIssues, 0)
       };
     });
+    const filteredRoomIds = new Set(reports.map((report) => report.room_id?.toString()).filter(Boolean));
+    const filteredAllBookings = allBookings.filter((booking) => {
+      if (!filteredRoomIds.has(booking.room_id?.toString())) return false;
+      const bookingDate = booking.date?.toString();
+      if (dateFrom && (!bookingDate || bookingDate < dateFrom)) return false;
+      if (dateTo && (!bookingDate || bookingDate > dateTo)) return false;
+      return true;
+    });
     const bookingStatusReports = ["Pending", "HOD Recommended", "Approved", "Postponed", "Rejected"].map((status) => ({
       name: status,
-      count: allBookings.filter((booking) => booking.status === status).length
+      count: filteredAllBookings.filter((booking) => booking.status === status).length
     }));
     const deptReports = departments.map((dept) => {
       const deptRooms = reports.filter((r) => r.department_id === dept.id);
@@ -3760,7 +4727,7 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
         avgUtilization: Math.round(avgUtilization),
         roomCount: deptRooms.length
       };
-    });
+    }).filter((report) => report.roomCount > 0);
     const schoolReports = Array.from(new Set(reports.map((report) => report.school).filter(Boolean))).map((schoolName) => {
       const schoolRooms = reports.filter((report) => report.school === schoolName);
       const deptCount = new Set(
@@ -3775,7 +4742,61 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
         roomCount: schoolRooms.length
       };
     }).sort((a, b) => b.avgUtilization - a.avgUtilization);
-    res.json({ roomReports: reports, deptReports, schoolReports, buildingReports, bookingStatusReports });
+    res.json({ roomReports: reports, deptReports, schoolReports, buildingReports, bookingStatusReports, filterOptions });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+app.get("/api/digital-twin/live-data", authenticate, async (_req, res) => {
+  try {
+    const [maintenance, schedules, bookings, equipment] = await Promise.all([
+      db.prepare(`
+        SELECT id, room_id, status
+        FROM maintenance
+        WHERE room_id IS NOT NULL
+      `).all(),
+      db.prepare(`
+        SELECT
+          id,
+          room_id,
+          department_id,
+          program,
+          specialization,
+          section,
+          course_code,
+          course_name,
+          faculty,
+          day_of_week,
+          start_time,
+          end_time,
+          year_of_study,
+          semester
+        FROM schedules
+      `).all(),
+      db.prepare(`
+        SELECT
+          id,
+          room_id,
+          department_id,
+          date,
+          start_time,
+          end_time,
+          status,
+          event_name
+        FROM bookings
+      `).all(),
+      db.prepare(`
+        SELECT room_id, name
+        FROM equipment
+        WHERE room_id IS NOT NULL
+      `).all()
+    ]);
+    res.json({
+      maintenance: Array.isArray(maintenance) ? maintenance : [],
+      schedules: Array.isArray(schedules) ? schedules : [],
+      bookings: Array.isArray(bookings) ? bookings : [],
+      equipment: Array.isArray(equipment) ? equipment : []
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

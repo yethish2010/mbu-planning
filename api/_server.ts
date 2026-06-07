@@ -3429,14 +3429,14 @@ const getSharedAvailabilitySnapshot = async ({
     const capacityGap = Math.max(0, roomCapacity - (minCapacity || 0));
     const hasCapacityMismatch = (minCapacity || 0) > 0 && roomCapacity < (minCapacity || 0);
 
-    let status = "Available";
+    let status = roomBookable ? "Available" : "Not Bookable";
     let statusReason = roomBookable
       ? "Physically vacant for the selected date and time. Academic timing-profile rules are checked only when an Academic Regular booking is confirmed."
       : "Physically vacant for the selected date and time, but this room is not configured as directly bookable.";
     let currentUsage = "";
 
     if (roomMaintenance.length > 0 || room.status === "Maintenance") {
-      status = "Under Maintenance";
+      status = "Maintenance";
       statusReason = roomMaintenance
         .map((item: any) => `${item.equipment_name || "Maintenance issue"}${item.issue_description ? ` - ${item.issue_description}` : ""}${item.status ? ` (${item.status})` : ""}${item.reported_date ? ` [Reported ${item.reported_date}]` : ""}`)
         .join("; ") || "Room is marked under maintenance.";
@@ -3448,7 +3448,7 @@ const getSharedAvailabilitySnapshot = async ({
         normalizeDuplicateValue(schedule.course_name) === normalizeDuplicateValue(roomSchedules[0]?.course_name) &&
         normalizeDuplicateValue(schedule.faculty) === normalizeDuplicateValue(roomSchedules[0]?.faculty)
       );
-      status = "Occupied by Timetable";
+      status = "Occupied";
       currentUsage = `${sameSession ? "Combined Class" : "Scheduled"}: ${roomSchedules[0]?.course_name || "Class"}`;
       statusReason = roomSchedules
         .map((schedule: any) => {
@@ -3463,7 +3463,7 @@ const getSharedAvailabilitySnapshot = async ({
         })
         .join("; ");
     } else if (roomBookings.length > 0) {
-      status = "Booked for Event";
+      status = "Event Booked";
       currentUsage = roomBookings[0]?.event_name || "Approved booking";
       statusReason = roomBookings
         .map((booking: any) =>
@@ -3493,7 +3493,7 @@ const getSharedAvailabilitySnapshot = async ({
         ...roomSchedules.map((schedule: any) => schedule.end_time).filter(Boolean),
         ...roomBookings.map((booking: any) => booking.end_time).filter(Boolean),
       ].sort();
-      if (status === "Under Maintenance") {
+      if (status === "Maintenance") {
         nextAvailableSlot = "Available after maintenance clearance";
       } else if (blockingEndTimes.length > 0) {
         nextAvailableSlot = `${blockingEndTimes[blockingEndTimes.length - 1]} onwards`;
@@ -3577,9 +3577,10 @@ const getSharedAvailabilitySnapshot = async ({
     summary: {
       totalRooms: sortedRooms.length,
       available: sortedRooms.filter((room: any) => room.status === "Available").length,
-      occupied: sortedRooms.filter((room: any) => room.status === "Occupied by Timetable").length,
-      booked: sortedRooms.filter((room: any) => room.status === "Booked for Event").length,
-      maintenance: sortedRooms.filter((room: any) => room.status === "Under Maintenance").length,
+      occupied: sortedRooms.filter((room: any) => room.status === "Occupied").length,
+      booked: sortedRooms.filter((room: any) => room.status === "Event Booked").length,
+      maintenance: sortedRooms.filter((room: any) => room.status === "Maintenance").length,
+      notBookable: sortedRooms.filter((room: any) => room.status === "Not Bookable").length,
       capacityMismatch: sortedRooms.filter((room: any) => room.status === "Capacity Mismatch").length,
       bestSuitable: recommendedRooms.length,
     },
@@ -4657,7 +4658,7 @@ app.get("/api/dashboard/overview", authenticate, async (_req, res) => {
       schedule.start_time <= currentTime && schedule.end_time > currentTime
     );
     const activeBookings = await db.prepare(`
-      SELECT room_id FROM bookings
+      SELECT room_id, event_name, purpose, faculty_name, start_time, end_time FROM bookings
       WHERE date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
     `).all(currentDate, currentTime, currentTime) as any[];
     const activeScheduleRoomIds = new Set(activeSchedules.map((item: any) => item.room_id).filter(Boolean));
@@ -4679,7 +4680,8 @@ app.get("/api/dashboard/overview", authenticate, async (_req, res) => {
 
     const rooms = await db.prepare(`
       SELECT r.id, r.room_number, r.room_type, r.parent_room_id, r.room_layout, r.room_name, r.usage_category, r.is_bookable,
-             r.lab_name, r.restroom_type, r.capacity, r.status, bld.name as building_name, b.name as block_name
+             r.lab_name, r.restroom_type, r.capacity, r.status, f.id as floor_id, f.floor_number,
+             bld.id as building_id, bld.name as building_name, b.id as block_id, b.name as block_name
       FROM rooms r
       JOIN floors f ON r.floor_id = f.id
       JOIN blocks b ON f.block_id = b.id
@@ -4849,6 +4851,122 @@ app.get("/api/dashboard/overview", authenticate, async (_req, res) => {
       .sort((a: any, b: any) => (Number(b.utilization) || 0) - (Number(a.utilization) || 0))
       .slice(0, 10);
 
+    const reportByRoomId = new Map(baseReports.map((report: any) => [report.room_id?.toString(), report]));
+    const activeSchedulesByRoomId = new Map<string, any[]>();
+    activeSchedules.forEach((schedule: any) => {
+      const roomKey = schedule?.room_id?.toString();
+      if (!roomKey) return;
+      const next = activeSchedulesByRoomId.get(roomKey) || [];
+      next.push(schedule);
+      activeSchedulesByRoomId.set(roomKey, next);
+    });
+    const activeBookingsByRoomId = new Map<string, any[]>();
+    activeBookings.forEach((booking: any) => {
+      const roomKey = booking?.room_id?.toString();
+      if (!roomKey) return;
+      const next = activeBookingsByRoomId.get(roomKey) || [];
+      next.push(booking);
+      activeBookingsByRoomId.set(roomKey, next);
+    });
+    const activeMaintenanceByRoomId = new Map<string, any[]>();
+    maintenance
+      .filter((item: any) => item?.status !== "Completed")
+      .forEach((item: any) => {
+        const roomKey = item?.room_id?.toString();
+        if (!roomKey) return;
+        const next = activeMaintenanceByRoomId.get(roomKey) || [];
+        next.push(item);
+        activeMaintenanceByRoomId.set(roomKey, next);
+      });
+
+    const digitalTwinRoomRows = rooms.map((room: any) => {
+      const roomKey = room.id?.toString() || "";
+      const roomReport = reportByRoomId.get(roomKey);
+      const roomIsBookable = isBookableAvailabilityRoom(room);
+      const roomMaintenance = activeMaintenanceByRoomId.get(roomKey) || [];
+      const roomScheduleSet = activeSchedulesByRoomId.get(roomKey) || [];
+      const roomBookingSet = activeBookingsByRoomId.get(roomKey) || [];
+      let status = roomIsBookable ? "Available" : "Not Bookable";
+      let currentUsage = "";
+      let nextAvailableSlot = roomIsBookable ? "Available now" : "Not directly bookable";
+
+      if (roomMaintenance.length > 0 || room.status === "Maintenance") {
+        status = "Maintenance";
+        currentUsage = roomMaintenance[0]?.issue_description || roomMaintenance[0]?.equipment_name || "Maintenance in progress";
+        nextAvailableSlot = "After maintenance clearance";
+      } else if (roomBookingSet.length > 0) {
+        status = "Event Booked";
+        currentUsage = roomBookingSet[0]?.event_name || roomBookingSet[0]?.purpose || "Approved booking";
+        nextAvailableSlot = roomBookingSet[0]?.end_time ? `${roomBookingSet[0].end_time} onwards` : "After current booking";
+      } else if (roomScheduleSet.length > 0) {
+        status = "Occupied";
+        currentUsage = roomScheduleSet[0]?.course_name || "Scheduled class";
+        nextAvailableSlot = roomScheduleSet[0]?.end_time ? `${roomScheduleSet[0].end_time} onwards` : "After current class";
+      }
+
+      return {
+        id: room.id,
+        roomNumber: room.room_number,
+        roomType: normalizeRoomTypeValue(room.room_type) || room.room_type || "Room",
+        capacity: parseInt(room.capacity, 10) || 0,
+        buildingId: room.building_id,
+        buildingName: room.building_name,
+        blockName: room.block_name,
+        floorId: room.floor_id,
+        floorName: `Floor ${room.floor_number}`,
+        status,
+        isBookable: roomIsBookable,
+        currentUsage,
+        nextAvailableSlot,
+        departmentName: roomReport?.department || "Unmapped",
+      };
+    });
+
+    const digitalTwinBuildings = Array.from(
+      digitalTwinRoomRows.reduce((acc: Map<string, { buildingId: any; buildingName: string; floors: Map<string, any> }>, room: any) => {
+        const buildingKey = room.buildingId?.toString() || room.buildingName;
+        if (!acc.has(buildingKey)) {
+          acc.set(buildingKey, {
+            buildingId: room.buildingId,
+            buildingName: room.buildingName,
+            floors: new Map<string, any>(),
+          });
+        }
+        const buildingEntry = acc.get(buildingKey)!;
+        const floorKey = room.floorId?.toString() || room.floorName;
+        if (!buildingEntry.floors.has(floorKey)) {
+          buildingEntry.floors.set(floorKey, {
+            floorId: room.floorId,
+            floorName: room.floorName,
+            rooms: [],
+          });
+        }
+        buildingEntry.floors.get(floorKey).rooms.push(room);
+        return acc;
+      }, new Map())
+    )
+      .map(([, building]) => ({
+        buildingId: building.buildingId,
+        buildingName: building.buildingName,
+        floors: Array.from(building.floors.values())
+          .map((floor: any) => ({
+            ...floor,
+            rooms: floor.rooms.sort((left: any, right: any) =>
+              (left.roomNumber || "").localeCompare((right.roomNumber || ""), undefined, { numeric: true, sensitivity: "base" })
+            ),
+          }))
+          .sort((left: any, right: any) => left.floorName.localeCompare(right.floorName, undefined, { numeric: true, sensitivity: "base" })),
+      }))
+      .sort((left: any, right: any) => left.buildingName.localeCompare(right.buildingName, undefined, { sensitivity: "base" }));
+
+    const digitalTwinStatusCounts = {
+      available: digitalTwinRoomRows.filter((room: any) => room.status === "Available").length,
+      occupied: digitalTwinRoomRows.filter((room: any) => room.status === "Occupied").length,
+      maintenance: digitalTwinRoomRows.filter((room: any) => room.status === "Maintenance").length,
+      eventBooked: digitalTwinRoomRows.filter((room: any) => room.status === "Event Booked").length,
+      notBookable: digitalTwinRoomRows.filter((room: any) => room.status === "Not Bookable").length,
+    };
+
     res.json({
       stats: {
         totalBuildings: totalBuildings.count,
@@ -4859,6 +4977,9 @@ app.get("/api/dashboard/overview", authenticate, async (_req, res) => {
         activeScheduledRooms: activeScheduleRoomIds.size,
         bookedRooms: activeBookingRoomIds.size,
         occupiedRooms: occupiedRoomIds.size,
+        occupiedNow: activeScheduleRoomIds.size,
+        eventBookedNow: activeBookingRoomIds.size,
+        notBookableRooms: digitalTwinStatusCounts.notBookable,
         recentAlerts,
       },
       utilizationTrend,
@@ -4866,6 +4987,10 @@ app.get("/api/dashboard/overview", authenticate, async (_req, res) => {
       roomMix,
       topBusyRooms,
       lowestUsageRooms,
+      digitalTwinSnapshot: {
+        statusCounts: digitalTwinStatusCounts,
+        buildings: digitalTwinBuildings,
+      },
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

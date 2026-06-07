@@ -26,6 +26,84 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+const DIGITAL_TWIN_STATUS_ORDER = [
+  'Available',
+  'Occupied',
+  'Maintenance',
+  'Event Booked',
+  'Not Bookable',
+] as const;
+
+const DIGITAL_TWIN_STATUS_STYLES: Record<(typeof DIGITAL_TWIN_STATUS_ORDER)[number], {
+  card: string;
+  badge: string;
+  soft: string;
+  softText: string;
+  darkCard: string;
+  darkDot: string;
+}> = {
+  'Available': {
+    card: 'border-emerald-200 bg-emerald-50/70',
+    badge: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+    soft: 'bg-emerald-50',
+    softText: 'text-emerald-700',
+    darkCard: 'bg-emerald-500/12 border-emerald-500/30 hover:bg-emerald-500/20',
+    darkDot: 'bg-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.65)]',
+  },
+  'Occupied': {
+    card: 'border-rose-200 bg-rose-50/70',
+    badge: 'bg-rose-100 text-rose-700 border-rose-200',
+    soft: 'bg-rose-50',
+    softText: 'text-rose-700',
+    darkCard: 'bg-rose-500/12 border-rose-500/30 hover:bg-rose-500/20',
+    darkDot: 'bg-rose-400 shadow-[0_0_12px_rgba(251,113,133,0.65)]',
+  },
+  'Maintenance': {
+    card: 'border-amber-200 bg-amber-50/70',
+    badge: 'bg-amber-100 text-amber-700 border-amber-200',
+    soft: 'bg-amber-50',
+    softText: 'text-amber-700',
+    darkCard: 'bg-amber-500/12 border-amber-500/30 hover:bg-amber-500/20',
+    darkDot: 'bg-amber-400 shadow-[0_0_12px_rgba(251,191,36,0.65)]',
+  },
+  'Event Booked': {
+    card: 'border-sky-200 bg-sky-50/70',
+    badge: 'bg-sky-100 text-sky-700 border-sky-200',
+    soft: 'bg-sky-50',
+    softText: 'text-sky-700',
+    darkCard: 'bg-sky-500/12 border-sky-500/30 hover:bg-sky-500/20',
+    darkDot: 'bg-sky-400 shadow-[0_0_12px_rgba(56,189,248,0.65)]',
+  },
+  'Not Bookable': {
+    card: 'border-slate-300 bg-slate-100/90',
+    badge: 'bg-slate-200 text-slate-700 border-slate-300',
+    soft: 'bg-slate-100',
+    softText: 'text-slate-700',
+    darkCard: 'bg-slate-500/12 border-slate-500/30 hover:bg-slate-500/20',
+    darkDot: 'bg-slate-300 shadow-[0_0_12px_rgba(203,213,225,0.45)]',
+  },
+};
+
+const isClientRoomBookable = (room: any) => {
+  const rawValue = room?.is_bookable;
+  if (rawValue === undefined || rawValue === null || rawValue === '') return true;
+  if (typeof rawValue === 'boolean') return rawValue;
+  if (typeof rawValue === 'number') return rawValue !== 0;
+  const normalized = normalizeLookupValue(rawValue);
+  return !['0', 'false', 'no', 'n', 'not bookable', 'internal only', 'internal'].includes(normalized);
+};
+
+const getDigitalTwinStatusLabel = (status: unknown, isBookable = true) => {
+  const normalized = normalizeLookupValue(status);
+  if (!normalized) return isBookable ? 'Available' : 'Not Bookable';
+  if (normalized.includes('maintenance')) return 'Maintenance';
+  if (normalized.includes('booked')) return 'Event Booked';
+  if (normalized.includes('occupied') || normalized.includes('scheduled')) return 'Occupied';
+  if (normalized.includes('not bookable')) return 'Not Bookable';
+  if (normalized === 'available') return isBookable ? 'Available' : 'Not Bookable';
+  return isBookable ? 'Available' : 'Not Bookable';
+};
+
 const GEMINI_API_KEY = (import.meta as any).env?.VITE_GEMINI_API_KEY || '';
 function getGenAIClient() {
   if (!GEMINI_API_KEY) {
@@ -3885,7 +3963,7 @@ export default function App() {
           
           <Route path="/" element={
             <ProtectedRoute>
-              <Layout title="Administrator Dashboard">
+              <Layout title="Digital Twin Command Center">
                 <DashboardHome />
               </Layout>
             </ProtectedRoute>
@@ -4053,7 +4131,7 @@ export default function App() {
           } />
           <Route path="/digital-twin" element={
             <ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}>
-              <Layout title="AI Smart Campus Digital Twin">
+              <Layout title="Smart Campus Digital Twin">
                 <DependencyGuard dependencies={[{ table: 'buildings', label: 'Buildings' }, { table: 'rooms', label: 'Rooms' }]}>
                   <DigitalTwin />
                 </DependencyGuard>
@@ -4124,6 +4202,10 @@ function DashboardHome() {
   const [schoolUsage, setSchoolUsage] = useState<any[]>([]);
   const [aiInsightMessage, setAiInsightMessage] = useState('');
   const [dashboardOverview, setDashboardOverview] = useState<any>({});
+  const [digitalTwinSnapshot, setDigitalTwinSnapshot] = useState<any>({ statusCounts: {}, buildings: [] });
+  const [selectedTwinStatus, setSelectedTwinStatus] = useState('All');
+  const [selectedTwinBuilding, setSelectedTwinBuilding] = useState('All');
+  const [selectedTwinRoomId, setSelectedTwinRoomId] = useState('');
   const [isAnalysisPanelOpen, setIsAnalysisPanelOpen] = useState(false);
 
   const composeInsightMessage = (statsPayload: any, schoolReportsPayload: any[]) => {
@@ -4140,6 +4222,14 @@ function DashboardHome() {
       `${topSchool.name} is currently at ${Number(topSchool?.avgUtilization) || 0}% average utilization.`,
       `${statsPayload?.availableNow || 0} rooms are available right now.`,
     ];
+
+    if ((statsPayload?.occupiedNow || 0) > 0) {
+      detailParts.push(`${statsPayload.occupiedNow} room${statsPayload.occupiedNow === 1 ? '' : 's'} are occupied by live timetable activity.`);
+    }
+
+    if ((statsPayload?.eventBookedNow || 0) > 0) {
+      detailParts.push(`${statsPayload.eventBookedNow} room${statsPayload.eventBookedNow === 1 ? '' : 's'} are event-booked right now.`);
+    }
 
     if ((statsPayload?.pendingBookings || 0) > 0) {
       detailParts.push(`${statsPayload.pendingBookings} booking request${statsPayload.pendingBookings === 1 ? '' : 's'} ${statsPayload.pendingBookings === 1 ? 'is' : 'are'} still pending.`);
@@ -4182,6 +4272,7 @@ function DashboardHome() {
         setSchoolUsage(safeSchoolReports);
         setAiInsightMessage(fallbackInsight);
         setDashboardOverview(overviewData || {});
+        setDigitalTwinSnapshot(overviewData?.digitalTwinSnapshot || { statusCounts: {}, buildings: [] });
         void trackModuleLoadMetric(
           'DashboardHome',
           'overview',
@@ -4257,6 +4348,66 @@ function DashboardHome() {
     [dashboardOverview],
   );
 
+  const twinBuildings = useMemo(
+    () => Array.isArray(digitalTwinSnapshot?.buildings) ? digitalTwinSnapshot.buildings : [],
+    [digitalTwinSnapshot],
+  );
+
+  const twinStatusCounts = useMemo(() => {
+    const counts = digitalTwinSnapshot?.statusCounts || {};
+    return {
+      'Available': Number(counts?.available) || 0,
+      'Occupied': Number(counts?.occupied) || 0,
+      'Maintenance': Number(counts?.maintenance) || 0,
+      'Event Booked': Number(counts?.eventBooked) || 0,
+      'Not Bookable': Number(counts?.notBookable) || 0,
+    };
+  }, [digitalTwinSnapshot]);
+
+  const filteredTwinBuildings = useMemo(() => {
+    return twinBuildings
+      .filter((building: any) => selectedTwinBuilding === 'All' || building?.buildingId?.toString() === selectedTwinBuilding)
+      .map((building: any) => ({
+        ...building,
+        floors: (Array.isArray(building?.floors) ? building.floors : [])
+          .map((floor: any) => ({
+            ...floor,
+            rooms: (Array.isArray(floor?.rooms) ? floor.rooms : []).filter((room: any) => {
+              const nextStatus = getDigitalTwinStatusLabel(room?.status, room?.isBookable !== false);
+              return selectedTwinStatus === 'All' || nextStatus === selectedTwinStatus;
+            }),
+          }))
+          .filter((floor: any) => floor.rooms.length > 0),
+      }))
+      .filter((building: any) => building.floors.length > 0);
+  }, [twinBuildings, selectedTwinBuilding, selectedTwinStatus]);
+
+  const twinVisibleRooms = useMemo(
+    () => filteredTwinBuildings.flatMap((building: any) =>
+      building.floors.flatMap((floor: any) => floor.rooms.map((room: any) => ({
+        ...room,
+        buildingName: building.buildingName,
+        floorName: floor.floorName,
+      }))),
+    ),
+    [filteredTwinBuildings],
+  );
+
+  const selectedTwinRoom = useMemo(() => {
+    const visibleMatch = twinVisibleRooms.find((room: any) => room.id?.toString() === selectedTwinRoomId);
+    return visibleMatch || twinVisibleRooms[0] || null;
+  }, [selectedTwinRoomId, twinVisibleRooms]);
+
+  useEffect(() => {
+    if (twinVisibleRooms.length === 0) {
+      setSelectedTwinRoomId('');
+      return;
+    }
+    if (!twinVisibleRooms.some((room: any) => room.id?.toString() === selectedTwinRoomId)) {
+      setSelectedTwinRoomId(twinVisibleRooms[0].id?.toString() || '');
+    }
+  }, [selectedTwinRoomId, twinVisibleRooms]);
+
   const lowestUsageRooms = useMemo(() => {
     return Array.isArray(dashboardOverview?.lowestUsageRooms) ? dashboardOverview.lowestUsageRooms : [];
   }, [dashboardOverview]);
@@ -4270,11 +4421,11 @@ function DashboardHome() {
   };
 
   const statCards = [
-    { label: 'Total Buildings', value: stats?.totalBuildings || '0', icon: Building2, color: 'text-blue-600', bg: 'bg-blue-50', path: '/digital-twin?view=3D' },
-    { label: 'Available Now', value: stats?.availableNow || '0', icon: DoorOpen, color: 'text-emerald-600', bg: 'bg-emerald-50', path: '/rooms', detail: formatRoomMixSummary(dashboardRoomMix) },
-    { label: 'Scheduled Today', value: stats?.scheduledRooms || '0', icon: Calendar, color: 'text-indigo-600', bg: 'bg-indigo-50', path: '/digital-twin?status=ScheduledToday' },
-    { label: 'Equipment Issues', value: stats?.equipmentIssues || '0', icon: AlertTriangle, color: 'text-rose-600', bg: 'bg-rose-50', path: '/maintenance?status=open' },
-    { label: 'Pending Bookings', value: stats?.pendingBookings || '0', icon: Clock, color: 'text-amber-600', bg: 'bg-amber-50', path: '/bookings?status=Pending' },
+    { label: 'Available', value: twinStatusCounts['Available'], icon: DoorOpen, status: 'Available', path: '/digital-twin?status=Available' },
+    { label: 'Occupied', value: twinStatusCounts['Occupied'], icon: Activity, status: 'Occupied', path: '/digital-twin?status=Occupied' },
+    { label: 'Maintenance', value: twinStatusCounts['Maintenance'], icon: Wrench, status: 'Maintenance', path: '/digital-twin?status=Maintenance' },
+    { label: 'Event Booked', value: twinStatusCounts['Event Booked'], icon: Calendar, status: 'Event Booked', path: '/digital-twin?status=Event%20Booked' },
+    { label: 'Not Bookable', value: twinStatusCounts['Not Bookable'], icon: Info, status: 'Not Bookable', path: '/digital-twin?status=Not%20Bookable' },
   ];
 
   if (loading) {
@@ -4297,8 +4448,8 @@ function DashboardHome() {
             aria-label={`Open ${stat.label}`}
           >
             <div className="flex items-center justify-between mb-4">
-              <div className={cn("p-3 rounded-2xl transition-all group-hover:scale-110", stat.bg)}>
-                <stat.icon className={stat.color} size={24} />
+              <div className={cn("p-3 rounded-2xl transition-all group-hover:scale-110", DIGITAL_TWIN_STATUS_STYLES[stat.status as keyof typeof DIGITAL_TWIN_STATUS_STYLES].soft)}>
+                <stat.icon className={DIGITAL_TWIN_STATUS_STYLES[stat.status as keyof typeof DIGITAL_TWIN_STATUS_STYLES].softText} size={24} />
               </div>
               <div className="flex items-center gap-1.5">
                 <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
@@ -4307,9 +4458,6 @@ function DashboardHome() {
             </div>
             <h3 className="text-3xl font-black text-slate-800 mb-1">{stat.value}</h3>
             <p className="text-xs text-slate-500 font-bold uppercase tracking-widest">{stat.label}</p>
-            {stat.detail && (
-              <p className="text-[11px] text-slate-400 font-semibold mt-2">{stat.detail}</p>
-            )}
           </button>
         ))}
       </div>
@@ -4319,32 +4467,124 @@ function DashboardHome() {
           <div className="bg-white p-8 rounded-[40px] border border-slate-200 shadow-sm">
             <div className="flex items-center justify-between mb-8">
               <div>
-                <h3 className="text-xl font-bold text-slate-800">Top Room Utilization</h3>
-                <p className="text-sm text-slate-500">Live room usage based on schedules and approved bookings</p>
+                <h3 className="text-xl font-bold text-slate-800">Live Digital Twin Overview</h3>
+                <p className="text-sm text-slate-500">A control-center view of room status across buildings, floors, and live booking activity.</p>
               </div>
               <div className="flex items-center gap-2 px-4 py-2 bg-slate-50 rounded-xl border border-slate-100">
-                <Activity size={16} className="text-emerald-500" />
-                <span className="text-xs font-bold text-slate-600">Peak: {peakUtilization}%</span>
+                <Building2 size={16} className="text-slate-500" />
+                <span className="text-xs font-bold text-slate-600">{stats?.totalBuildings || 0} buildings live</span>
               </div>
             </div>
-            <div className="h-80 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={Array.isArray(utilizationTrend) ? utilizationTrend : []}>
-                  <defs>
-                    <linearGradient id="colorUtil" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.2}/>
-                      <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis dataKey="name" hide />
-                  <YAxis hide domain={[0, 100]} />
-                  <Tooltip 
-                    contentStyle={{ borderRadius: '24px', border: 'none', boxShadow: '0 25px 50px -12px rgb(0 0 0 / 0.25)' }}
-                  />
-                  <Area type="monotone" dataKey="utilization" stroke="#10b981" fillOpacity={1} fill="url(#colorUtil)" strokeWidth={4} />
-                </AreaChart>
-              </ResponsiveContainer>
+            <div className="flex flex-col xl:flex-row xl:items-center gap-4 mb-6">
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedTwinStatus('All')}
+                  className={cn(
+                    'px-4 py-2 rounded-full text-xs font-bold border transition-colors',
+                    selectedTwinStatus === 'All' ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
+                  )}
+                >
+                  All Statuses
+                </button>
+                {DIGITAL_TWIN_STATUS_ORDER.map((status) => (
+                  <button
+                    key={status}
+                    type="button"
+                    onClick={() => setSelectedTwinStatus(status)}
+                    className={cn(
+                      'px-4 py-2 rounded-full text-xs font-bold border transition-colors',
+                      selectedTwinStatus === status
+                        ? DIGITAL_TWIN_STATUS_STYLES[status].badge
+                        : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
+                    )}
+                  >
+                    {status}
+                  </button>
+                ))}
+              </div>
+              <div className="xl:ml-auto">
+                <select
+                  value={selectedTwinBuilding}
+                  onChange={(e) => setSelectedTwinBuilding(e.target.value)}
+                  className="w-full min-w-[220px] px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-medium text-slate-700 focus:outline-none focus:border-emerald-500"
+                >
+                  <option value="All">All Buildings</option>
+                  {twinBuildings.map((building: any) => (
+                    <option key={building.buildingId} value={building.buildingId?.toString()}>
+                      {building.buildingName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 mb-6">
+              {DIGITAL_TWIN_STATUS_ORDER.map((status) => (
+                <span key={status} className={cn('px-3 py-1 rounded-full text-[11px] font-bold border', DIGITAL_TWIN_STATUS_STYLES[status].badge)}>
+                  {status}
+                </span>
+              ))}
+            </div>
+            <div className="space-y-6 max-h-[38rem] overflow-y-auto pr-1">
+              {filteredTwinBuildings.length > 0 ? filteredTwinBuildings.map((building: any) => (
+                <div key={building.buildingId} className="rounded-[28px] border border-slate-200 bg-slate-50/80 p-5">
+                  <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 mb-4">
+                    <div>
+                      <h4 className="text-lg font-bold text-slate-900">{building.buildingName}</h4>
+                      <p className="text-sm text-slate-500">{building.floors.length} floor{building.floors.length === 1 ? '' : 's'} in view</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => navigate(`/digital-twin?buildingId=${building.buildingId}`)}
+                      className="px-4 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 hover:border-emerald-300 hover:text-emerald-700 transition-colors"
+                    >
+                      Open Full Twin
+                    </button>
+                  </div>
+                  <div className="space-y-4">
+                    {building.floors.map((floor: any) => (
+                      <div key={`${building.buildingId}-${floor.floorId}`} className="rounded-2xl border border-white bg-white p-4">
+                        <div className="flex items-center justify-between gap-3 mb-3">
+                          <div>
+                            <h5 className="text-sm font-bold text-slate-800">{floor.floorName}</h5>
+                            <p className="text-[11px] text-slate-500">{floor.rooms.length} room{floor.rooms.length === 1 ? '' : 's'} matched</p>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3">
+                          {floor.rooms.map((room: any) => {
+                            const statusLabel = getDigitalTwinStatusLabel(room?.status, room?.isBookable !== false);
+                            const theme = DIGITAL_TWIN_STATUS_STYLES[statusLabel];
+                            const isSelected = selectedTwinRoom?.id === room.id;
+                            return (
+                              <button
+                                key={room.id}
+                                type="button"
+                                onClick={() => setSelectedTwinRoomId(room.id?.toString() || '')}
+                                className={cn(
+                                  'rounded-2xl border p-3 text-left transition-all',
+                                  theme.card,
+                                  isSelected ? 'ring-2 ring-slate-900/10 shadow-sm' : 'hover:shadow-sm'
+                                )}
+                              >
+                                <div className="flex items-center justify-between gap-2 mb-2">
+                                  <span className="text-sm font-bold text-slate-900">{room.roomNumber}</span>
+                                  <span className={cn('h-2.5 w-2.5 rounded-full', theme.darkDot)} />
+                                </div>
+                                <p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">{room.roomType}</p>
+                                <p className="text-[11px] mt-2 font-semibold text-slate-700">{statusLabel}</p>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )) : (
+                <div className="rounded-[28px] border border-dashed border-slate-200 bg-slate-50 p-10 text-center text-slate-400">
+                  No rooms match the current Digital Twin filters.
+                </div>
+              )}
             </div>
           </div>
 
@@ -4361,17 +4601,21 @@ function DashboardHome() {
                   <BrainCircuit className="text-slate-400 group-hover:text-emerald-500 mb-3" size={24} />
                   <p className="text-xs font-bold text-slate-700">AI Allocation</p>
                 </Link>
+                <Link to="/live-availability" className="p-4 bg-slate-50 rounded-2xl border border-slate-100 hover:border-emerald-500 hover:bg-white transition-all group">
+                  <MapIcon className="text-slate-400 group-hover:text-emerald-500 mb-3" size={24} />
+                  <p className="text-xs font-bold text-slate-700">Live Availability</p>
+                </Link>
                 <Link to="/bookings" className="p-4 bg-slate-50 rounded-2xl border border-slate-100 hover:border-emerald-500 hover:bg-white transition-all group">
                   <Calendar className="text-slate-400 group-hover:text-emerald-500 mb-3" size={24} />
                   <p className="text-xs font-bold text-slate-700">Room Bookings</p>
                 </Link>
-                <Link to="/digital-twin" className="p-4 bg-slate-50 rounded-2xl border border-slate-100 hover:border-emerald-500 hover:bg-white transition-all group">
-                  <Globe className="text-slate-400 group-hover:text-emerald-500 mb-3" size={24} />
-                  <p className="text-xs font-bold text-slate-700">Digital Twin</p>
-                </Link>
                 <Link to="/maintenance" className="p-4 bg-slate-50 rounded-2xl border border-slate-100 hover:border-emerald-500 hover:bg-white transition-all group">
                   <Wrench className="text-slate-400 group-hover:text-emerald-500 mb-3" size={24} />
                   <p className="text-xs font-bold text-slate-700">Maintenance</p>
+                </Link>
+                <Link to="/digital-twin" className="p-4 bg-slate-900 rounded-2xl border border-slate-900 hover:bg-slate-800 transition-all group col-span-2">
+                  <Globe className="text-emerald-400 mb-3" size={24} />
+                  <p className="text-xs font-bold text-white">Open Full Digital Twin</p>
                 </Link>
               </div>
             </div>
@@ -4403,6 +4647,68 @@ function DashboardHome() {
         </div>
 
         <div className="space-y-8">
+          <div className="bg-white p-8 rounded-[40px] border border-slate-200 shadow-sm">
+            <div className="flex items-start justify-between gap-4 mb-6">
+              <div>
+                <h3 className="text-xl font-bold text-slate-800">Selected Room Details</h3>
+                <p className="text-sm text-slate-500 mt-1">Room context stays tied to the live twin selection.</p>
+              </div>
+              {selectedTwinRoom && (
+                <span className={cn('px-3 py-1 rounded-full text-[11px] font-bold border', DIGITAL_TWIN_STATUS_STYLES[getDigitalTwinStatusLabel(selectedTwinRoom.status, selectedTwinRoom.isBookable !== false)].badge)}>
+                  {getDigitalTwinStatusLabel(selectedTwinRoom.status, selectedTwinRoom.isBookable !== false)}
+                </span>
+              )}
+            </div>
+            {selectedTwinRoom ? (
+              <div className="space-y-4">
+                <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
+                  <p className="text-2xl font-black text-slate-900">{selectedTwinRoom.roomNumber}</p>
+                  <p className="text-sm text-slate-500 mt-1">
+                    {[selectedTwinRoom.buildingName, selectedTwinRoom.floorName].filter(Boolean).join(' • ')}
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-2xl border border-slate-200 p-4 bg-white">
+                    <p className="text-[10px] uppercase tracking-widest font-bold text-slate-500">Type</p>
+                    <p className="text-sm font-bold text-slate-800 mt-2">{selectedTwinRoom.roomType || 'Room'}</p>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 p-4 bg-white">
+                    <p className="text-[10px] uppercase tracking-widest font-bold text-slate-500">Capacity</p>
+                    <p className="text-sm font-bold text-slate-800 mt-2">{selectedTwinRoom.capacity || 0}</p>
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-slate-200 p-4 bg-white">
+                  <p className="text-[10px] uppercase tracking-widest font-bold text-slate-500">Current Usage</p>
+                  <p className="text-sm font-semibold text-slate-800 mt-2">{selectedTwinRoom.currentUsage || 'No active usage right now.'}</p>
+                </div>
+                <div className="rounded-2xl border border-slate-200 p-4 bg-white">
+                  <p className="text-[10px] uppercase tracking-widest font-bold text-slate-500">Next Availability</p>
+                  <p className="text-sm font-semibold text-slate-800 mt-2">{selectedTwinRoom.nextAvailableSlot || 'Available now'}</p>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/digital-twin?roomId=${selectedTwinRoom.id}`)}
+                    className="px-4 py-3 rounded-2xl bg-slate-900 text-white text-sm font-bold hover:bg-slate-800 transition-colors"
+                  >
+                    Open Twin
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/bookings?roomId=${selectedTwinRoom.id}`)}
+                    className="px-4 py-3 rounded-2xl border border-emerald-200 bg-emerald-50 text-emerald-700 text-sm font-bold hover:bg-emerald-100 transition-colors"
+                  >
+                    Booking Flow
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-3xl border border-dashed border-slate-200 p-8 text-center text-sm text-slate-400">
+                Select a room from the Digital Twin overview to inspect its live details.
+              </div>
+            )}
+          </div>
+
           <div className="bg-slate-900 p-8 rounded-[40px] text-white overflow-hidden relative group">
             <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
               <Sparkles size={80} />
@@ -4472,20 +4778,20 @@ function DashboardHome() {
             <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <div className="rounded-2xl border border-slate-200 p-4 bg-slate-50">
-                  <p className="text-[10px] uppercase tracking-widest font-bold text-slate-500">Buildings</p>
-                  <p className="text-xl font-black text-slate-800 mt-1">{stats?.totalBuildings || 0}</p>
-                </div>
-                <div className="rounded-2xl border border-slate-200 p-4 bg-slate-50">
                   <p className="text-[10px] uppercase tracking-widest font-bold text-slate-500">Available</p>
-                  <p className="text-xl font-black text-emerald-700 mt-1">{stats?.availableNow || 0}</p>
+                  <p className="text-xl font-black text-emerald-700 mt-1">{twinStatusCounts['Available']}</p>
                 </div>
                 <div className="rounded-2xl border border-slate-200 p-4 bg-slate-50">
-                  <p className="text-[10px] uppercase tracking-widest font-bold text-slate-500">Scheduled Today</p>
-                  <p className="text-xl font-black text-indigo-700 mt-1">{stats?.scheduledRooms || 0}</p>
+                  <p className="text-[10px] uppercase tracking-widest font-bold text-slate-500">Occupied</p>
+                  <p className="text-xl font-black text-rose-700 mt-1">{twinStatusCounts['Occupied']}</p>
                 </div>
                 <div className="rounded-2xl border border-slate-200 p-4 bg-slate-50">
-                  <p className="text-[10px] uppercase tracking-widest font-bold text-slate-500">Pending</p>
-                  <p className="text-xl font-black text-amber-700 mt-1">{stats?.pendingBookings || 0}</p>
+                  <p className="text-[10px] uppercase tracking-widest font-bold text-slate-500">Maintenance</p>
+                  <p className="text-xl font-black text-amber-700 mt-1">{twinStatusCounts['Maintenance']}</p>
+                </div>
+                <div className="rounded-2xl border border-slate-200 p-4 bg-slate-50">
+                  <p className="text-[10px] uppercase tracking-widest font-bold text-slate-500">Event Booked</p>
+                  <p className="text-xl font-black text-sky-700 mt-1">{twinStatusCounts['Event Booked']}</p>
                 </div>
               </div>
 
@@ -10951,10 +11257,11 @@ function LiveRoomAvailability() {
 
   const statusTheme = (status: string) => {
     if (status === 'Best Suitable') return { card: 'border-violet-200 bg-violet-50/70', badge: 'bg-violet-100 text-violet-700 border-violet-200' };
-    if (status === 'Available') return { card: 'border-emerald-200 bg-emerald-50/70', badge: 'bg-emerald-100 text-emerald-700 border-emerald-200' };
-    if (status === 'Occupied by Timetable') return { card: 'border-rose-200 bg-rose-50/70', badge: 'bg-rose-100 text-rose-700 border-rose-200' };
-    if (status === 'Booked for Event') return { card: 'border-sky-200 bg-sky-50/70', badge: 'bg-sky-100 text-sky-700 border-sky-200' };
-    if (status === 'Under Maintenance') return { card: 'border-amber-200 bg-amber-50/70', badge: 'bg-amber-100 text-amber-700 border-amber-200' };
+    const statusLabel = getDigitalTwinStatusLabel(status, status !== 'Not Bookable');
+    if (statusLabel in DIGITAL_TWIN_STATUS_STYLES) {
+      const theme = DIGITAL_TWIN_STATUS_STYLES[statusLabel as keyof typeof DIGITAL_TWIN_STATUS_STYLES];
+      return { card: theme.card, badge: theme.badge };
+    }
     return { card: 'border-slate-200 bg-slate-50/80', badge: 'bg-slate-200 text-slate-700 border-slate-300' };
   };
 
@@ -11179,10 +11486,10 @@ function LiveRoomAvailability() {
         {[ 
           { label: 'Total Rooms', value: results.summary.totalRooms, color: 'text-slate-700', bg: 'bg-slate-50' },
           { label: 'Available In Window', value: results.summary.available, color: 'text-emerald-700', bg: 'bg-emerald-50' },
-          { label: 'Occupied by Timetable', value: results.summary.occupied, color: 'text-rose-700', bg: 'bg-rose-50' },
-          { label: 'Booked Rooms', value: results.summary.booked, color: 'text-sky-700', bg: 'bg-sky-50' },
+          { label: 'Occupied', value: results.summary.occupied, color: 'text-rose-700', bg: 'bg-rose-50' },
+          { label: 'Event Booked', value: results.summary.booked, color: 'text-sky-700', bg: 'bg-sky-50' },
           { label: 'Maintenance Rooms', value: results.summary.maintenance, color: 'text-amber-700', bg: 'bg-amber-50' },
-          { label: 'Best Suitable', value: results.summary.bestSuitable, color: 'text-violet-700', bg: 'bg-violet-50' },
+          { label: 'Not Bookable', value: results.summary.notBookable, color: 'text-slate-700', bg: 'bg-slate-100' },
         ].map(card => (
           <div key={card.label} className={cn('rounded-2xl border border-slate-200 p-5 shadow-sm', card.bg)}>
             <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-slate-500">{card.label}</p>
@@ -11196,11 +11503,10 @@ function LiveRoomAvailability() {
           <span className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500 mr-2">Status Legend</span>
           {[
             { label: 'Available', classes: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
-            { label: 'Occupied by Timetable', classes: 'bg-rose-100 text-rose-700 border-rose-200' },
-            { label: 'Booked for Event', classes: 'bg-sky-100 text-sky-700 border-sky-200' },
-            { label: 'Under Maintenance', classes: 'bg-amber-100 text-amber-700 border-amber-200' },
-            { label: 'Capacity Mismatch', classes: 'bg-slate-200 text-slate-700 border-slate-300' },
-            { label: 'Best Suitable', classes: 'bg-violet-100 text-violet-700 border-violet-200' },
+            { label: 'Occupied', classes: 'bg-rose-100 text-rose-700 border-rose-200' },
+            { label: 'Event Booked', classes: 'bg-sky-100 text-sky-700 border-sky-200' },
+            { label: 'Maintenance', classes: 'bg-amber-100 text-amber-700 border-amber-200' },
+            { label: 'Not Bookable', classes: 'bg-slate-200 text-slate-700 border-slate-300' },
           ].map(item => (
             <span key={item.label} className={cn('px-3 py-1 rounded-full text-[11px] font-bold border', item.classes)}>
               {item.label}
@@ -18393,6 +18699,8 @@ function DigitalTwin() {
     const params = new URLSearchParams(location.search);
     const requestedView = params.get('view');
     const requestedStatus = params.get('status');
+    const requestedBuildingId = params.get('buildingId');
+    const requestedRoomId = params.get('roomId');
 
     if (requestedView === '3D' || requestedView === '2D') {
       if (requestedView === '3D') {
@@ -18408,12 +18716,38 @@ function DigitalTwin() {
       status: requestedStatus || '',
     }));
 
-    if (!params.get('buildingId')) {
+    if (requestedRoomId) {
+      const targetRoom = rooms.find((room: any) => idsMatch(room?.id, requestedRoomId));
+      const targetFloor = floors.find((floor: any) => idsMatch(floor?.id, targetRoom?.floor_id));
+      const targetBlock = blocks.find((block: any) => idsMatch(block?.id, targetFloor?.block_id));
+      const targetBuilding = buildings.find((building: any) => idsMatch(building?.id, targetBlock?.building_id));
+
+      if (targetBuilding) {
+        setSelectedBuilding(targetBuilding);
+        setSelectedBlock(targetBlock || null);
+        setSelectedFloor(targetFloor || null);
+        setViewMode('2D');
+        return;
+      }
+    }
+
+    if (requestedBuildingId) {
+      const targetBuilding = buildings.find((building: any) => idsMatch(building?.id, requestedBuildingId));
+      if (targetBuilding) {
+        setSelectedBuilding(targetBuilding);
+        setSelectedBlock(null);
+        setSelectedFloor(null);
+        setViewMode('2D');
+        return;
+      }
+    }
+
+    if (!requestedBuildingId) {
       setSelectedBuilding(null);
       setSelectedBlock(null);
       setSelectedFloor(null);
     }
-  }, [location.search]);
+  }, [location.search, buildings, blocks, floors, rooms]);
 
   const buildDigitalTwinOptimizationSummary = () => {
     const safeSchedules = Array.isArray(schedules) ? deduplicateScheduleRows(schedules) : [];
@@ -18846,6 +19180,7 @@ function DigitalTwin() {
         room?.room_aliases,
         room?.room_type,
         roomLiveStatusByRoomId.get(roomKey),
+        getDigitalTwinStatusLabel(roomLiveStatusByRoomId.get(roomKey), isClientRoomBookable(room)),
         roomDepartmentLabelByRoomId.get(roomKey),
         ...roomSchedules.flatMap((schedule: any) => [
           schedule.course_name,
@@ -18934,12 +19269,13 @@ function DigitalTwin() {
     if (!room) return false;
     const query = normalizeLookupValue(filters.search);
     const haystack = roomSearchTextByRoomId.get(toKey(room?.id)) || '';
+    const statusLabel = getDigitalTwinStatusLabel(getRoomLiveStatus(room), isClientRoomBookable(room));
 
     if (query && !haystack.includes(query)) return false;
     if (filters.status) {
       if (filters.status === 'ScheduledToday') {
         if (!hasRoomScheduledToday(room)) return false;
-      } else if (getRoomLiveStatus(room) !== filters.status) {
+      } else if (statusLabel !== filters.status) {
         return false;
       }
     }
@@ -19049,19 +19385,22 @@ function DigitalTwin() {
   const scopeRoomMix = getRoomMixCounts(scopeRooms);
   const stats = {
     totalRooms: scopeRooms.length,
-    availableRooms: scopeRooms.filter(r => getRoomLiveStatus(r) === 'Available').length,
-    maintenanceRooms: scopeRooms.filter(r => getRoomLiveStatus(r) === 'Maintenance').length,
+    availableRooms: scopeRooms.filter(r => getDigitalTwinStatusLabel(getRoomLiveStatus(r), isClientRoomBookable(r)) === 'Available').length,
+    occupiedRooms: scopeRooms.filter(r => getDigitalTwinStatusLabel(getRoomLiveStatus(r), isClientRoomBookable(r)) === 'Occupied').length,
+    maintenanceRooms: scopeRooms.filter(r => getDigitalTwinStatusLabel(getRoomLiveStatus(r), isClientRoomBookable(r)) === 'Maintenance').length,
+    eventBookedRooms: scopeRooms.filter(r => getDigitalTwinStatusLabel(getRoomLiveStatus(r), isClientRoomBookable(r)) === 'Event Booked').length,
+    notBookableRooms: scopeRooms.filter(r => getDigitalTwinStatusLabel(getRoomLiveStatus(r), isClientRoomBookable(r)) === 'Not Bookable').length,
     utilization: scopeUtilizationDisplay,
     totalBuildings: scopeBuildings.length,
     totalBlocks: scopeBlocks.length,
     totalSchedules: scopeSchedules.length,
   };
   const twinStatCards = [
-    { label: 'Total Rooms', value: stats.totalRooms, detail: formatRoomMixSummary(scopeRoomMix), icon: DoorOpen, iconBg: 'bg-emerald-50', iconClass: 'text-emerald-500', path: '/rooms' },
-    { label: 'Utilization', value: stats.utilization, icon: Activity, iconBg: 'bg-blue-50', iconClass: 'text-blue-500', path: '/reports' },
-    { label: 'Maintenance', value: stats.maintenanceRooms, icon: Wrench, iconBg: 'bg-amber-50', iconClass: 'text-amber-500', path: '/maintenance' },
-    { label: 'Buildings', value: stats.totalBuildings, icon: Building2, iconBg: 'bg-indigo-50', iconClass: 'text-indigo-500', path: '/buildings' },
-    { label: 'Timetable Rows', value: stats.totalSchedules, icon: Calendar, iconBg: 'bg-cyan-50', iconClass: 'text-cyan-500', path: '/scheduling' },
+    { label: 'Available', value: stats.availableRooms, icon: DoorOpen, status: 'Available', path: '/digital-twin?status=Available' },
+    { label: 'Occupied', value: stats.occupiedRooms, icon: Activity, status: 'Occupied', path: '/digital-twin?status=Occupied' },
+    { label: 'Maintenance', value: stats.maintenanceRooms, icon: Wrench, status: 'Maintenance', path: '/digital-twin?status=Maintenance' },
+    { label: 'Event Booked', value: stats.eventBookedRooms, icon: Calendar, status: 'Event Booked', path: '/digital-twin?status=Event%20Booked' },
+    { label: 'Not Bookable', value: stats.notBookableRooms, icon: Info, status: 'Not Bookable', path: '/digital-twin?status=Not%20Bookable' },
   ];
   const getRoomContextCount = (room: any) => new Set(
     getRoomSchedules(room).map(schedule => getScheduleAcademicContextKey(schedule)),
@@ -19096,15 +19435,12 @@ function DigitalTwin() {
             className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex items-center gap-4 text-left hover:shadow-md hover:-translate-y-0.5 transition-all focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
             aria-label={`Open ${card.label}`}
           >
-            <div className={cn("w-12 h-12 rounded-2xl flex items-center justify-center", card.iconBg, card.iconClass)}>
+            <div className={cn("w-12 h-12 rounded-2xl flex items-center justify-center", DIGITAL_TWIN_STATUS_STYLES[card.status as keyof typeof DIGITAL_TWIN_STATUS_STYLES].soft, DIGITAL_TWIN_STATUS_STYLES[card.status as keyof typeof DIGITAL_TWIN_STATUS_STYLES].softText)}>
               <card.icon size={24} />
             </div>
             <div>
               <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{card.label}</p>
               <p className="text-xl font-bold text-slate-800">{card.value}</p>
-              {card.detail && (
-                <p className="text-[11px] text-slate-400 font-semibold mt-1">{card.detail}</p>
-              )}
             </div>
           </button>
         ))}
@@ -19233,9 +19569,10 @@ function DigitalTwin() {
           <option value="">All statuses</option>
           <option value="ScheduledToday">Scheduled Today</option>
           <option value="Available">Available</option>
-          <option value="Scheduled">Scheduled</option>
-          <option value="Booked">Booked</option>
+          <option value="Occupied">Occupied</option>
+          <option value="Event Booked">Event Booked</option>
           <option value="Maintenance">Maintenance</option>
+          <option value="Not Bookable">Not Bookable</option>
         </select>
         <select
           value={filters.roomType}
@@ -19411,6 +19748,7 @@ function DigitalTwin() {
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-6 relative z-10">
             {rooms.filter(r => idsMatch(r.floor_id, selectedFloor.id) && roomPassesFilters(r)).map(r => {
               const liveStatus = getRoomLiveStatus(r);
+              const twinStatus = getDigitalTwinStatusLabel(liveStatus, isClientRoomBookable(r));
               const equipmentLabels = getRoomEquipmentLabels(r);
               const departmentLabel = getRoomDepartmentLabel(r);
               const roomSchedules = getRoomSchedules(r);
@@ -19422,29 +19760,21 @@ function DigitalTwin() {
               const nextScheduleState = getScheduleOverlapState(nextSchedules, schedules);
               const linkContextSchedule = getRoomLinkContextSchedule(r);
               const roomContextCount = getRoomContextCount(r);
-              const statusClass =
-                liveStatus === 'Available' ? "bg-emerald-500/10 border-emerald-500/30 hover:bg-emerald-500/20" :
-                liveStatus === 'Booked' || liveStatus === 'Scheduled' ? "bg-rose-500/10 border-rose-500/30 hover:bg-rose-500/20" :
-                liveStatus === 'Maintenance' ? "bg-amber-500/10 border-amber-500/30 hover:bg-amber-500/20" :
-                "bg-slate-700/50 border-slate-600";
-              const dotClass =
-                liveStatus === 'Available' ? "bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.6)]" :
-                liveStatus === 'Maintenance' ? "bg-amber-500 shadow-[0_0_12px_rgba(245,158,11,0.6)]" :
-                "bg-rose-500 shadow-[0_0_12px_rgba(244,63,94,0.6)]";
+              const statusTheme = DIGITAL_TWIN_STATUS_STYLES[twinStatus];
               return (
               <div 
                 key={r.id} 
                 className={cn(
                   "p-6 rounded-2xl border transition-all relative group cursor-default",
-                  statusClass
+                  statusTheme.darkCard
                 )}
               >
                 <div className="flex justify-between items-start mb-4">
                   <span className="text-lg font-bold text-white">{r.room_number}</span>
-                  <div className={cn("w-3 h-3 rounded-full", dotClass)} />
+                  <div className={cn("w-3 h-3 rounded-full", statusTheme.darkDot)} />
                 </div>
                 <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest mb-1">{getRoomTypeDisplay(r)}</p>
-                <p className="text-[10px] text-slate-300 font-bold mb-1">{liveStatus}</p>
+                <p className="text-[10px] text-slate-300 font-bold mb-1">{twinStatus}</p>
                 <p className="text-[10px] text-slate-500 mb-1">{departmentLabel}</p>
                 {getRoomAliasList(r).length > 0 && (
                   <p className="text-[10px] text-cyan-300 mb-1">Aliases: {getRoomAliasList(r).join(', ')}</p>
