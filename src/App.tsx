@@ -104,6 +104,45 @@ const getDigitalTwinStatusLabel = (status: unknown, isBookable = true) => {
   return isBookable ? 'Available' : 'Not Bookable';
 };
 
+const formatStatusBreakdownLine = (items: Array<{ label: string; count: number }> | undefined, fallback: string) => {
+  const safeItems = (Array.isArray(items) ? items : [])
+    .filter((item) => Number(item?.count) > 0 && item?.label)
+    .slice(0, 5);
+  if (safeItems.length === 0) return fallback;
+  return safeItems.map((item) => `${item.label}: ${item.count}`).join(' | ');
+};
+
+const getDigitalTwinCategorySummaryLabel = (roomTypeValue: unknown, status?: string) => {
+  const normalizedRoomType = normalizeRoomTypeValue(roomTypeValue);
+  if (status === 'Not Bookable') {
+    if (['Server Room', 'Electrical Room', 'Maintenance Room', 'Store Room'].includes(normalizedRoomType)) return 'Utility';
+    if (normalizedRoomType === 'Office') return 'Admin Use';
+    return 'Restricted';
+  }
+  if ([
+    'Classroom',
+    'Smart Classroom',
+    'Lecture Hall',
+    'Tutorial Room',
+    'Multipurpose Classroom',
+    'Multipurpose Lecture Hall',
+  ].includes(normalizedRoomType)) return 'Classrooms';
+  if ([
+    'Lab',
+    'Computer Lab',
+    'Research Lab',
+    'Language Lab',
+    'Workshop',
+    'Studio',
+    'Classroom Lab',
+    'Multipurpose Lab',
+  ].includes(normalizedRoomType)) return 'Labs';
+  if (normalizedRoomType === 'Seminar Hall') return 'Seminar Halls';
+  if (normalizedRoomType === 'Auditorium') return 'Auditoriums';
+  if (['Meeting Room', 'Conference Room', 'Board Room'].includes(normalizedRoomType)) return 'Meeting Rooms';
+  return 'Other';
+};
+
 const GEMINI_API_KEY = (import.meta as any).env?.VITE_GEMINI_API_KEY || '';
 function getGenAIClient() {
   if (!GEMINI_API_KEY) {
@@ -4202,7 +4241,7 @@ function DashboardHome() {
   const [schoolUsage, setSchoolUsage] = useState<any[]>([]);
   const [aiInsightMessage, setAiInsightMessage] = useState('');
   const [dashboardOverview, setDashboardOverview] = useState<any>({});
-  const [digitalTwinSnapshot, setDigitalTwinSnapshot] = useState<any>({ statusCounts: {}, buildings: [] });
+  const [digitalTwinSnapshot, setDigitalTwinSnapshot] = useState<any>({ statusCounts: {}, statusBreakdowns: {}, buildings: [] });
   const [selectedTwinStatus, setSelectedTwinStatus] = useState('All');
   const [selectedTwinBuilding, setSelectedTwinBuilding] = useState('All');
   const [selectedTwinRoomId, setSelectedTwinRoomId] = useState('');
@@ -4272,7 +4311,7 @@ function DashboardHome() {
         setSchoolUsage(safeSchoolReports);
         setAiInsightMessage(fallbackInsight);
         setDashboardOverview(overviewData || {});
-        setDigitalTwinSnapshot(overviewData?.digitalTwinSnapshot || { statusCounts: {}, buildings: [] });
+        setDigitalTwinSnapshot(overviewData?.digitalTwinSnapshot || { statusCounts: {}, statusBreakdowns: {}, buildings: [] });
         void trackModuleLoadMetric(
           'DashboardHome',
           'overview',
@@ -4364,6 +4403,17 @@ function DashboardHome() {
     };
   }, [digitalTwinSnapshot]);
 
+  const twinStatusBreakdowns = useMemo(() => {
+    const breakdowns = digitalTwinSnapshot?.statusBreakdowns || {};
+    return {
+      'Available': Array.isArray(breakdowns?.available) ? breakdowns.available : [],
+      'Occupied': Array.isArray(breakdowns?.occupied) ? breakdowns.occupied : [],
+      'Maintenance': Array.isArray(breakdowns?.maintenance) ? breakdowns.maintenance : [],
+      'Event Booked': Array.isArray(breakdowns?.eventBooked) ? breakdowns.eventBooked : [],
+      'Not Bookable': Array.isArray(breakdowns?.notBookable) ? breakdowns.notBookable : [],
+    };
+  }, [digitalTwinSnapshot]);
+
   const filteredTwinBuildings = useMemo(() => {
     return twinBuildings
       .filter((building: any) => selectedTwinBuilding === 'All' || building?.buildingId?.toString() === selectedTwinBuilding)
@@ -4421,11 +4471,46 @@ function DashboardHome() {
   };
 
   const statCards = [
-    { label: 'Available', value: twinStatusCounts['Available'], icon: DoorOpen, status: 'Available', path: '/digital-twin?status=Available' },
-    { label: 'Occupied', value: twinStatusCounts['Occupied'], icon: Activity, status: 'Occupied', path: '/digital-twin?status=Occupied' },
-    { label: 'Maintenance', value: twinStatusCounts['Maintenance'], icon: Wrench, status: 'Maintenance', path: '/digital-twin?status=Maintenance' },
-    { label: 'Event Booked', value: twinStatusCounts['Event Booked'], icon: Calendar, status: 'Event Booked', path: '/digital-twin?status=Event%20Booked' },
-    { label: 'Not Bookable', value: twinStatusCounts['Not Bookable'], icon: Info, status: 'Not Bookable', path: '/digital-twin?status=Not%20Bookable' },
+    {
+      label: 'Available',
+      value: twinStatusCounts['Available'],
+      icon: DoorOpen,
+      status: 'Available',
+      path: '/digital-twin?status=Available',
+      detail: formatStatusBreakdownLine(twinStatusBreakdowns['Available'], 'Ready to book now'),
+    },
+    {
+      label: 'Occupied',
+      value: twinStatusCounts['Occupied'],
+      icon: Activity,
+      status: 'Occupied',
+      path: '/digital-twin?status=Occupied',
+      detail: formatStatusBreakdownLine(twinStatusBreakdowns['Occupied'], 'Currently in use'),
+    },
+    {
+      label: 'Maintenance',
+      value: twinStatusCounts['Maintenance'],
+      icon: Wrench,
+      status: 'Maintenance',
+      path: '/digital-twin?status=Maintenance',
+      detail: formatStatusBreakdownLine(twinStatusBreakdowns['Maintenance'], 'Temporarily unavailable'),
+    },
+    {
+      label: 'Event Booked',
+      value: twinStatusCounts['Event Booked'],
+      icon: Calendar,
+      status: 'Event Booked',
+      path: '/digital-twin?status=Event%20Booked',
+      detail: formatStatusBreakdownLine(twinStatusBreakdowns['Event Booked'], 'Booked for special use'),
+    },
+    {
+      label: 'Not Bookable',
+      value: twinStatusCounts['Not Bookable'],
+      icon: Info,
+      status: 'Not Bookable',
+      path: '/digital-twin?status=Not%20Bookable',
+      detail: formatStatusBreakdownLine(twinStatusBreakdowns['Not Bookable'], 'Unavailable for booking'),
+    },
   ];
 
   if (loading) {
@@ -4458,6 +4543,7 @@ function DashboardHome() {
             </div>
             <h3 className="text-3xl font-black text-slate-800 mb-1">{stat.value}</h3>
             <p className="text-xs text-slate-500 font-bold uppercase tracking-widest">{stat.label}</p>
+            <p className="text-[11px] text-slate-400 font-semibold mt-2 line-clamp-2">{stat.detail}</p>
           </button>
         ))}
       </div>
@@ -19395,12 +19481,91 @@ function DigitalTwin() {
     totalBlocks: scopeBlocks.length,
     totalSchedules: scopeSchedules.length,
   };
+  const scopeStatusBreakdowns = {
+    'Available': scopeRooms
+      .filter(r => getDigitalTwinStatusLabel(getRoomLiveStatus(r), isClientRoomBookable(r)) === 'Available')
+      .reduce((acc: Map<string, number>, room: any) => {
+        const label = getDigitalTwinCategorySummaryLabel(room?.room_type, 'Available');
+        acc.set(label, (acc.get(label) || 0) + 1);
+        return acc;
+      }, new Map<string, number>()),
+    'Occupied': scopeRooms
+      .filter(r => getDigitalTwinStatusLabel(getRoomLiveStatus(r), isClientRoomBookable(r)) === 'Occupied')
+      .reduce((acc: Map<string, number>, room: any) => {
+        const label = getDigitalTwinCategorySummaryLabel(room?.room_type, 'Occupied');
+        acc.set(label, (acc.get(label) || 0) + 1);
+        return acc;
+      }, new Map<string, number>()),
+    'Maintenance': scopeRooms
+      .filter(r => getDigitalTwinStatusLabel(getRoomLiveStatus(r), isClientRoomBookable(r)) === 'Maintenance')
+      .reduce((acc: Map<string, number>, room: any) => {
+        const label = getDigitalTwinCategorySummaryLabel(room?.room_type, 'Maintenance');
+        acc.set(label, (acc.get(label) || 0) + 1);
+        return acc;
+      }, new Map<string, number>()),
+    'Event Booked': scopeRooms
+      .filter(r => getDigitalTwinStatusLabel(getRoomLiveStatus(r), isClientRoomBookable(r)) === 'Event Booked')
+      .reduce((acc: Map<string, number>, room: any) => {
+        const label = getDigitalTwinCategorySummaryLabel(room?.room_type, 'Event Booked');
+        acc.set(label, (acc.get(label) || 0) + 1);
+        return acc;
+      }, new Map<string, number>()),
+    'Not Bookable': scopeRooms
+      .filter(r => getDigitalTwinStatusLabel(getRoomLiveStatus(r), isClientRoomBookable(r)) === 'Not Bookable')
+      .reduce((acc: Map<string, number>, room: any) => {
+        const label = getDigitalTwinCategorySummaryLabel(room?.room_type, 'Not Bookable');
+        acc.set(label, (acc.get(label) || 0) + 1);
+        return acc;
+      }, new Map<string, number>()),
+  };
+  const scopeStatusBreakdownItems = {
+    'Available': Array.from(scopeStatusBreakdowns['Available'].entries()).map(([label, count]) => ({ label, count })).sort((left, right) => right.count - left.count || left.label.localeCompare(right.label)),
+    'Occupied': Array.from(scopeStatusBreakdowns['Occupied'].entries()).map(([label, count]) => ({ label, count })).sort((left, right) => right.count - left.count || left.label.localeCompare(right.label)),
+    'Maintenance': Array.from(scopeStatusBreakdowns['Maintenance'].entries()).map(([label, count]) => ({ label, count })).sort((left, right) => right.count - left.count || left.label.localeCompare(right.label)),
+    'Event Booked': Array.from(scopeStatusBreakdowns['Event Booked'].entries()).map(([label, count]) => ({ label, count })).sort((left, right) => right.count - left.count || left.label.localeCompare(right.label)),
+    'Not Bookable': Array.from(scopeStatusBreakdowns['Not Bookable'].entries()).map(([label, count]) => ({ label, count })).sort((left, right) => right.count - left.count || left.label.localeCompare(right.label)),
+  };
   const twinStatCards = [
-    { label: 'Available', value: stats.availableRooms, icon: DoorOpen, status: 'Available', path: '/digital-twin?status=Available' },
-    { label: 'Occupied', value: stats.occupiedRooms, icon: Activity, status: 'Occupied', path: '/digital-twin?status=Occupied' },
-    { label: 'Maintenance', value: stats.maintenanceRooms, icon: Wrench, status: 'Maintenance', path: '/digital-twin?status=Maintenance' },
-    { label: 'Event Booked', value: stats.eventBookedRooms, icon: Calendar, status: 'Event Booked', path: '/digital-twin?status=Event%20Booked' },
-    { label: 'Not Bookable', value: stats.notBookableRooms, icon: Info, status: 'Not Bookable', path: '/digital-twin?status=Not%20Bookable' },
+    {
+      label: 'Available',
+      value: stats.availableRooms,
+      icon: DoorOpen,
+      status: 'Available',
+      path: '/digital-twin?status=Available',
+      detail: formatStatusBreakdownLine(scopeStatusBreakdownItems['Available'], 'Ready to book now'),
+    },
+    {
+      label: 'Occupied',
+      value: stats.occupiedRooms,
+      icon: Activity,
+      status: 'Occupied',
+      path: '/digital-twin?status=Occupied',
+      detail: formatStatusBreakdownLine(scopeStatusBreakdownItems['Occupied'], 'Currently in use'),
+    },
+    {
+      label: 'Maintenance',
+      value: stats.maintenanceRooms,
+      icon: Wrench,
+      status: 'Maintenance',
+      path: '/digital-twin?status=Maintenance',
+      detail: formatStatusBreakdownLine(scopeStatusBreakdownItems['Maintenance'], 'Temporarily unavailable'),
+    },
+    {
+      label: 'Event Booked',
+      value: stats.eventBookedRooms,
+      icon: Calendar,
+      status: 'Event Booked',
+      path: '/digital-twin?status=Event%20Booked',
+      detail: formatStatusBreakdownLine(scopeStatusBreakdownItems['Event Booked'], 'Booked for special use'),
+    },
+    {
+      label: 'Not Bookable',
+      value: stats.notBookableRooms,
+      icon: Info,
+      status: 'Not Bookable',
+      path: '/digital-twin?status=Not%20Bookable',
+      detail: formatStatusBreakdownLine(scopeStatusBreakdownItems['Not Bookable'], 'Unavailable for booking'),
+    },
   ];
   const getRoomContextCount = (room: any) => new Set(
     getRoomSchedules(room).map(schedule => getScheduleAcademicContextKey(schedule)),
@@ -19441,6 +19606,7 @@ function DigitalTwin() {
             <div>
               <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{card.label}</p>
               <p className="text-xl font-bold text-slate-800">{card.value}</p>
+              <p className="text-[11px] text-slate-400 font-semibold mt-1 line-clamp-2">{card.detail}</p>
             </div>
           </button>
         ))}

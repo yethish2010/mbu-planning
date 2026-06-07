@@ -3124,6 +3124,36 @@ var getBookingDepartmentName = async (booking) => {
   const department = await db.prepare("SELECT name FROM departments WHERE id = ?").get(booking.department_id);
   return department?.name || null;
 };
+var getDigitalTwinCategoryLabel = (room, status) => {
+  const normalizedRoomType = normalizeRoomTypeValue(room?.roomType || room?.room_type);
+  if (status === "Not Bookable") {
+    if (["Server Room", "Electrical Room", "Maintenance Room", "Store Room"].includes(normalizedRoomType)) return "Utility";
+    if (normalizedRoomType === "Office") return "Admin Use";
+    return "Restricted";
+  }
+  if ([
+    "Classroom",
+    "Smart Classroom",
+    "Lecture Hall",
+    "Tutorial Room",
+    "Multipurpose Classroom",
+    "Multipurpose Lecture Hall"
+  ].includes(normalizedRoomType)) return "Classrooms";
+  if ([
+    "Lab",
+    "Computer Lab",
+    "Research Lab",
+    "Language Lab",
+    "Workshop",
+    "Studio",
+    "Classroom Lab",
+    "Multipurpose Lab"
+  ].includes(normalizedRoomType)) return "Labs";
+  if (normalizedRoomType === "Seminar Hall") return "Seminar Halls";
+  if (normalizedRoomType === "Auditorium") return "Auditoriums";
+  if (["Meeting Room", "Conference Room", "Board Room"].includes(normalizedRoomType)) return "Meeting Rooms";
+  return "Other";
+};
 var isDecisionRole = (role) => ["Administrator", "Dean (P&M)", "Deputy Dean (P&M)"].includes(role);
 var openBookingStatuses = ["Pending", "HOD Recommended", "Approved"];
 var getApprovedBookingConflict = async (booking, excludeId) => {
@@ -4352,6 +4382,21 @@ app.get("/api/dashboard/overview", authenticate, async (_req, res) => {
       eventBooked: digitalTwinRoomRows.filter((room) => room.status === "Event Booked").length,
       notBookable: digitalTwinRoomRows.filter((room) => room.status === "Not Bookable").length
     };
+    const buildStatusBreakdown = (status) => {
+      const counts = /* @__PURE__ */ new Map();
+      digitalTwinRoomRows.filter((room) => room.status === status).forEach((room) => {
+        const category = getDigitalTwinCategoryLabel(room, status);
+        counts.set(category, (counts.get(category) || 0) + 1);
+      });
+      return Array.from(counts.entries()).map(([label, count]) => ({ label, count })).sort((left, right) => right.count - left.count || left.label.localeCompare(right.label, void 0, { sensitivity: "base" }));
+    };
+    const digitalTwinStatusBreakdowns = {
+      available: buildStatusBreakdown("Available"),
+      occupied: buildStatusBreakdown("Occupied"),
+      maintenance: buildStatusBreakdown("Maintenance"),
+      eventBooked: buildStatusBreakdown("Event Booked"),
+      notBookable: buildStatusBreakdown("Not Bookable")
+    };
     res.json({
       stats: {
         totalBuildings: totalBuildings.count,
@@ -4374,6 +4419,7 @@ app.get("/api/dashboard/overview", authenticate, async (_req, res) => {
       lowestUsageRooms,
       digitalTwinSnapshot: {
         statusCounts: digitalTwinStatusCounts,
+        statusBreakdowns: digitalTwinStatusBreakdowns,
         buildings: digitalTwinBuildings
       }
     });
