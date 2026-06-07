@@ -822,6 +822,43 @@ var normalizeRoomAliases = (value) => Array.from(new Set(
   value?.toString().split(/[\n,;|/]+/).map((alias) => alias.trim()).filter((alias) => alias.length > 0 && !ROOM_ALIAS_PLACEHOLDER_VALUES.has(normalizeDuplicateValue(alias))) || []
 )).join(", ");
 var getRoomAliasTokens = (value) => normalizeRoomAliases(value).split(",").map((alias) => normalizeDuplicateValue(alias)).filter(Boolean);
+var normalizeRoomLookupValue = (value) => value?.toString().trim().toLowerCase().replace(/\s+/g, " ") || "";
+var getRoomLookupVariants = (value) => {
+  const base = normalizeRoomLookupValue(value);
+  if (!base) return [];
+  const variants = /* @__PURE__ */ new Set([base]);
+  const withoutPrefix = base.replace(/\b(?:room|r)\s*\.?\s*(?:no|number)?\.?\s*[:\-]?\s*/g, "").trim();
+  if (withoutPrefix) {
+    variants.add(withoutPrefix);
+  }
+  const normalizedSeparators = withoutPrefix.replace(/\s*&\s*/g, " & ").replace(/\s*\/\s*/g, "/").replace(/\s*-\s*/g, "-").replace(/\s+/g, " ").trim();
+  if (normalizedSeparators) {
+    variants.add(normalizedSeparators);
+  }
+  const compact = normalizedSeparators.replace(/[^a-z0-9]/g, "");
+  if (compact.length >= 3) {
+    variants.add(compact);
+  }
+  const withoutLeadingZeros = normalizedSeparators.match(/^0*(\d+[a-z]?)$/i)?.[1]?.toLowerCase();
+  if (withoutLeadingZeros) {
+    variants.add(withoutLeadingZeros);
+  }
+  return Array.from(variants).filter(Boolean);
+};
+var getAvailabilityRoomLookupVariants = (room) => {
+  const variants = /* @__PURE__ */ new Set();
+  [
+    room?.room_id,
+    room?.room_number,
+    room?.room_name,
+    room?.lab_name,
+    room?.room_section_name,
+    ...getRoomAliasTokens(room?.room_aliases) || []
+  ].forEach((value) => {
+    getRoomLookupVariants(value).forEach((variant) => variants.add(variant));
+  });
+  return variants;
+};
 var normalizeRoomPayload = (payload) => {
   const nextPayload = { ...payload };
   nextPayload.room_type = normalizeRoomTypeValue(nextPayload.room_type);
@@ -2940,17 +2977,36 @@ var getSharedAvailabilitySnapshot = async ({
     }
     return true;
   });
-  const roomIds = roomCandidates.map((room) => room.id);
+  const roomLookupVariantsById = /* @__PURE__ */ new Map();
+  roomCandidates.forEach((room) => {
+    const roomKey = room.id?.toString();
+    if (!roomKey) return;
+    roomLookupVariantsById.set(roomKey, getAvailabilityRoomLookupVariants(room));
+  });
+  const assignScheduleToRoom = (map, roomKey, schedule) => {
+    if (!roomKey) return;
+    if (!map.has(roomKey)) map.set(roomKey, []);
+    map.get(roomKey)?.push(schedule);
+  };
   const busySchedules = await getEffectiveSchedulesForDate(
     date,
-    (schedule) => roomIds.some((roomId) => idsEqual(schedule.room_id, roomId)) && timesOverlap(schedule.start_time, schedule.end_time, startTime, endTime)
+    (schedule) => timesOverlap(schedule.start_time, schedule.end_time, startTime, endTime)
   );
   const scheduleByRoomId = /* @__PURE__ */ new Map();
   busySchedules.forEach((schedule) => {
-    const key = schedule.room_id?.toString();
-    if (!key) return;
-    if (!scheduleByRoomId.has(key)) scheduleByRoomId.set(key, []);
-    scheduleByRoomId.get(key)?.push(schedule);
+    const matchedRoomKeys = /* @__PURE__ */ new Set();
+    const directKey = schedule.room_id?.toString();
+    if (directKey && roomLookupVariantsById.has(directKey)) {
+      matchedRoomKeys.add(directKey);
+    }
+    getRoomLookupVariants(schedule?.room_label).forEach((labelVariant) => {
+      roomLookupVariantsById.forEach((roomVariants, roomKey) => {
+        if (roomVariants.has(labelVariant)) {
+          matchedRoomKeys.add(roomKey);
+        }
+      });
+    });
+    matchedRoomKeys.forEach((roomKey) => assignScheduleToRoom(scheduleByRoomId, roomKey, schedule));
   });
   const approvedBookingsByRoomId = /* @__PURE__ */ new Map();
   approvedBookings.filter((booking) => timesOverlap(booking.start_time, booking.end_time, startTime, endTime)).forEach((booking) => {
@@ -4384,19 +4440,23 @@ app.get("/api/dashboard/overview", authenticate, async (_req, res) => {
       notBookable: buildStatusBreakdown("Not Bookable")
     };
     res.json({
+      currentDate,
+      currentTime,
       stats: {
         totalBuildings: totalBuildings.count,
-        availableNow,
+        availableNow: digitalTwinStatusCounts.available,
         equipmentIssues: equipmentIssues.count,
         pendingBookings: pendingBookings.count,
         scheduledRooms: dayScheduleRoomIds.size,
         activeScheduledRooms: activeScheduleRoomIds.size,
         bookedRooms: activeBookingRoomIds.size,
-        occupiedRooms: occupiedRoomIds.size,
-        occupiedNow: activeScheduleRoomIds.size,
-        eventBookedNow: activeBookingRoomIds.size,
+        occupiedRooms: digitalTwinStatusCounts.occupied + digitalTwinStatusCounts.eventBooked,
+        occupiedNow: digitalTwinStatusCounts.occupied,
+        eventBookedNow: digitalTwinStatusCounts.eventBooked,
         notBookableRooms: digitalTwinStatusCounts.notBookable,
-        recentAlerts
+        recentAlerts,
+        currentDate,
+        currentTime
       },
       utilizationTrend,
       schoolReports,

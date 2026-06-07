@@ -4512,6 +4512,8 @@ function DashboardHome() {
       detail: formatStatusBreakdownLine(twinStatusBreakdowns['Not Bookable'], 'Unavailable for booking'),
     },
   ];
+  const dashboardLiveDate = dashboardOverview?.currentDate?.toString?.() || stats?.currentDate?.toString?.() || '';
+  const dashboardLiveTime = dashboardOverview?.currentTime?.toString?.() || stats?.currentTime?.toString?.() || '';
 
   if (loading) {
     return (
@@ -4555,6 +4557,11 @@ function DashboardHome() {
               <div>
                 <h3 className="text-xl font-bold text-slate-800">Live Digital Twin Overview</h3>
                 <p className="text-sm text-slate-500">A control-center view of room status across buildings, floors, and live booking activity.</p>
+                {dashboardLiveDate && (
+                  <p className="text-[11px] font-semibold text-slate-400 mt-2">
+                    Live occupancy is evaluated for {formatDisplayDate(dashboardLiveDate)}{dashboardLiveTime ? ` at ${dashboardLiveTime}` : ''}.
+                  </p>
+                )}
               </div>
               <div className="flex items-center gap-2 px-4 py-2 bg-slate-50 rounded-xl border border-slate-100">
                 <Building2 size={16} className="text-slate-500" />
@@ -17949,9 +17956,22 @@ function TimetableBuilder() {
   );
 
   const roomScopedSchedules = useMemo(() => schedules.filter(schedule => {
-    if (activeRoom && schedule.room_id != null) return idsMatch(schedule.room_id, activeRoom.id);
-    return activeRoom ? false : schedule.room === selectedRoom;
-  }), [activeRoom, schedules, selectedRoom]);
+    if (activeRoom) {
+      const resolvedRoomIds = new Set<string>();
+      if (schedule?.room_id != null) {
+        resolvedRoomIds.add(schedule.room_id.toString());
+      }
+      if (schedule?.room_label) {
+        const resolution = resolveRoomSetForImport(rooms, schedule.room_label);
+        resolution.rooms.forEach((room: any) => {
+          const roomKey = room?.id?.toString();
+          if (roomKey) resolvedRoomIds.add(roomKey);
+        });
+      }
+      return resolvedRoomIds.has(activeRoom.id?.toString());
+    }
+    return schedule.room === selectedRoom;
+  }), [activeRoom, rooms, schedules, selectedRoom]);
 
   const roomDepartmentOptions = useMemo(() => Array.from(new Map(
     roomScopedSchedules
@@ -19091,17 +19111,40 @@ function DigitalTwin() {
     [schedules],
   );
 
+  const resolvedScheduleRoomIdsBySignature = useMemo(() => {
+    const map = new Map<string, string[]>();
+    dedupedSchedules.forEach((schedule: any) => {
+      const resolvedRoomIds = new Set<string>();
+      if (schedule?.room_id !== undefined && schedule?.room_id !== null && schedule?.room_id !== '') {
+        resolvedRoomIds.add(toKey(schedule.room_id));
+      }
+      if (schedule?.room_label) {
+        const resolution = resolveRoomSetForImport(rooms, schedule.room_label);
+        resolution.rooms.forEach((room: any) => {
+          const roomKey = toKey(room?.id);
+          if (roomKey) resolvedRoomIds.add(roomKey);
+        });
+      }
+      map.set(getScheduleRenderSignature(schedule), Array.from(resolvedRoomIds).filter(Boolean));
+    });
+    return map;
+  }, [dedupedSchedules, rooms]);
+
+  const getResolvedScheduleRoomIds = (schedule: any) =>
+    resolvedScheduleRoomIdsBySignature.get(getScheduleRenderSignature(schedule)) || [];
+
   const roomSchedulesByRoomId = useMemo(() => {
     const map = new Map<string, any[]>();
     dedupedSchedules.forEach((schedule: any) => {
-      const roomKey = toKey(schedule?.room_id);
-      if (!roomKey) return;
-      const next = map.get(roomKey) || [];
-      next.push({
-        ...schedule,
-        department_name: departmentsById.get(toKey(schedule?.department_id))?.name || '',
+      const resolvedRoomKeys = getResolvedScheduleRoomIds(schedule);
+      resolvedRoomKeys.forEach((roomKey) => {
+        const next = map.get(roomKey) || [];
+        next.push({
+          ...schedule,
+          department_name: departmentsById.get(toKey(schedule?.department_id))?.name || '',
+        });
+        map.set(roomKey, next);
       });
-      map.set(roomKey, next);
     });
     map.forEach((items) => {
       items.sort((a: any, b: any) => {
@@ -19111,7 +19154,7 @@ function DigitalTwin() {
       });
     });
     return map;
-  }, [dedupedSchedules, departmentsById]);
+  }, [dedupedSchedules, departmentsById, resolvedScheduleRoomIdsBySignature]);
 
   const approvedBookingsByRoomId = useMemo(() => {
     const map = new Map<string, any[]>();
@@ -19523,8 +19566,9 @@ function DigitalTwin() {
       : selectedBuilding
         ? getRoomsForBuilding(selectedBuilding).filter(roomPassesFilters)
         : rooms.filter(roomPassesFilters);
+  const scopeRoomIds = new Set(scopeRooms.map((room: any) => toKey(room?.id)).filter(Boolean));
   const scopeSchedules = dedupedSchedules.filter(schedule =>
-    scopeRooms.some(room => idsMatch(room.id, schedule.room_id))
+    getResolvedScheduleRoomIds(schedule).some((roomKey) => scopeRoomIds.has(roomKey))
   );
   const scopeUtilizationRaw = scopeRooms.reduce((acc, room) => acc + getRoomUsageMetrics(room).utilizationPercent, 0) / (scopeRooms.length || 1);
   const scopeUtilizationDisplay =
