@@ -3363,7 +3363,7 @@ const getSharedAvailabilitySnapshot = async ({
     const hasCapacityMismatch = (minCapacity || 0) > 0 && roomCapacity < (minCapacity || 0);
 
     let status = "Available";
-    let statusReason = "Available for the selected date and time.";
+    let statusReason = "Physically vacant for the selected date and time. Academic timing-profile rules are checked only when an Academic Regular booking is confirmed.";
     let currentUsage = "";
 
     if (roomMaintenance.length > 0 || room.status === "Maintenance") {
@@ -3474,7 +3474,7 @@ const getSharedAvailabilitySnapshot = async ({
         normalizedEquipmentFilter && room.equipment.some((label: string) => normalizeDuplicateValue(label).includes(normalizedEquipmentFilter))
           ? `${equipmentFilter} is available.`
           : "",
-        "No timetable clash, no approved booking, and not under maintenance.",
+        "Physically vacant for the selected real-time window with no timetable clash, no approved booking, and not under maintenance.",
       ].filter(Boolean).join(" "),
       currentUsage: `Recommendation rank #${index + 1}`,
     }));

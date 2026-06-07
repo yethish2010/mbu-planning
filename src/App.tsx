@@ -11047,6 +11047,13 @@ function LiveRoomAvailability() {
           </span>
         </div>
 
+        <div className="mb-6 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+          <span className="font-bold">Real-time vacancy rule.</span> Live Availability shows rooms that are physically free in the exact requested clock-time window, irrespective of department timing profiles.
+          <span className="ml-1">
+            Timing-profile rules are applied only when you confirm an <span className="font-bold">Academic Regular</span> booking.
+          </span>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
           <div>
             <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Date</label>
@@ -11166,9 +11173,9 @@ function LiveRoomAvailability() {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4">
-        {[
+        {[ 
           { label: 'Total Rooms', value: results.summary.totalRooms, color: 'text-slate-700', bg: 'bg-slate-50' },
-          { label: 'Available Now', value: results.summary.available, color: 'text-emerald-700', bg: 'bg-emerald-50' },
+          { label: 'Available In Window', value: results.summary.available, color: 'text-emerald-700', bg: 'bg-emerald-50' },
           { label: 'Occupied by Timetable', value: results.summary.occupied, color: 'text-rose-700', bg: 'bg-rose-50' },
           { label: 'Booked Rooms', value: results.summary.booked, color: 'text-sky-700', bg: 'bg-sky-50' },
           { label: 'Maintenance Rooms', value: results.summary.maintenance, color: 'text-amber-700', bg: 'bg-amber-50' },
@@ -11203,7 +11210,7 @@ function LiveRoomAvailability() {
         <div className="flex items-center justify-between mb-5">
           <div>
             <h3 className="text-xl font-bold text-slate-800">Recommended Booking Options</h3>
-            <p className="text-sm text-slate-500 mt-1">Secondary shortcuts for quick booking once the live room-status view has already narrowed your choice.</p>
+            <p className="text-sm text-slate-500 mt-1">Secondary shortcuts drawn from rooms that are physically vacant in the selected real-time window.</p>
           </div>
           <div className="px-3 py-1 rounded-full bg-violet-50 text-violet-700 text-xs font-bold">{results.recommendedRooms.length} suggestions</div>
         </div>
@@ -11245,7 +11252,7 @@ function LiveRoomAvailability() {
         <div className="flex items-center justify-between mb-5">
           <div>
             <h3 className="text-xl font-bold text-slate-800">Live Availability Map</h3>
-            <p className="text-sm text-slate-500 mt-1">Primary operational view grouped by building, block/direct floors, and floor for fast monitoring and conflict review.</p>
+            <p className="text-sm text-slate-500 mt-1">Primary operational view grouped by building, block/direct floors, and floor using actual requested-time vacancy rather than timing-profile slot visibility.</p>
           </div>
           <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">{results.rooms.length} rooms</div>
         </div>
@@ -11385,7 +11392,7 @@ function LiveRoomAvailability() {
             </div>
             <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="md:col-span-2 rounded-xl bg-slate-50 border border-slate-100 px-4 py-3 text-sm text-slate-600">
-                This reuses the existing booking request flow and prefills the selected room, date, and time for faster submission.
+                This reuses the existing booking request flow and prefills the selected room, date, and time for faster submission. Physical vacancy is already confirmed for the requested window; Academic Regular requests may still need slot-aligned confirmation at submit time.
               </div>
               {selectedLiveBookingTimingProfile && (
                 <div className={cn(
