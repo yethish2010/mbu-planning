@@ -215,6 +215,31 @@ const sanitizeExtractedSchedule = (schedule: any) => {
 const normalizeLookupValue = (value: unknown) =>
   value?.toString().trim().toLowerCase().replace(/\s+/g, ' ') || '';
 
+const ADMIN_ROLE_OPTIONS = ['Administrator', 'Admin', 'Master Admin'];
+const EXECUTIVE_ROLE_OPTIONS = ['Vice Chancellor', 'Pro-Chancellor'];
+const SCHOOL_SCOPED_ROLE_OPTIONS = ['Dean'];
+const DEPARTMENT_SCOPED_ROLE_OPTIONS = ['HOD', 'Faculty', 'Event Coordinator'];
+const USER_ROLE_OPTIONS = [
+  ...ADMIN_ROLE_OPTIONS,
+  ...EXECUTIVE_ROLE_OPTIONS,
+  'Dean',
+  'Dean (P&M)',
+  'Deputy Dean (P&M)',
+  'HOD',
+  'Event Coordinator',
+  'Faculty',
+  'Maintenance Staff',
+  'Infrastructure Manager',
+];
+const ADMIN_ROLE_SET = new Set(ADMIN_ROLE_OPTIONS.map(normalizeLookupValue));
+const EXECUTIVE_ROLE_SET = new Set(EXECUTIVE_ROLE_OPTIONS.map(normalizeLookupValue));
+const SCHOOL_SCOPED_ROLE_SET = new Set(SCHOOL_SCOPED_ROLE_OPTIONS.map(normalizeLookupValue));
+const DEPARTMENT_SCOPED_ROLE_SET = new Set(DEPARTMENT_SCOPED_ROLE_OPTIONS.map(normalizeLookupValue));
+const isAdminRole = (role: unknown) => ADMIN_ROLE_SET.has(normalizeLookupValue(role));
+const isExecutiveRole = (role: unknown) => EXECUTIVE_ROLE_SET.has(normalizeLookupValue(role));
+const isSchoolScopedRole = (role: unknown) => SCHOOL_SCOPED_ROLE_SET.has(normalizeLookupValue(role));
+const isDepartmentScopedRole = (role: unknown) => DEPARTMENT_SCOPED_ROLE_SET.has(normalizeLookupValue(role));
+
 const ROOM_IMPORT_OPTIONAL_PLACEHOLDERS = new Set([
   '-',
   '--',
@@ -2080,16 +2105,47 @@ const getAcademicCalendarEventRank = (eventType: unknown) => {
 
 const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: Record<string, any>[]; instructions?: string[] }> = {
   User: {
-    headers: ['Full Name', 'Employee ID', 'Role', 'Email Address', 'Department', 'Password'],
+    headers: ['Full Name', 'Employee ID', 'Role', 'Email Address', 'School', 'Department', 'Access Type', 'Access Scope', 'Password'],
     exampleRows: [
       {
-        'Full Name': 'Jane Administrator',
-        'Employee ID': 'EMP-001',
-        Role: 'Administrator',
-        'Email Address': 'jane.admin@example.com',
-        Department: 'Computer Science and Engineering',
+        'Full Name': 'Asha Admin',
+        'Employee ID': 'EMP-ADMIN-001',
+        Role: 'Admin',
+        'Email Address': 'asha.admin@example.com',
+        School: '',
+        Department: '',
+        'Access Type': 'Global',
+        'Access Scope': 'All',
         Password: 'Welcome123',
       },
+      {
+        'Full Name': 'Dr. Meena Dean',
+        'Employee ID': 'EMP-DEAN-001',
+        Role: 'Dean',
+        'Email Address': 'meena.dean@example.com',
+        School: 'School of Computing',
+        Department: '',
+        'Access Type': 'School',
+        'Access Scope': 'School of Computing',
+        Password: 'Welcome123',
+      },
+      {
+        'Full Name': 'Dr. Ravi Kumar',
+        'Employee ID': 'EMP-HOD-001',
+        Role: 'HOD',
+        'Email Address': 'ravi.hod@example.com',
+        School: 'School of Computing',
+        Department: 'Computer Science and Engineering',
+        'Access Type': 'Department',
+        'Access Scope': 'Computer Science and Engineering',
+        Password: 'Welcome123',
+      },
+    ],
+    instructions: [
+      `Allowed Role values: ${USER_ROLE_OPTIONS.join(', ')}.`,
+      'Fill School for Dean users and all school-level roles. School can be left blank for global roles like Admin, Master Admin, Vice Chancellor, and Pro-Chancellor.',
+      'Fill Department for HOD, Faculty, and Event Coordinator users. The system will infer the school from the selected department when possible.',
+      'Access Type and Access Scope are imported for clarity, but standard roles automatically derive their final scope: Global for admin/executive roles, School for Dean, and Department for HOD/Faculty/Event Coordinator.',
     ],
   },
   Campus: {
@@ -3305,35 +3361,36 @@ function DependencyGuard({ children, dependencies }: { children: React.ReactNode
 function Sidebar() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
-  const approvalRoles = ['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)'];
+  const approvalRoles = ['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)', 'Deputy Dean (P&M)'];
+  const executiveMenuRoles = ['Vice Chancellor', 'Pro-Chancellor'];
 
   const customAccessPaths = user?.access_paths?.split(',').map((path: string) => path.trim()).filter(Boolean) || [];
   const menuItems = [
-    { name: 'Dashboard', icon: LayoutDashboard, path: '/', roles: ['Administrator', 'Faculty', 'HOD', 'Dean', 'Event Coordinator', 'Dean (P&M)', 'Deputy Dean (P&M)', 'Maintenance Staff', 'Infrastructure Manager'] },
-    { name: 'User Management', icon: Users, path: '/users', roles: ['Administrator'] },
-    { name: 'Campus Management', icon: Globe, path: '/campuses', roles: ['Administrator', 'Infrastructure Manager'] },
-    { name: 'Building Management', icon: Building2, path: '/buildings', roles: ['Administrator', 'Infrastructure Manager'] },
-    { name: 'Block Management', icon: Layers, path: '/blocks', roles: ['Administrator', 'Infrastructure Manager'] },
-    { name: 'Floor Management', icon: Layers, path: '/floors', roles: ['Administrator', 'Infrastructure Manager'] },
-    { name: 'Room Management', icon: DoorOpen, path: '/rooms', roles: ['Administrator', 'Infrastructure Manager'] },
-    { name: 'School Management', icon: BookOpen, path: '/schools', roles: ['Administrator'] },
-    { name: 'Department Management', icon: Layers, path: '/departments', roles: ['Administrator'] },
-    { name: 'Timing Profile Management', icon: Clock, path: '/timing-profiles', roles: ['Administrator', 'Infrastructure Manager'] },
-    { name: 'Academic Calendar', icon: Calendar, path: '/academic-calendars', roles: ['Administrator', 'Infrastructure Manager'] },
-    { name: 'Department Room Mapping', icon: DoorOpen, path: '/dept-allocation', roles: ['Administrator', 'Infrastructure Manager'] },
-    { name: 'Batch Room Allocation', icon: DoorOpen, path: '/batch-room-allocations', roles: ['Administrator', 'Infrastructure Manager'] },
-    { name: 'Equipment Management', icon: Wrench, path: '/equipment', roles: ['Administrator', 'Infrastructure Manager', 'Maintenance Staff'] },
-    { name: 'Schedule Records', icon: Calendar, path: '/scheduling', roles: ['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)'] },
-    { name: 'Timetable View', icon: Clock, path: '/timetable', roles: ['Administrator', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD'] },
-    { name: 'Digital Twin', icon: Globe, path: '/digital-twin', roles: ['Administrator', 'Infrastructure Manager', 'Dean', 'HOD'] },
-    { name: 'Live Availability', icon: MapIcon, path: '/live-availability', roles: ['Administrator', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Faculty', 'Event Coordinator', 'Infrastructure Manager'] },
+    { name: 'Dashboard', icon: LayoutDashboard, path: '/', roles: ['Administrator', 'Admin', 'Master Admin', 'Faculty', 'HOD', 'Dean', 'Event Coordinator', 'Dean (P&M)', 'Deputy Dean (P&M)', 'Maintenance Staff', 'Infrastructure Manager', ...executiveMenuRoles] },
+    { name: 'User Management', icon: Users, path: '/users', roles: ['Administrator', 'Admin', 'Master Admin'] },
+    { name: 'Campus Management', icon: Globe, path: '/campuses', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager'] },
+    { name: 'Building Management', icon: Building2, path: '/buildings', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager'] },
+    { name: 'Block Management', icon: Layers, path: '/blocks', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager'] },
+    { name: 'Floor Management', icon: Layers, path: '/floors', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager'] },
+    { name: 'Room Management', icon: DoorOpen, path: '/rooms', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager'] },
+    { name: 'School Management', icon: BookOpen, path: '/schools', roles: ['Administrator', 'Admin', 'Master Admin'] },
+    { name: 'Department Management', icon: Layers, path: '/departments', roles: ['Administrator', 'Admin', 'Master Admin'] },
+    { name: 'Timing Profile Management', icon: Clock, path: '/timing-profiles', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager'] },
+    { name: 'Academic Calendar', icon: Calendar, path: '/academic-calendars', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager'] },
+    { name: 'Department Room Mapping', icon: DoorOpen, path: '/dept-allocation', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager'] },
+    { name: 'Batch Room Allocation', icon: DoorOpen, path: '/batch-room-allocations', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager'] },
+    { name: 'Equipment Management', icon: Wrench, path: '/equipment', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Maintenance Staff'] },
+    { name: 'Schedule Records', icon: Calendar, path: '/scheduling', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)', 'Deputy Dean (P&M)'] },
+    { name: 'Timetable View', icon: Clock, path: '/timetable', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD'] },
+    { name: 'Digital Twin', icon: Globe, path: '/digital-twin', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean', 'HOD', ...executiveMenuRoles] },
+    { name: 'Live Availability', icon: MapIcon, path: '/live-availability', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Faculty', 'Event Coordinator', 'Infrastructure Manager', ...executiveMenuRoles] },
     { name: 'Room Bookings', icon: BookOpen, path: '/bookings', roles: [...approvalRoles, 'Dean'] },
     { name: 'Room Requests', icon: BookOpen, path: '/bookings', roles: ['Faculty', 'HOD', 'Event Coordinator'] },
-    { name: 'AI Room Recommendation', icon: BrainCircuit, path: '/ai-allocation', roles: ['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)'] },
-    { name: 'Maintenance', icon: Wrench, path: '/maintenance', roles: ['Administrator', 'Maintenance Staff', 'Infrastructure Manager'] },
-    { name: 'Analytics', icon: BarChart3, path: '/analytics', roles: ['Administrator', 'Infrastructure Manager'] },
-    { name: 'Utilization Reports', icon: FileText, path: '/reports', roles: ['Administrator', 'Infrastructure Manager'] },
-    { name: 'Performance Insights', icon: Activity, path: '/performance-insights', roles: ['Administrator', 'Infrastructure Manager'] },
+    { name: 'AI Room Recommendation', icon: BrainCircuit, path: '/ai-allocation', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)', 'Deputy Dean (P&M)'] },
+    { name: 'Maintenance', icon: Wrench, path: '/maintenance', roles: ['Administrator', 'Admin', 'Master Admin', 'Maintenance Staff', 'Infrastructure Manager'] },
+    { name: 'Analytics', icon: BarChart3, path: '/analytics', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', ...executiveMenuRoles] },
+    { name: 'Utilization Reports', icon: FileText, path: '/reports', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', ...executiveMenuRoles] },
+    { name: 'Performance Insights', icon: Activity, path: '/performance-insights', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', ...executiveMenuRoles] },
   ];
 
   const filteredMenu = menuItems.filter(item => item.roles.includes(user?.role) || customAccessPaths.includes(item.path));
@@ -3730,7 +3787,7 @@ function LoginPage() {
               <input type="checkbox" className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500" />
               <span className="text-sm text-slate-600 group-hover:text-slate-900">Remember Me</span>
             </label>
-            <p className="text-xs font-semibold text-slate-400">Password reset is handled by the Administrator.</p>
+            <p className="text-xs font-semibold text-slate-400">Password reset is handled by the Admin or Master Admin.</p>
           </div>
 
           <div className="flex gap-3 pt-2">
@@ -4006,12 +4063,12 @@ export default function App() {
             </ProtectedRoute>
           } />
 
-          <Route path="/users" element={<ProtectedRoute roles={['Administrator']}><Layout title="User Management"><UserManagement /></Layout></ProtectedRoute>} />
+          <Route path="/users" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin']}><Layout title="User Management"><UserManagement /></Layout></ProtectedRoute>} />
 
           {/* CRUD Routes Placeholder */}
-          <Route path="/campuses" element={<ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}><Layout title="Campus Management"><CampusManagement /></Layout></ProtectedRoute>} />
+          <Route path="/campuses" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager']}><Layout title="Campus Management"><CampusManagement /></Layout></ProtectedRoute>} />
           <Route path="/buildings" element={
-            <ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager']}>
               <Layout title="Building Management">
                 <DependencyGuard dependencies={[{ table: 'campuses', label: 'Campuses' }]}>
                   <BuildingManagement />
@@ -4020,7 +4077,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/blocks" element={
-            <ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager']}>
               <Layout title="Block Management">
                 <DependencyGuard dependencies={[
                   { table: 'campuses', label: 'Campuses' },
@@ -4032,7 +4089,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/floors" element={
-            <ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager']}>
               <Layout title="Floor Management">
                 <DependencyGuard dependencies={[
                   { table: 'buildings', label: 'Buildings' }
@@ -4043,7 +4100,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/rooms" element={
-            <ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager']}>
               <Layout title="Room Management">
                 <DependencyGuard dependencies={[
                   { table: 'blocks', label: 'Blocks' },
@@ -4054,9 +4111,9 @@ export default function App() {
               </Layout>
             </ProtectedRoute>
           } />
-          <Route path="/schools" element={<ProtectedRoute roles={['Administrator']}><Layout title="School Management"><SchoolManagement /></Layout></ProtectedRoute>} />
+          <Route path="/schools" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin']}><Layout title="School Management"><SchoolManagement /></Layout></ProtectedRoute>} />
           <Route path="/departments" element={
-            <ProtectedRoute roles={['Administrator']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin']}>
               <Layout title="Department Management">
                 <DependencyGuard dependencies={[{ table: 'schools', label: 'Schools' }]}>
                   <DepartmentManagement />
@@ -4065,14 +4122,14 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/timing-profiles" element={
-            <ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager']}>
               <Layout title="Timing Profile Management">
                 <TimingProfileManagement />
               </Layout>
             </ProtectedRoute>
           } />
           <Route path="/academic-calendars" element={
-            <ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager']}>
               <Layout title="Academic Calendar Management">
                 <DependencyGuard dependencies={[{ table: 'departments', label: 'Departments' }]}>
                   <AcademicCalendarManagement />
@@ -4081,7 +4138,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/batch-room-allocations" element={
-            <ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager']}>
               <Layout title="Batch Room Allocation">
                 <DependencyGuard dependencies={[
                   { table: 'department_allocations', label: 'Department Room Mapping' },
@@ -4095,7 +4152,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/dept-allocation" element={
-            <ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager']}>
               <Layout title="Department Room Mapping">
                 <DependencyGuard dependencies={[
                   { table: 'departments', label: 'Departments' },
@@ -4107,7 +4164,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/equipment" element={
-            <ProtectedRoute roles={['Administrator', 'Infrastructure Manager', 'Maintenance Staff']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Maintenance Staff']}>
               <Layout title="Equipment Management">
                 <DependencyGuard dependencies={[{ table: 'rooms', label: 'Rooms' }]}>
                   <EquipmentManagement />
@@ -4116,7 +4173,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/scheduling" element={
-            <ProtectedRoute roles={['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)', 'Deputy Dean (P&M)']}>
               <Layout title="Schedule Records">
                 <DependencyGuard dependencies={[
                   { table: 'rooms', label: 'Rooms' },
@@ -4128,7 +4185,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/bookings" element={
-            <ProtectedRoute roles={['Administrator', 'Faculty', 'HOD', 'Dean', 'Event Coordinator', 'Dean (P&M)', 'Deputy Dean (P&M)']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Faculty', 'HOD', 'Dean', 'Event Coordinator', 'Dean (P&M)', 'Deputy Dean (P&M)']}>
               <Layout title="Room Bookings">
                 <DependencyGuard dependencies={[{ table: 'rooms', label: 'Rooms' }]}>
                   <BookingManagement />
@@ -4137,7 +4194,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/maintenance" element={
-            <ProtectedRoute roles={['Administrator', 'Maintenance Staff', 'Infrastructure Manager']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Maintenance Staff', 'Infrastructure Manager']}>
               <Layout title="Maintenance Management">
                 <DependencyGuard dependencies={[{ table: 'rooms', label: 'Rooms' }]}>
                   <MaintenanceManagement />
@@ -4146,7 +4203,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/ai-allocation" element={
-            <ProtectedRoute roles={['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)', 'Deputy Dean (P&M)']}>
               <Layout title="AI Room Recommendation">
                 <DependencyGuard dependencies={[{ table: 'rooms', label: 'Rooms' }]}>
                   <AIAllocation />
@@ -4154,11 +4211,11 @@ export default function App() {
               </Layout>
             </ProtectedRoute>
           } />
-          <Route path="/analytics" element={<ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}><Layout title="Infrastructure Analytics"><AnalyticsDashboard /></Layout></ProtectedRoute>} />
-          <Route path="/reports" element={<ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}><Layout title="Utilization Reports"><ReportGeneration /></Layout></ProtectedRoute>} />
-          <Route path="/performance-insights" element={<ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}><Layout title="Performance Insights"><PerformanceInsights /></Layout></ProtectedRoute>} />
+          <Route path="/analytics" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Vice Chancellor', 'Pro-Chancellor']}><Layout title="Infrastructure Analytics"><AnalyticsDashboard /></Layout></ProtectedRoute>} />
+          <Route path="/reports" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Vice Chancellor', 'Pro-Chancellor']}><Layout title="Utilization Reports"><ReportGeneration /></Layout></ProtectedRoute>} />
+          <Route path="/performance-insights" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Vice Chancellor', 'Pro-Chancellor']}><Layout title="Performance Insights"><PerformanceInsights /></Layout></ProtectedRoute>} />
           <Route path="/timetable" element={
-            <ProtectedRoute roles={['Administrator', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD']}>
               <Layout title="Timetable View">
                 <DependencyGuard dependencies={[{ table: 'rooms', label: 'Rooms' }]}>
                   <TimetableBuilder />
@@ -4167,7 +4224,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/digital-twin" element={
-            <ProtectedRoute roles={['Administrator', 'Infrastructure Manager', 'Dean', 'HOD']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean', 'HOD', 'Vice Chancellor', 'Pro-Chancellor']}>
               <Layout title="Smart Campus Digital Twin">
                 <DependencyGuard dependencies={[{ table: 'buildings', label: 'Buildings' }, { table: 'rooms', label: 'Rooms' }]}>
                   <DigitalTwin />
@@ -4176,7 +4233,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/live-availability" element={
-            <ProtectedRoute roles={['Administrator', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Faculty', 'Event Coordinator', 'Infrastructure Manager']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Faculty', 'Event Coordinator', 'Infrastructure Manager', 'Vice Chancellor', 'Pro-Chancellor']}>
               <Layout title="Live Room Availability">
                 <DependencyGuard dependencies={[{ table: 'rooms', label: 'Rooms' }]}>
                   <LiveRoomAvailability />
@@ -4633,9 +4690,13 @@ function DashboardHome() {
     () => (roleDashboardData.departments || []).find((department: any) => normalizeLookupValue(department?.name) === normalizeLookupValue(user?.department)),
     [roleDashboardData.departments, user?.department],
   );
+  const userSchool = useMemo(
+    () => (roleDashboardData.schools || []).find((school: any) => normalizeLookupValue(school?.name) === normalizeLookupValue(user?.school)),
+    [roleDashboardData.schools, user?.school],
+  );
   const deanSchool = useMemo(
-    () => roleSchoolsById.get(userDepartment?.school_id?.toString?.() || '') || null,
-    [roleSchoolsById, userDepartment],
+    () => userSchool || roleSchoolsById.get(userDepartment?.school_id?.toString?.() || '') || null,
+    [roleSchoolsById, userDepartment, userSchool],
   );
   const schoolDepartmentIds = useMemo(
     () => new Set(
@@ -6324,19 +6385,37 @@ function GenericCRUD({
 // --- SPECIFIC MODULES ---
 
 function UserManagement() {
+  const [schools, setSchools] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
   useEffect(() => {
-    fetchSharedLookupJson('/api/departments')
-      .then(data => setDepartments(Array.isArray(data) ? data : []))
-      .catch(() => setDepartments([]));
+    fetchSharedLookupJsons(['/api/schools', '/api/departments'])
+      .then(([schoolData, departmentData]) => {
+        setSchools(Array.isArray(schoolData) ? schoolData : []);
+        setDepartments(Array.isArray(departmentData) ? departmentData : []);
+      })
+      .catch(() => {
+        setSchools([]);
+        setDepartments([]);
+      });
   }, []);
+
+  const resolveDepartmentOptions = (formState: any) => {
+    const selectedSchool = formState?.school?.toString().trim() || '';
+    if (!selectedSchool) return departments;
+    const matchedSchool = schools.find((school: any) => normalizeLookupValue(school?.name) === normalizeLookupValue(selectedSchool));
+    if (!matchedSchool) return departments;
+    return departments.filter((department: any) => idsMatch(department?.school_id, matchedSchool?.id));
+  };
 
   const fields = [
     { key: 'full_name', label: 'Full Name' },
     { key: 'employee_id', label: 'Employee ID' },
-    { key: 'role', label: 'Role', type: 'select', options: ['Administrator', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Event Coordinator', 'Faculty', 'Maintenance Staff', 'Infrastructure Manager'] },
+    { key: 'role', label: 'Role', type: 'select', options: USER_ROLE_OPTIONS },
     { key: 'email', label: 'Email Address' },
-    { key: 'department', label: 'Department', type: 'select', required: false, options: departments.map(department => department.name) },
+    { key: 'school', label: 'School', type: 'select', required: false, options: schools.map((school: any) => school.name) },
+    { key: 'department', label: 'Department', type: 'select', required: false, options: (formState: any) => resolveDepartmentOptions(formState).map((department: any) => department.name) },
+    { key: 'access_type', label: 'Access Type', type: 'select', required: false, options: ['Global', 'School', 'Department'] },
+    { key: 'access_scope', label: 'Access Scope', required: false },
     { key: 'password_status', label: 'Password', tableOnly: true, render: (item: any) => item.force_password_change ? 'Temporary - change required' : 'Hidden - reset in edit' },
     { key: 'password', label: 'Password / Admin Reset', type: 'password', formOnly: true, required: false },
   ];
@@ -6344,6 +6423,24 @@ function UserManagement() {
   const prepareFormData = (item: any) => ({ ...item, password: '' });
   const prepareSubmitData = (data: any, editingItem: any) => {
     const payload = { ...data };
+    const normalizedRole = normalizeLookupValue(payload.role);
+    if (!payload.school && payload.department) {
+      const matchedDepartment = departments.find((department: any) => normalizeLookupValue(department?.name) === normalizeLookupValue(payload.department));
+      const matchedSchool = schools.find((school: any) => idsMatch(school?.id, matchedDepartment?.school_id));
+      if (matchedSchool?.name) {
+        payload.school = matchedSchool.name;
+      }
+    }
+    if (isAdminRole(normalizedRole) || isExecutiveRole(normalizedRole) || ['dean (p&m)', 'deputy dean (p&m)'].includes(normalizedRole)) {
+      payload.access_type = 'Global';
+      payload.access_scope = 'All';
+    } else if (isSchoolScopedRole(normalizedRole)) {
+      payload.access_type = 'School';
+      payload.access_scope = payload.school || payload.access_scope || '';
+    } else if (isDepartmentScopedRole(normalizedRole)) {
+      payload.access_type = 'Department';
+      payload.access_scope = payload.department || payload.access_scope || '';
+    }
     if (editingItem && !payload.password) delete payload.password;
     if (!editingItem && !payload.password) payload.password = 'Welcome123';
     return payload;
@@ -6356,7 +6453,10 @@ function UserManagement() {
         employee_id: row['Employee ID']?.toString(),
         role: row['Role'],
         email: row['Email Address'],
+        school: row['School'],
         department: row['Department'],
+        access_type: row['Access Type'],
+        access_scope: row['Access Scope'],
         password: getImportValue(row, ['Password', 'Password / Admin Reset'])?.toString() || 'Welcome123'
       };
       return !payload.email || !payload.employee_id
@@ -7795,6 +7895,14 @@ function DashboardShell() {
     ? 'HOD Dashboard'
     : user?.role === 'Dean'
       ? 'Dean Dashboard'
+      : user?.role === 'Vice Chancellor'
+        ? 'Vice Chancellor Dashboard'
+        : user?.role === 'Pro-Chancellor'
+          ? 'Pro-Chancellor Dashboard'
+          : user?.role === 'Admin'
+            ? 'Admin Dashboard'
+            : user?.role === 'Master Admin'
+              ? 'Master Admin Dashboard'
       : 'Digital Twin Command Center';
 
   return (
@@ -10456,6 +10564,7 @@ function BookingManagement() {
   const [floors, setFloors] = useState<any[]>([]);
   const [blocks, setBlocks] = useState<any[]>([]);
   const [buildings, setBuildings] = useState<any[]>([]);
+  const [schools, setSchools] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
   const [academicCalendars, setAcademicCalendars] = useState<any[]>([]);
   const [timingProfiles, setTimingProfiles] = useState<any[]>([]);
@@ -10503,19 +10612,22 @@ function BookingManagement() {
       '/api/floors',
       '/api/blocks',
       '/api/buildings',
+      '/api/schools',
       '/api/departments',
       '/api/academic_calendars',
       '/api/timing_profiles',
       '/api/equipment',
-    ]).then(([roomData, floorData, blockData, buildingData, departmentData, calendarData, timingProfileData, equipmentData]) => {
+    ]).then(([roomData, floorData, blockData, buildingData, schoolData, departmentData, calendarData, timingProfileData, equipmentData]) => {
       const safeRooms = Array.isArray(roomData) ? roomData : [];
       const safeFloors = Array.isArray(floorData) ? floorData : [];
       const safeBlocks = Array.isArray(blockData) ? blockData : [];
       const safeBuildings = Array.isArray(buildingData) ? buildingData : [];
+      const safeSchools = Array.isArray(schoolData) ? schoolData : [];
       setRooms(safeRooms);
       setFloors(safeFloors);
       setBlocks(safeBlocks);
       setBuildings(safeBuildings);
+      setSchools(safeSchools);
       setDepartments(Array.isArray(departmentData) ? departmentData : []);
       setAcademicCalendars(Array.isArray(calendarData) ? calendarData : []);
       setTimingProfiles(Array.isArray(timingProfileData) ? timingProfileData : []);
@@ -10557,15 +10669,20 @@ function BookingManagement() {
     }).catch(console.error);
   }, [location.search]);
 
-  const canDirectDecideBookings = ['Administrator', 'Dean (P&M)'].includes(user?.role);
+  const canDirectDecideBookings = isAdminRole(user?.role) || user?.role === 'Dean (P&M)';
   const canDeputyDecideBookings = user?.role === 'Deputy Dean (P&M)';
   const canRecommendBookings = user?.role === 'HOD';
   const canApproveBookings = canDirectDecideBookings || canDeputyDecideBookings;
-  const canChooseAnyRequestDepartment = canApproveBookings || user?.role === 'Administrator' || isSchoolDean;
+  const canChooseAnyRequestDepartment = canApproveBookings || isAdminRole(user?.role) || isSchoolDean;
   const userDepartmentId = departments.find(dept => normalizeLookupValue(dept.name) === normalizeLookupValue(user?.department))?.id?.toString() || '';
-  const bookingDepartmentOptions = canChooseAnyRequestDepartment || !user?.department
+  const userSchoolId = schools.find((school: any) => normalizeLookupValue(school?.name) === normalizeLookupValue(user?.school))?.id?.toString() || '';
+  const bookingDepartmentOptions = canChooseAnyRequestDepartment
     ? departments
-    : departments.filter(dept => normalizeLookupValue(dept.name) === normalizeLookupValue(user.department));
+    : normalizeLookupValue(user?.role) === 'dean' && userSchoolId
+      ? departments.filter((dept: any) => idsMatch(dept?.school_id, userSchoolId))
+      : !user?.department
+        ? departments
+        : departments.filter(dept => normalizeLookupValue(dept.name) === normalizeLookupValue(user.department));
   const selectedAcademicContextLabel = [
     departments.find(dept => idsMatch(dept.id, searchCriteria.departmentId))?.name,
     searchCriteria.semester,
@@ -11821,6 +11938,7 @@ function LiveRoomAvailability() {
   const [blocks, setBlocks] = useState<any[]>([]);
   const [floors, setFloors] = useState<any[]>([]);
   const [rooms, setRooms] = useState<any[]>([]);
+  const [schools, setSchools] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
   const [academicCalendars, setAcademicCalendars] = useState<any[]>([]);
   const [timingProfiles, setTimingProfiles] = useState<any[]>([]);
@@ -11884,13 +12002,18 @@ function LiveRoomAvailability() {
     rooms: [],
   });
 
-  const canDirectDecideBookings = ['Administrator', 'Dean (P&M)'].includes(user?.role);
-  const canBookRooms = ['Administrator', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Faculty', 'Event Coordinator'].includes(user?.role);
+  const canDirectDecideBookings = isAdminRole(user?.role) || user?.role === 'Dean (P&M)';
+  const canBookRooms = isAdminRole(user?.role) || ['Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Faculty', 'Event Coordinator'].includes(user?.role || '');
   const userDepartmentId = departments.find(dept => normalizeLookupValue(dept.name) === normalizeLookupValue(user?.department))?.id?.toString() || '';
-  const canChooseAnyRequestDepartment = canDirectDecideBookings || user?.role === 'Dean' || user?.role === 'Deputy Dean (P&M)' || user?.role === 'Administrator';
-  const bookingDepartmentOptions = canChooseAnyRequestDepartment || !user?.department
+  const userSchoolId = schools.find((school: any) => normalizeLookupValue(school?.name) === normalizeLookupValue(user?.school))?.id?.toString() || '';
+  const canChooseAnyRequestDepartment = canDirectDecideBookings || isAdminRole(user?.role) || user?.role === 'Dean' || user?.role === 'Deputy Dean (P&M)';
+  const bookingDepartmentOptions = canChooseAnyRequestDepartment
     ? departments
-    : departments.filter(dept => normalizeLookupValue(dept.name) === normalizeLookupValue(user.department));
+    : normalizeLookupValue(user?.role) === 'dean' && userSchoolId
+      ? departments.filter((dept: any) => idsMatch(dept?.school_id, userSchoolId))
+      : !user?.department
+        ? departments
+        : departments.filter(dept => normalizeLookupValue(dept.name) === normalizeLookupValue(user.department));
   const selectedLiveBookingTimingProfile = useMemo(() => resolveTimingProfileForContext({
     timingProfiles,
     academicCalendars,
@@ -11933,6 +12056,7 @@ function LiveRoomAvailability() {
           blockData,
           floorData,
           roomData,
+          schoolData,
           departmentData,
           calendarData,
           timingProfileData,
@@ -11943,6 +12067,7 @@ function LiveRoomAvailability() {
           '/api/blocks',
           '/api/floors',
           '/api/rooms',
+          '/api/schools',
           '/api/departments',
           '/api/academic_calendars',
           '/api/timing_profiles',
@@ -11953,6 +12078,7 @@ function LiveRoomAvailability() {
         setBlocks(Array.isArray(blockData) ? blockData : []);
         setFloors(Array.isArray(floorData) ? floorData : []);
         setRooms(Array.isArray(roomData) ? roomData : []);
+        setSchools(Array.isArray(schoolData) ? schoolData : []);
         setDepartments(Array.isArray(departmentData) ? departmentData : []);
         setAcademicCalendars(Array.isArray(calendarData) ? calendarData : []);
         setTimingProfiles(Array.isArray(timingProfileData) ? timingProfileData : []);
@@ -18605,6 +18731,7 @@ function TimetableBuilder() {
   const location = useLocation();
   const [schedules, setSchedules] = useState<any[]>([]);
   const [rooms, setRooms] = useState<any[]>([]);
+  const [schools, setSchools] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
   const [academicCalendars, setAcademicCalendars] = useState<any[]>([]);
   const [timingProfiles, setTimingProfiles] = useState<any[]>([]);
@@ -18626,6 +18753,15 @@ function TimetableBuilder() {
       return new Set<string>(department?.id ? [department.id.toString()] : []);
     }
     if (user?.role === 'Dean') {
+      const selectedSchool = schools.find((item: any) => normalizeLookupValue(item?.name) === normalizeLookupValue(user?.school));
+      if (selectedSchool?.id) {
+        return new Set<string>(
+          departments
+            .filter((item: any) => idsMatch(item?.school_id, selectedSchool.id))
+            .map((item: any) => item.id?.toString())
+            .filter(Boolean),
+        );
+      }
       const department = departments.find((item: any) => normalizeLookupValue(item?.name) === normalizeLookupValue(user?.department));
       if (!department?.school_id) return new Set<string>();
       return new Set<string>(
@@ -18636,7 +18772,7 @@ function TimetableBuilder() {
       );
     }
     return new Set<string>();
-  }, [departments, user?.department, user?.role]);
+  }, [departments, schools, user?.department, user?.role, user?.school]);
 
   const visibleSchedules = useMemo(() => {
     if (scopedDepartmentIds.size === 0) return schedules;
@@ -18878,9 +19014,10 @@ function TimetableBuilder() {
 
   const fetchData = async () => {
     try {
-      const [sData, rData, dData, cData, tpData, baData] = await Promise.all([
+      const [sData, rData, schoolData, dData, cData, tpData, baData] = await Promise.all([
         apiJson('/api/schedules'),
         fetchSharedLookupJson('/api/rooms'),
+        fetchSharedLookupJson('/api/schools'),
         fetchSharedLookupJson('/api/departments'),
         fetchSharedLookupJson('/api/academic_calendars'),
         fetchSharedLookupJson('/api/timing_profiles'),
@@ -18888,6 +19025,7 @@ function TimetableBuilder() {
       ]);
       setSchedules(deduplicateScheduleRows(Array.isArray(sData) ? sData : []));
       setRooms(rData);
+      setSchools(Array.isArray(schoolData) ? schoolData : []);
       setDepartments(dData);
       setAcademicCalendars(Array.isArray(cData) ? cData : []);
       setTimingProfiles(Array.isArray(tpData) ? tpData : []);

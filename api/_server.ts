@@ -64,6 +64,32 @@ type ModuleLoadTelemetryRecord = {
 const moduleLoadTelemetry: ModuleLoadTelemetryRecord[] = [];
 const MAX_MODULE_LOAD_TELEMETRY = 250;
 
+const ADMIN_ROLE_VALUES = new Set(["Administrator", "Admin", "Master Admin"]);
+const EXECUTIVE_VIEW_ROLE_VALUES = new Set(["Vice Chancellor", "Pro-Chancellor"]);
+const GLOBAL_SCOPE_ROLE_VALUES = new Set([
+  "Administrator",
+  "Admin",
+  "Master Admin",
+  "Vice Chancellor",
+  "Pro-Chancellor",
+  "Dean (P&M)",
+  "Deputy Dean (P&M)",
+]);
+const SCHOOL_SCOPE_ROLE_VALUES = new Set(["Dean"]);
+const DEPARTMENT_SCOPE_ROLE_VALUES = new Set(["HOD", "Faculty", "Event Coordinator"]);
+
+const isAdminRole = (role: any) => ADMIN_ROLE_VALUES.has(role?.toString().trim() || "");
+const isExecutiveViewRole = (role: any) => EXECUTIVE_VIEW_ROLE_VALUES.has(role?.toString().trim() || "");
+const normalizeUserAccessTypeValue = (value: any) => {
+  const normalized = value?.toString().trim().toLowerCase() || "";
+  if (!normalized) return "";
+  if (normalized === "global") return "Global";
+  if (normalized === "school") return "School";
+  if (normalized === "department") return "Department";
+  if (normalized === "custom") return "Custom";
+  return value?.toString().trim() || "";
+};
+
 const getCampusDateTimeParts = (value: Date = new Date()) => {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: APP_TIME_ZONE,
@@ -91,6 +117,7 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       id ${idDefinition},
       full_name TEXT NOT NULL,
       employee_id TEXT UNIQUE NOT NULL,
+      school TEXT,
       department TEXT,
       designation TEXT,
       role TEXT NOT NULL,
@@ -99,6 +126,8 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       password TEXT NOT NULL,
       responsibilities TEXT,
       access_limits TEXT,
+      access_type TEXT,
+      access_scope TEXT,
       access_paths TEXT,
       force_password_change INTEGER DEFAULT 0,
       created_at ${timestampType} DEFAULT CURRENT_TIMESTAMP
@@ -437,6 +466,9 @@ await ensureColumn("schedules", "source_file", "TEXT");
 await ensureColumn("schedules", "session_group_id", "TEXT");
 await ensureColumn("users", "responsibilities", "TEXT");
 await ensureColumn("users", "access_limits", "TEXT");
+await ensureColumn("users", "school", "TEXT");
+await ensureColumn("users", "access_type", "TEXT");
+await ensureColumn("users", "access_scope", "TEXT");
 await ensureColumn("users", "access_paths", "TEXT");
 await ensureColumn("users", "force_password_change", "INTEGER DEFAULT 0");
 await ensureColumn("batch_room_allocations", "allocation_mode", "TEXT DEFAULT 'Shared'");
@@ -1837,6 +1869,17 @@ const getDepartmentNameById = async (departmentId?: string | number | null) => {
   return department?.name || null;
 };
 
+const getSchoolRecordByName = async (schoolName?: string | null) => {
+  const normalizedSchoolName = schoolName?.toString().trim() || "";
+  if (!normalizedSchoolName) return null;
+  return await db.prepare(`
+    SELECT id, name
+    FROM schools
+    WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+    LIMIT 1
+  `).get(normalizedSchoolName) as any;
+};
+
 const getDepartmentScopeByName = async (departmentName?: string | null) => {
   const normalizedDepartmentName = departmentName?.toString().trim() || "";
   if (!normalizedDepartmentName) {
@@ -1871,6 +1914,89 @@ const getDepartmentScopeByName = async (departmentName?: string | null) => {
       .map((item: any) => item?.id?.toString())
       .filter(Boolean),
   };
+};
+
+const normalizeUserPayload = async (payload: any, existingItem?: any) => {
+  const nextPayload = { ...(existingItem || {}), ...(payload || {}) };
+  nextPayload.full_name = nextPayload.full_name?.toString().trim() || "";
+  nextPayload.employee_id = nextPayload.employee_id?.toString().trim() || "";
+  nextPayload.role = nextPayload.role?.toString().trim() || "";
+  nextPayload.email = nextPayload.email?.toString().trim().toLowerCase() || "";
+  nextPayload.school = nextPayload.school?.toString().trim() || "";
+  nextPayload.department = nextPayload.department?.toString().trim() || "";
+  nextPayload.designation = nextPayload.designation?.toString().trim() || null;
+  nextPayload.mobile_number = nextPayload.mobile_number?.toString().trim() || null;
+  nextPayload.responsibilities = nextPayload.responsibilities?.toString().trim() || null;
+  nextPayload.access_limits = nextPayload.access_limits?.toString().trim() || null;
+  nextPayload.access_paths = nextPayload.access_paths?.toString().trim() || null;
+
+  if (!nextPayload.full_name) throw new Error("Full name is required.");
+  if (!nextPayload.employee_id) throw new Error("Employee ID is required.");
+  if (!nextPayload.role) throw new Error("Role is required.");
+  if (!nextPayload.email) throw new Error("Email address is required.");
+
+  const role = nextPayload.role;
+  const normalizedRequestedAccessType = normalizeUserAccessTypeValue(nextPayload.access_type);
+  const requestedAccessScope = nextPayload.access_scope?.toString().trim() || "";
+  const schoolRecord = nextPayload.school ? await getSchoolRecordByName(nextPayload.school) : null;
+  if (nextPayload.school && !schoolRecord) {
+    throw new Error(`School "${nextPayload.school}" was not found. Create the school first or use the exact school name.`);
+  }
+
+  const departmentScope = nextPayload.department ? await getDepartmentScopeByName(nextPayload.department) : null;
+  if (nextPayload.department && !departmentScope?.department) {
+    throw new Error(`Department "${nextPayload.department}" was not found. Create the department first or use the exact department name.`);
+  }
+
+  const inferredSchoolName = schoolRecord?.name
+    || (departmentScope?.department?.school_id
+      ? (await db.prepare("SELECT name FROM schools WHERE id = ?").get(departmentScope.department.school_id) as any)?.name
+      : "");
+
+  if (schoolRecord && departmentScope?.department?.school_id && !idsEqual(schoolRecord.id, departmentScope.department.school_id)) {
+    throw new Error(`Department "${nextPayload.department}" does not belong to school "${nextPayload.school}".`);
+  }
+
+  if (DEPARTMENT_SCOPE_ROLE_VALUES.has(role) && !nextPayload.department) {
+    throw new Error(`${role} users must be linked to a department.`);
+  }
+  if (SCHOOL_SCOPE_ROLE_VALUES.has(role) && !(nextPayload.school || inferredSchoolName)) {
+    throw new Error(`${role} users must be linked to a school.`);
+  }
+
+  nextPayload.school = nextPayload.school || inferredSchoolName || null;
+  nextPayload.department = nextPayload.department || null;
+
+  let derivedAccessType = normalizedRequestedAccessType;
+  let derivedAccessScope = requestedAccessScope;
+
+  if (GLOBAL_SCOPE_ROLE_VALUES.has(role) || isAdminRole(role) || isExecutiveViewRole(role)) {
+    derivedAccessType = "Global";
+    derivedAccessScope = "All";
+    nextPayload.school = nextPayload.school || null;
+  } else if (SCHOOL_SCOPE_ROLE_VALUES.has(role)) {
+    derivedAccessType = "School";
+    derivedAccessScope = nextPayload.school || requestedAccessScope || "";
+  } else if (DEPARTMENT_SCOPE_ROLE_VALUES.has(role)) {
+    derivedAccessType = "Department";
+    derivedAccessScope = nextPayload.department || requestedAccessScope || "";
+  } else if (!derivedAccessType) {
+    if (nextPayload.department) {
+      derivedAccessType = "Department";
+      derivedAccessScope = nextPayload.department;
+    } else if (nextPayload.school) {
+      derivedAccessType = "School";
+      derivedAccessScope = nextPayload.school;
+    } else {
+      derivedAccessType = "Global";
+      derivedAccessScope = "All";
+    }
+  }
+
+  nextPayload.access_type = derivedAccessType || null;
+  nextPayload.access_scope = derivedAccessScope || null;
+
+  return nextPayload;
 };
 
 const backfillNotificationsIfEmpty = async () => {
@@ -2303,10 +2429,13 @@ const getUserSessionPayload = (user: any) => ({
   email: user.email,
   role: user.role,
   name: user.full_name,
+  school: user.school,
   department: user.department,
   designation: user.designation,
   responsibilities: user.responsibilities,
   access_limits: user.access_limits,
+  access_type: user.access_type,
+  access_scope: user.access_scope,
   access_paths: user.access_paths,
   force_password_change: !!user.force_password_change
 });
@@ -2687,11 +2816,11 @@ app.post("/api/notifications/read-all", authenticate, async (req: any, res) => {
 });
 
 app.post("/api/auth/forgot-password", (req, res) => {
-  res.status(403).json({ error: "Password reset is handled by the Administrator." });
+  res.status(403).json({ error: "Password reset is handled by the Admin or Master Admin." });
 });
 
 app.post("/api/auth/reset-password", (req, res) => {
-  res.status(403).json({ error: "Password reset is handled by the Administrator." });
+  res.status(403).json({ error: "Password reset is handled by the Admin or Master Admin." });
 });
 
 app.post("/api/auth/change-password", authenticate, async (req: any, res) => {
@@ -3128,6 +3257,7 @@ const normalizeBulkImportPayload = async (tableName: string, payload: any, exist
     if (existingItem && !nextPayload.password) delete nextPayload.password;
     if (!existingItem && !nextPayload.password) nextPayload.password = "Welcome123";
     if (nextPayload.password) nextPayload.force_password_change = 1;
+    nextPayload = await normalizeUserPayload(nextPayload, existingItem);
   }
 
   if (tableName === "rooms") {
@@ -3768,7 +3898,7 @@ const getDigitalTwinCategoryLabel = (room: any, status?: string) => {
   return "Other";
 };
 
-const isDecisionRole = (role: string) => ["Administrator", "Dean (P&M)", "Deputy Dean (P&M)"].includes(role);
+const isDecisionRole = (role: string) => isAdminRole(role) || ["Dean (P&M)", "Deputy Dean (P&M)"].includes(role);
 const openBookingStatuses = ["Pending", "HOD Recommended", "Approved"];
 
 const getApprovedBookingConflict = async (booking: any, excludeId?: string | number) => {
@@ -3869,7 +3999,17 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         const user = (req as any).user;
         if (isDecisionRole(user.role)) return res.json(bookings);
         if (user.role === "Dean") {
-          const scope = await getDepartmentScopeByName(user.department);
+          const scope = user.school
+            ? await getSchoolRecordByName(user.school).then(async (school) => {
+              if (!school) return { departmentIdsInSchool: [] as string[] };
+              const siblingDepartments = await db.prepare(`SELECT id FROM departments WHERE school_id = ?`).all(school.id) as any[];
+              return {
+                departmentIdsInSchool: siblingDepartments
+                  .map((item: any) => item?.id?.toString())
+                  .filter(Boolean),
+              };
+            })
+            : await getDepartmentScopeByName(user.department);
           if (scope.departmentIdsInSchool.length > 0) {
             const allowedDepartmentIds = new Set(scope.departmentIdsInSchool);
             return res.json(bookings.filter((booking: any) =>
@@ -4179,8 +4319,8 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     if (!BULK_IMPORT_SUPPORTED_TABLES.has(tableName)) {
       return res.status(404).json({ error: "Bulk import is not supported for this module." });
     }
-    if (tableName === "users" && (req as any).user?.role !== "Administrator") {
-      return res.status(403).json({ error: "Only Administrator can manage users and passwords." });
+    if (tableName === "users" && !isAdminRole((req as any).user?.role)) {
+      return res.status(403).json({ error: "Only Admin or Master Admin can manage users and passwords." });
     }
 
     try {
@@ -4258,8 +4398,8 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
   });
 
   app.post(`/api/${tableName}`, authenticate, async (req, res) => {
-    if (tableName === "users" && (req as any).user?.role !== "Administrator") {
-      return res.status(403).json({ error: "Only Administrator can manage users and passwords." });
+    if (tableName === "users" && !isAdminRole((req as any).user?.role)) {
+      return res.status(403).json({ error: "Only Admin or Master Admin can manage users and passwords." });
     }
     if (tableName === "users" && !req.body.password) {
       req.body.password = "Welcome123";
@@ -4358,7 +4498,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
           const statusIndex = fields.indexOf("status");
           if (statusIndex >= 0) values[statusIndex] = req.body.status;
         }
-        if (req.body.status === "Approved" && !["Administrator", "Dean (P&M)"].includes((req as any).user.role)) {
+        if (req.body.status === "Approved" && !(isAdminRole((req as any).user.role) || ["Dean (P&M)"].includes((req as any).user.role))) {
           req.body.status = "Pending";
           const statusIndex = fields.indexOf("status");
           if (statusIndex >= 0) values[statusIndex] = req.body.status;
@@ -4423,8 +4563,8 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
   });
 
   app.put(`/api/${tableName}/:id`, authenticate, async (req, res) => {
-    if (tableName === "users" && (req as any).user?.role !== "Administrator") {
-      return res.status(403).json({ error: "Only Administrator can manage users and passwords." });
+    if (tableName === "users" && !isAdminRole((req as any).user?.role)) {
+      return res.status(403).json({ error: "Only Admin or Master Admin can manage users and passwords." });
     }
     if (tableName === "users" && !req.body.password) {
       delete req.body.password;
@@ -4521,15 +4661,15 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
           }
         }
         if (["Approved", "Rejected", "Postponed"].includes(requestedStatus)) {
-          const deanCanDecide = ["Administrator", "Dean (P&M)"].includes(role);
+          const deanCanDecide = isAdminRole(role) || ["Dean (P&M)"].includes(role);
           const deputyCanDecide = role === "Deputy Dean (P&M)" && existingItem.status === "HOD Recommended";
           const requesterCanCancel = requestedStatus === "Rejected" && isRequester;
           if (!deanCanDecide && !deputyCanDecide && !requesterCanCancel) {
             return res.status(403).json({ error: "Deputy Dean can decide only after HOD recommendation. Dean (P&M) can decide directly." });
           }
         }
-        if (requestedStatus === "Pending" && !isRequester && !["Administrator", "Dean (P&M)"].includes(role)) {
-          return res.status(403).json({ error: "Only the requester, Administrator, or Dean (P&M) can reopen this request." });
+        if (requestedStatus === "Pending" && !isRequester && !(isAdminRole(role) || ["Dean (P&M)"].includes(role))) {
+          return res.status(403).json({ error: "Only the requester, Admin, Master Admin, or Dean (P&M) can reopen this request." });
         }
         if (requestedStatus === "Pending" && !["Rejected", "Postponed"].includes(existingItem.status)) {
           return res.status(400).json({ error: "Only rejected or postponed requests can be reopened." });
@@ -4598,8 +4738,8 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
   });
 
   app.delete(`/api/${tableName}/reset`, authenticate, async (req, res) => {
-    if (tableName === "users" && (req as any).user?.role !== "Administrator") {
-      return res.status(403).json({ error: "Only Administrator can remove users." });
+    if (tableName === "users" && !isAdminRole((req as any).user?.role)) {
+      return res.status(403).json({ error: "Only Admin or Master Admin can remove users." });
     }
     try {
       if (tableName === "department_allocations") {
@@ -4616,8 +4756,8 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
   });
 
   app.delete(`/api/${tableName}/:id`, authenticate, async (req, res) => {
-    if (tableName === "users" && (req as any).user?.role !== "Administrator") {
-      return res.status(403).json({ error: "Only Administrator can remove users." });
+    if (tableName === "users" && !isAdminRole((req as any).user?.role)) {
+      return res.status(403).json({ error: "Only Admin or Master Admin can remove users." });
     }
     try {
       const existingItem = await db.prepare(`SELECT * FROM ${tableName} WHERE ${idField} = ?`).get(req.params.id) as any;
