@@ -12191,7 +12191,7 @@ function LiveRoomAvailability() {
       void trackModuleLoadMetric('LiveRoomAvailability', 'data-load', performance.now() - startedAt, Array.isArray(data.rooms) ? data.rooms.length : 0);
     } catch (err: any) {
       setError(err.message || 'Failed to load live availability.');
-      setResults(prev => ({ ...prev, recommendedRooms: [], rooms: [] }));
+      setResults((prev: any) => ({ ...prev, recommendedRooms: [], rooms: [] }));
     } finally {
       setLoadingResults(false);
     }
