@@ -172,8 +172,11 @@ var isProduction = process.env.NODE_ENV === "production";
 var isVercelRuntime = process.env.VERCEL === "1";
 var defaultDatabasePath = isVercelRuntime ? path2.join("/tmp", "campus.db") : path2.join(process.cwd(), "campus.db");
 var databasePath = process.env.DATABASE_PATH ? path2.resolve(process.env.DATABASE_PATH) : defaultDatabasePath;
-var databaseProvider = process.env.DATABASE_PROVIDER || "";
-var databaseUrl = process.env.DATABASE_URL || "";
+var rawDatabaseProvider = process.env.DATABASE_PROVIDER || "";
+var rawDatabaseUrl = process.env.DATABASE_URL || "";
+var isLocalhostDatabaseUrl = /localhost|127\.0\.0\.1/.test(rawDatabaseUrl);
+var databaseProvider = isVercelRuntime && isLocalhostDatabaseUrl ? "" : rawDatabaseProvider;
+var databaseUrl = isVercelRuntime && isLocalhostDatabaseUrl ? "" : rawDatabaseUrl;
 var APP_TIME_ZONE = process.env.APP_TIMEZONE || "Asia/Kolkata";
 var normalizeOrigin = (value) => {
   const trimmed = value?.trim();
@@ -513,12 +516,8 @@ if (process.env.DATABASE_RESET === "true" && (!databaseProvider || databaseProvi
     console.log(`DATABASE_RESET=true: deleted existing database at ${databasePath}`);
   }
 }
-var db = await createDatabaseClient({
-  databasePath,
-  databaseUrl,
-  provider: databaseProvider
-});
-await db.exec(getPrimarySchemaSql(db.dialect));
+var db;
+var dbInitializationError = null;
 var seedAdmin = async () => {
   const admin = await db.prepare("SELECT * FROM users WHERE role = 'Administrator'").get();
   if (!admin) {
@@ -530,7 +529,18 @@ var seedAdmin = async () => {
     console.log("Master Admin created: admin@smartcampus.ai / admin123");
   }
 };
-await seedAdmin();
+try {
+  db = await createDatabaseClient({
+    databasePath,
+    databaseUrl,
+    provider: databaseProvider
+  });
+  await db.exec(getPrimarySchemaSql(db.dialect));
+  await seedAdmin();
+} catch (err) {
+  dbInitializationError = err?.message || "Database initialization failed";
+  console.error("[Smart Campus] Database initialization failed:", dbInitializationError);
+}
 var ensureColumn = async (tableName, columnName, definition) => {
   await db.ensureColumn(tableName, columnName, definition);
 };
@@ -1951,6 +1961,12 @@ app.use((req, res, next) => {
     if (req.method === "OPTIONS") {
       return res.sendStatus(204);
     }
+  }
+  next();
+});
+app.use((_req, res, next) => {
+  if (dbInitializationError) {
+    return res.status(503).json({ error: "Service unavailable: database could not be initialized." });
   }
   next();
 });

@@ -27,8 +27,12 @@ const defaultDatabasePath = isVercelRuntime
 const databasePath = process.env.DATABASE_PATH
   ? path.resolve(process.env.DATABASE_PATH)
   : defaultDatabasePath;
-const databaseProvider = process.env.DATABASE_PROVIDER || "";
-const databaseUrl = process.env.DATABASE_URL || "";
+const rawDatabaseProvider = process.env.DATABASE_PROVIDER || "";
+const rawDatabaseUrl = process.env.DATABASE_URL || "";
+// On Vercel, a localhost/127.0.0.1 DATABASE_URL can never connect. Fall back to SQLite.
+const isLocalhostDatabaseUrl = /localhost|127\.0\.0\.1/.test(rawDatabaseUrl);
+const databaseProvider = (isVercelRuntime && isLocalhostDatabaseUrl) ? "" : rawDatabaseProvider;
+const databaseUrl = (isVercelRuntime && isLocalhostDatabaseUrl) ? "" : rawDatabaseUrl;
 const APP_TIME_ZONE = process.env.APP_TIMEZONE || "Asia/Kolkata";
 const normalizeOrigin = (value?: string | null) => {
   const trimmed = value?.trim();
@@ -389,15 +393,9 @@ if (process.env.DATABASE_RESET === "true" && (!databaseProvider || databaseProvi
   }
 }
 
-const db = await createDatabaseClient({
-  databasePath,
-  databaseUrl,
-  provider: databaseProvider,
-});
+let db!: DatabaseClient;
+let dbInitializationError: string | null = null;
 
-await db.exec(getPrimarySchemaSql(db.dialect));
-
-// Seed Master Admin
 const seedAdmin = async () => {
   const admin = await db.prepare("SELECT * FROM users WHERE role = 'Administrator'").get();
   if (!admin) {
@@ -409,7 +407,19 @@ const seedAdmin = async () => {
     console.log("Master Admin created: admin@smartcampus.ai / admin123");
   }
 };
-await seedAdmin();
+
+try {
+  db = await createDatabaseClient({
+    databasePath,
+    databaseUrl,
+    provider: databaseProvider,
+  });
+  await db.exec(getPrimarySchemaSql(db.dialect));
+  await seedAdmin();
+} catch (err: any) {
+  dbInitializationError = err?.message || "Database initialization failed";
+  console.error("[Smart Campus] Database initialization failed:", dbInitializationError);
+}
 
 const ensureColumn = async (tableName: string, columnName: string, definition: string) => {
   await db.ensureColumn(tableName, columnName, definition);
@@ -2159,6 +2169,13 @@ app.use((req, res, next) => {
     }
   }
 
+  next();
+});
+
+app.use((_req: any, res: any, next: any) => {
+  if (dbInitializationError) {
+    return res.status(503).json({ error: "Service unavailable: database could not be initialized." });
+  }
   next();
 });
 
