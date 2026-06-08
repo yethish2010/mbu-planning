@@ -16214,7 +16214,7 @@ function ReportGeneration() {
       .map((row: any) => ({
         label: (row?.[xColumn] ?? 'Unknown').toString().trim() || 'Unknown',
         value: toNumericValue(row?.[yColumn]) || 0,
-        secondaryValue: toNumericValue(row?.Capacity ?? row?.TotalCapacity ?? row?.Rooms),
+        secondaryValue: toNumericValue(row?.Capacity ?? row?.TotalCapacity ?? row?.Rooms) ?? undefined,
       }))
       .filter((point) => Number.isFinite(point.value))
       .sort((a, b) => {
