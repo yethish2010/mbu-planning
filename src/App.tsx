@@ -6513,6 +6513,7 @@ function BuildingManagement() {
   const [campuses, setCampuses] = useState<any[]>([]);
   const [blocks, setBlocks] = useState<any[]>([]);
   useEffect(() => {
+    invalidateSharedLookupCache(['/api/campuses', '/api/blocks']);
     fetchSharedLookupJsons(['/api/campuses', '/api/blocks']).then(([campusData, blockData]) => {
       setCampuses(Array.isArray(campusData) ? campusData : []);
       setBlocks(Array.isArray(blockData) ? blockData : []);
@@ -6639,6 +6640,7 @@ function BuildingManagement() {
 function BlockManagement() {
   const [buildings, setBuildings] = useState<any[]>([]);
   useEffect(() => {
+    invalidateSharedLookupCache(['/api/buildings']);
     fetchSharedLookupJson('/api/buildings').then(data => setBuildings(Array.isArray(data) ? data : []));
   }, []);
 
@@ -6816,6 +6818,7 @@ function FloorManagement() {
     setBuildings(Array.isArray(data) ? data : []);
   };
   useEffect(() => {
+    invalidateSharedLookupCache(['/api/buildings', '/api/blocks']);
     refreshBlocks();
     refreshBuildings();
   }, []);
@@ -7102,6 +7105,7 @@ function RoomManagement() {
   };
 
   useEffect(() => {
+    invalidateSharedLookupCache(['/api/campuses', '/api/floors', '/api/blocks', '/api/buildings', '/api/rooms']);
     fetchSharedLookupJsons(['/api/campuses', '/api/floors', '/api/blocks', '/api/buildings']).then(([campusData, floorData, blockData, buildingData]) => {
       setCampuses(Array.isArray(campusData) ? campusData : []);
       setFloors(Array.isArray(floorData) ? floorData : []);
