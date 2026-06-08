@@ -210,6 +210,5 @@ export const createDatabaseClient = async (options: CreateDatabaseOptions): Prom
     ssl: process.env.PGSSL === "disable" ? false : { rejectUnauthorized: false },
   });
 
-  await pool.query("SELECT 1");
   return createPostgresAdapter(() => pool);
 };
