@@ -1496,7 +1496,78 @@ createCrudRoutes("maintenance");
         enrichedItems.push(room);
       }
 
-      res.json(enrichedItems);
+      const requestedSearch = req.query.q?.toString().trim().toLowerCase() || "";
+      const requestedSortKey = req.query.sortKey?.toString().trim() || "room_number";
+      const requestedSortDir = req.query.sortDir?.toString().trim().toLowerCase() === "desc" ? "desc" : "asc";
+      const requestedPage = Math.max(parseInt(req.query.page?.toString() || "1", 10) || 1, 1);
+      const requestedPageSize = Math.min(Math.max(parseInt(req.query.pageSize?.toString() || "50", 10) || 50, 1), 200);
+      const wantsPagination = req.query.paginate?.toString() === "1";
+      const wantsServerQuery = wantsPagination || !!requestedSearch || !!req.query.sortKey?.toString().trim();
+      const searchFields = (req.query.searchFields?.toString() || "")
+        .split(",")
+        .map(field => field.trim())
+        .filter(Boolean);
+
+      const floorsData = await db.prepare("SELECT id, block_id FROM floors").all() as any[];
+      const blocksData = await db.prepare("SELECT id, building_id FROM blocks").all() as any[];
+      const buildingsData = await db.prepare("SELECT id, campus_id FROM buildings").all() as any[];
+      const floorById = new Map(floorsData.map((floor: any) => [floor?.id?.toString?.(), floor]));
+      const blockById = new Map(blocksData.map((block: any) => [block?.id?.toString?.(), block]));
+      const buildingById = new Map(buildingsData.map((building: any) => [building?.id?.toString?.(), building]));
+
+      let filteredItems = enrichedItems.filter((room: any) => {
+        if (req.query.floor_id && room?.floor_id?.toString?.() !== req.query.floor_id?.toString()) return false;
+
+        const floor = floorById.get(room?.floor_id?.toString?.());
+        const block = blockById.get(floor?.block_id?.toString?.());
+        const building = buildingById.get(block?.building_id?.toString?.());
+
+        if (req.query.block_id && block?.id?.toString?.() !== req.query.block_id?.toString()) return false;
+        if (req.query.building_id && building?.id?.toString?.() !== req.query.building_id?.toString()) return false;
+        if (req.query.campus_id && building?.campus_id?.toString?.() !== req.query.campus_id?.toString()) return false;
+
+        return true;
+      });
+
+      if (requestedSearch) {
+        const allowedSearchFields = (searchFields.length > 0
+          ? searchFields
+          : ["room_id", "room_number", "room_name", "room_type", "status", "usage_category", "lab_name", "room_aliases"]
+        );
+        filteredItems = filteredItems.filter((room: any) =>
+          allowedSearchFields.some((field) =>
+            room?.[field] != null && room[field].toString().toLowerCase().includes(requestedSearch)
+          )
+        );
+      }
+
+      const compareRoomValues = (left: any, right: any) => {
+        const leftValue = left?.[requestedSortKey];
+        const rightValue = right?.[requestedSortKey];
+        return (leftValue ?? "").toString().localeCompare((rightValue ?? "").toString(), undefined, {
+          numeric: true,
+          sensitivity: "base",
+        });
+      };
+
+      filteredItems.sort((left: any, right: any) => {
+        const result = compareRoomValues(left, right);
+        return requestedSortDir === "desc" ? -result : result;
+      });
+
+      if (wantsServerQuery) {
+        const total = filteredItems.length;
+        const offset = (requestedPage - 1) * requestedPageSize;
+        const pagedItems = filteredItems.slice(offset, offset + requestedPageSize);
+        return res.json({
+          items: pagedItems,
+          total,
+          page: requestedPage,
+          pageSize: requestedPageSize,
+        });
+      }
+
+      res.json(filteredItems);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
