@@ -2636,6 +2636,110 @@ var duplicateRules = {
 };
 var normalizeDuplicateValue = (value) => typeof value === "string" ? value.trim().toLowerCase() : value;
 var idsEqual = (left, right) => left !== void 0 && left !== null && right !== void 0 && right !== null && left.toString() === right.toString();
+var normalizeReferenceLookupValue = (value) => value === void 0 || value === null ? "" : value.toString().trim();
+var resolveReferenceRecordId = async ({
+  targetTable,
+  rawValue,
+  codeField,
+  labelFields = [],
+  scope = [],
+  entityLabel,
+  preferredIdentifierLabel
+}) => {
+  const normalizedValue = normalizeReferenceLookupValue(rawValue);
+  if (!normalizedValue) return rawValue;
+  const records = await db.prepare(`SELECT * FROM ${targetTable}`).all();
+  const scopedRecords = records.filter(
+    (record) => scope.every(({ field, value }) => {
+      const scopedValue = normalizeReferenceLookupValue(value);
+      return !scopedValue || idsEqual(record?.[field], scopedValue);
+    })
+  );
+  const candidates = scopedRecords.length > 0 ? scopedRecords : records;
+  const normalizedLookup = normalizeDuplicateValue(normalizedValue);
+  const matches = candidates.filter((record) => {
+    if (idsEqual(record?.id, normalizedValue)) return true;
+    if (normalizeDuplicateValue(record?.[codeField]) === normalizedLookup) return true;
+    return labelFields.some((field) => normalizeDuplicateValue(record?.[field]) === normalizedLookup);
+  });
+  if (matches.length === 1) {
+    return matches[0].id;
+  }
+  if (matches.length > 1) {
+    throw new Error(`Multiple ${entityLabel} records match "${normalizedValue}". Use the ${preferredIdentifierLabel} or numeric ID.`);
+  }
+  throw new Error(`Please select a valid ${entityLabel}.`);
+};
+var normalizeHierarchyReferencePayload = async (tableName, payload) => {
+  const nextPayload = { ...payload || {} };
+  let resolvedCampusId = nextPayload.campus_id;
+  let resolvedBuildingId = nextPayload.building_id;
+  let resolvedBlockId = nextPayload.block_id;
+  if (["buildings", "blocks"].includes(tableName) && nextPayload.campus_id !== void 0 && nextPayload.campus_id !== null && nextPayload.campus_id !== "") {
+    resolvedCampusId = await resolveReferenceRecordId({
+      targetTable: "campuses",
+      rawValue: nextPayload.campus_id,
+      codeField: "campus_id",
+      labelFields: ["name"],
+      entityLabel: "campus",
+      preferredIdentifierLabel: "Campus ID"
+    });
+    if (tableName === "buildings") {
+      nextPayload.campus_id = resolvedCampusId;
+    }
+  }
+  if (["blocks", "floors", "rooms"].includes(tableName) && nextPayload.building_id !== void 0 && nextPayload.building_id !== null && nextPayload.building_id !== "") {
+    resolvedBuildingId = await resolveReferenceRecordId({
+      targetTable: "buildings",
+      rawValue: nextPayload.building_id,
+      codeField: "building_id",
+      labelFields: ["name"],
+      scope: [{ field: "campus_id", value: resolvedCampusId }],
+      entityLabel: "building",
+      preferredIdentifierLabel: "Building ID"
+    });
+    if (tableName === "blocks") {
+      nextPayload.building_id = resolvedBuildingId;
+    }
+  }
+  if (["floors", "rooms"].includes(tableName) && nextPayload.block_id !== void 0 && nextPayload.block_id !== null && nextPayload.block_id !== "") {
+    resolvedBlockId = await resolveReferenceRecordId({
+      targetTable: "blocks",
+      rawValue: nextPayload.block_id,
+      codeField: "block_id",
+      labelFields: ["name"],
+      scope: [{ field: "building_id", value: resolvedBuildingId }],
+      entityLabel: "block",
+      preferredIdentifierLabel: "Block ID"
+    });
+    if (tableName === "floors") {
+      nextPayload.block_id = resolvedBlockId;
+    }
+  }
+  if (tableName === "rooms" && nextPayload.floor_id !== void 0 && nextPayload.floor_id !== null && nextPayload.floor_id !== "") {
+    nextPayload.floor_id = await resolveReferenceRecordId({
+      targetTable: "floors",
+      rawValue: nextPayload.floor_id,
+      codeField: "floor_id",
+      scope: [{ field: "block_id", value: resolvedBlockId }],
+      entityLabel: "floor",
+      preferredIdentifierLabel: "Floor ID"
+    });
+  }
+  if (tableName === "blocks") {
+    delete nextPayload.campus_id;
+  }
+  if (tableName === "floors") {
+    delete nextPayload.building_id;
+    delete nextPayload.campus_id;
+  }
+  if (tableName === "rooms") {
+    delete nextPayload.building_id;
+    delete nextPayload.block_id;
+    delete nextPayload.campus_id;
+  }
+  return nextPayload;
+};
 var NUMERIC_DUPLICATE_COMPARE_FIELDS = /* @__PURE__ */ new Set([
   "buildings.campus_id",
   "blocks.building_id",
@@ -2928,6 +3032,7 @@ var normalizeBulkImportPayload = async (tableName, payload, existingItem) => {
   if (tableName === "schedules") {
     nextPayload = normalizeSchedulePayload(existingItem ? { ...existingItem, ...nextPayload } : nextPayload);
   }
+  nextPayload = await normalizeHierarchyReferencePayload(tableName, nextPayload);
   return nextPayload;
 };
 var validateBulkImportPayload = async (tableName, payload, existingItem, context) => {
@@ -3913,6 +4018,7 @@ var createCrudRoutes = (tableName, idField = "id") => {
       if (tableName === "rooms") {
         req.body = normalizeRoomPayload(req.body);
       }
+      req.body = await normalizeHierarchyReferencePayload(tableName, req.body);
       const fields = Object.keys(req.body);
       const placeholders = fields.map(() => "?").join(", ");
       const values = Object.values(req.body);
@@ -4065,6 +4171,7 @@ var createCrudRoutes = (tableName, idField = "id") => {
       if (tableName === "schedules") {
         req.body = normalizeSchedulePayload({ ...existingItem, ...req.body });
       }
+      req.body = await normalizeHierarchyReferencePayload(tableName, req.body);
       let fields = Object.keys(req.body);
       let setClause = fields.map((f) => `${f} = ?`).join(", ");
       let values = [...Object.values(req.body), req.params.id];

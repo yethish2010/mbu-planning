@@ -1037,6 +1037,135 @@ const duplicateRules: Record<string, Array<{ fields: string[]; label: string }>>
 const normalizeDuplicateValue = (value: any) =>
   typeof value === "string" ? value.trim().toLowerCase() : value;
 
+const idsEqual = (left: any, right: any) =>
+  left !== undefined && left !== null && right !== undefined && right !== null && left.toString() === right.toString();
+
+const normalizeReferenceLookupValue = (value: any) =>
+  value === undefined || value === null ? "" : value.toString().trim();
+
+const resolveReferenceRecordId = async ({
+  targetTable,
+  rawValue,
+  codeField,
+  labelFields = [],
+  scope = [],
+  entityLabel,
+  preferredIdentifierLabel,
+}: {
+  targetTable: string;
+  rawValue: any;
+  codeField: string;
+  labelFields?: string[];
+  scope?: Array<{ field: string; value: any }>;
+  entityLabel: string;
+  preferredIdentifierLabel: string;
+}) => {
+  const normalizedValue = normalizeReferenceLookupValue(rawValue);
+  if (!normalizedValue) return rawValue;
+
+  const records = await db.prepare(`SELECT * FROM ${targetTable}`).all() as any[];
+  const scopedRecords = records.filter((record: any) =>
+    scope.every(({ field, value }) => {
+      const scopedValue = normalizeReferenceLookupValue(value);
+      return !scopedValue || idsEqual(record?.[field], scopedValue);
+    })
+  );
+  const candidates = scopedRecords.length > 0 ? scopedRecords : records;
+  const normalizedLookup = normalizeDuplicateValue(normalizedValue);
+  const matches = candidates.filter((record: any) => {
+    if (idsEqual(record?.id, normalizedValue)) return true;
+    if (normalizeDuplicateValue(record?.[codeField]) === normalizedLookup) return true;
+    return labelFields.some((field) => normalizeDuplicateValue(record?.[field]) === normalizedLookup);
+  });
+
+  if (matches.length === 1) {
+    return matches[0].id;
+  }
+
+  if (matches.length > 1) {
+    throw new Error(`Multiple ${entityLabel} records match "${normalizedValue}". Use the ${preferredIdentifierLabel} or numeric ID.`);
+  }
+
+  throw new Error(`Please select a valid ${entityLabel}.`);
+};
+
+const normalizeHierarchyReferencePayload = async (tableName: string, payload: any) => {
+  const nextPayload = { ...(payload || {}) };
+  let resolvedCampusId = nextPayload.campus_id;
+  let resolvedBuildingId = nextPayload.building_id;
+  let resolvedBlockId = nextPayload.block_id;
+
+  if (["buildings", "blocks"].includes(tableName) && nextPayload.campus_id !== undefined && nextPayload.campus_id !== null && nextPayload.campus_id !== "") {
+    resolvedCampusId = await resolveReferenceRecordId({
+      targetTable: "campuses",
+      rawValue: nextPayload.campus_id,
+      codeField: "campus_id",
+      labelFields: ["name"],
+      entityLabel: "campus",
+      preferredIdentifierLabel: "Campus ID",
+    });
+    if (tableName === "buildings") {
+      nextPayload.campus_id = resolvedCampusId;
+    }
+  }
+
+  if (["blocks", "floors", "rooms"].includes(tableName) && nextPayload.building_id !== undefined && nextPayload.building_id !== null && nextPayload.building_id !== "") {
+    resolvedBuildingId = await resolveReferenceRecordId({
+      targetTable: "buildings",
+      rawValue: nextPayload.building_id,
+      codeField: "building_id",
+      labelFields: ["name"],
+      scope: [{ field: "campus_id", value: resolvedCampusId }],
+      entityLabel: "building",
+      preferredIdentifierLabel: "Building ID",
+    });
+    if (tableName === "blocks") {
+      nextPayload.building_id = resolvedBuildingId;
+    }
+  }
+
+  if (["floors", "rooms"].includes(tableName) && nextPayload.block_id !== undefined && nextPayload.block_id !== null && nextPayload.block_id !== "") {
+    resolvedBlockId = await resolveReferenceRecordId({
+      targetTable: "blocks",
+      rawValue: nextPayload.block_id,
+      codeField: "block_id",
+      labelFields: ["name"],
+      scope: [{ field: "building_id", value: resolvedBuildingId }],
+      entityLabel: "block",
+      preferredIdentifierLabel: "Block ID",
+    });
+    if (tableName === "floors") {
+      nextPayload.block_id = resolvedBlockId;
+    }
+  }
+
+  if (tableName === "rooms" && nextPayload.floor_id !== undefined && nextPayload.floor_id !== null && nextPayload.floor_id !== "") {
+    nextPayload.floor_id = await resolveReferenceRecordId({
+      targetTable: "floors",
+      rawValue: nextPayload.floor_id,
+      codeField: "floor_id",
+      scope: [{ field: "block_id", value: resolvedBlockId }],
+      entityLabel: "floor",
+      preferredIdentifierLabel: "Floor ID",
+    });
+  }
+
+  if (tableName === "blocks") {
+    delete nextPayload.campus_id;
+  }
+  if (tableName === "floors") {
+    delete nextPayload.building_id;
+    delete nextPayload.campus_id;
+  }
+  if (tableName === "rooms") {
+    delete nextPayload.building_id;
+    delete nextPayload.block_id;
+    delete nextPayload.campus_id;
+  }
+
+  return nextPayload;
+};
+
 const checkDuplicateRecord = async (tableName: string, data: any, excludeId?: string | number) => {
   const rules = duplicateRules[tableName] || [];
 
@@ -1187,6 +1316,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     if (tableName === "rooms") {
       req.body = normalizeRoomPayload(req.body);
     }
+    req.body = await normalizeHierarchyReferencePayload(tableName, req.body);
     const fields = Object.keys(req.body);
     const placeholders = fields.map(() => "?").join(", ");
     const values = Object.values(req.body);
@@ -1305,6 +1435,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     if (tableName === "rooms") {
       req.body = normalizeRoomPayload(req.body);
     }
+    req.body = await normalizeHierarchyReferencePayload(tableName, req.body);
     let fields = Object.keys(req.body);
     let setClause = fields.map(f => `${f} = ?`).join(", ");
     let values = [...Object.values(req.body), req.params.id];
