@@ -157,7 +157,6 @@ var createDatabaseClient = async (options) => {
     connectionString: options.databaseUrl,
     ssl: process.env.PGSSL === "disable" ? false : { rejectUnauthorized: false }
   });
-  await pool.query("SELECT 1");
   return createPostgresAdapter(() => pool);
 };
 
