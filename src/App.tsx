@@ -3350,18 +3350,31 @@ const useAuth = () => useContext(AuthContext)!;
 // --- COMPONENTS ---
 
 // --- DEPENDENCY GUARD ---
+const DEPENDENCY_TABLE_ROUTE_MAP: Record<string, string> = {
+  campuses: '/campuses',
+  buildings: '/buildings',
+  blocks: '/blocks',
+  floors: '/floors',
+  rooms: '/rooms',
+  schools: '/schools',
+  departments: '/departments',
+};
+
 function DependencyGuard({ children, dependencies }: { children: React.ReactNode, dependencies: { table: string, label: string }[] }) {
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
+  const depsKey = JSON.stringify(dependencies);
 
   useEffect(() => {
+    setLoading(true);
     const checkDeps = async () => {
       try {
         const results = await Promise.all(
           dependencies.map(async dep => {
             const res = await fetch(`/api/${dep.table}`, { credentials: 'include' });
+            if (!res.ok) return { table: dep.table, count: 0 };
             const data = await res.json();
-            return { table: dep.table, count: data.length };
+            return { table: dep.table, count: Array.isArray(data) ? data.length : 0 };
           })
         );
         const newCounts: Record<string, number> = {};
@@ -3374,7 +3387,7 @@ function DependencyGuard({ children, dependencies }: { children: React.ReactNode
       }
     };
     checkDeps();
-  }, [dependencies]);
+  }, [depsKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) return <div className="p-8 text-center text-slate-400">Verifying dependencies...</div>;
 
@@ -3394,7 +3407,7 @@ function DependencyGuard({ children, dependencies }: { children: React.ReactNode
           </span>
         </p>
         <div className="flex justify-center gap-4">
-          <Link to={`/management/${missing[0].table}`} className="px-6 py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 transition-all">
+          <Link to={DEPENDENCY_TABLE_ROUTE_MAP[missing[0].table] ?? `/${missing[0].table}`} className="px-6 py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 transition-all">
             Go to {missing[0].label}
           </Link>
         </div>
@@ -6483,7 +6496,14 @@ function CampusManagement() {
         ? null
         : { payload, uniqueFieldGroups: [['campus_id'], ['name']] };
     }).filter(Boolean) as BulkImportEntry[];
-    await upsertImportRecordsBulk('/api/campuses', entries);
+    if (entries.length === 0) {
+      throw new Error('No valid campus rows found. Make sure your file has "Campus ID" and "Campus Name" columns with values.');
+    }
+    const results = await upsertImportRecordsBulk('/api/campuses', entries);
+    const importedCount = results.filter(r => r?.ok).length;
+    if (importedCount === 0) {
+      throw new Error('No campuses were imported. All rows failed or were duplicates. Check Campus ID and Campus Name values.');
+    }
   };
 
   return <GenericCRUD type="Campus" fields={fields} apiPath="/api/campuses" onImport={handleImport} />;
@@ -6572,12 +6592,14 @@ function BuildingManagement() {
   };
 
   const handleImport = async (data: any[]) => {
+    const freshCampusData = await fetchSharedLookupJson('/api/campuses');
+    const currentCampuses = Array.isArray(freshCampusData) ? freshCampusData : campuses;
     let importedCount = 0;
     const skippedRows: string[] = [];
     const entries: BulkImportEntry[] = [];
 
     for (const [index, row] of data.entries()) {
-      const campus = findCampusForImport(campuses, row);
+      const campus = findCampusForImport(currentCampuses, row);
       const hasBlocks = isBlocksStructureType(getImportValue(row, ['Structure Type']));
       const payload = {
         building_id: row['Building ID']?.toString(),
@@ -6647,20 +6669,27 @@ function BlockManagement() {
   };
 
   const handleImport = async (data: any[]) => {
+    const freshBuildingData = await fetchSharedLookupJson('/api/buildings');
+    const currentBuildings = Array.isArray(freshBuildingData) ? freshBuildingData : buildings;
+    const currentBlockEligibleBuildings = currentBuildings.filter(b =>
+      b?.structure_type === 'blocks' || (Number(b?.planned_block_count) || 0) > 0
+    );
+    const isCurrentBlockEligible = (b: any) =>
+      !!b && currentBlockEligibleBuildings.some(item => item.id === b.id);
     let importedCount = 0;
     const skippedRows: string[] = [];
     const entries: BulkImportEntry[] = [];
 
     for (const [index, row] of data.entries()) {
       const blockId = row['Block ID']?.toString();
-      const building = findBuildingForImport(buildings, row, blockId);
+      const building = findBuildingForImport(currentBuildings, row, blockId);
       const payload = {
         block_id: blockId,
         name: row['Block Name'],
         building_id: building?.id,
         description: row['Description']
       };
-      if (!payload.block_id || !payload.name || !payload.building_id || !isBlockEligibleBuilding(building)) {
+      if (!payload.block_id || !payload.name || !payload.building_id || !isCurrentBlockEligible(building)) {
         skippedRows.push(`row ${index + 2}`);
         continue;
       }
@@ -6970,6 +6999,13 @@ function FloorManagement() {
   };
 
   const handleImport = async (data: any[]) => {
+    const [freshBuildingData, freshBlockData] = await fetchSharedLookupJsons(['/api/buildings', '/api/blocks']);
+    const currentBuildings = Array.isArray(freshBuildingData) ? freshBuildingData : buildings;
+    const currentBlocks = Array.isArray(freshBlockData) ? freshBlockData : blocks;
+    const isCurrentBlockBasedBuilding = (building: any) =>
+      building?.structure_type === 'blocks' || (Number(building?.planned_block_count) || 0) > 0;
+    const isCurrentDirectFloorBuilding = (building: any) =>
+      !!building && !isCurrentBlockBasedBuilding(building);
     let importedCount = 0;
     const skippedRows: string[] = [];
     const entries: BulkImportEntry[] = [];
@@ -6977,13 +7013,13 @@ function FloorManagement() {
     for (const [index, row] of data.entries()) {
       const floorId = row['Floor ID']?.toString();
       const floorIdPrefix = getImportValue(row, ['Floor ID Prefix'])?.toString().trim();
-      const building = findBuildingForImport(buildings, row, floorIdPrefix || floorId);
+      const building = findBuildingForImport(currentBuildings, row, floorIdPrefix || floorId);
       const blockLabel = getImportValue(row, ['Block / Direct Floors', 'Block', 'Block ID']);
       const normalizedBlockLabel = normalizeLookupValue(blockLabel);
       const wantsDirectFloors = !normalizedBlockLabel ||
         normalizedBlockLabel === 'direct floors' ||
         normalizedBlockLabel === 'direct floors (no block)';
-      const block = wantsDirectFloors ? undefined : blocks.find(b =>
+      const block = wantsDirectFloors ? undefined : currentBlocks.find(b =>
         (!building || idsMatch(b.building_id, building.id)) &&
         (
           normalizeLookupValue(b.name) === normalizedBlockLabel ||
@@ -6991,17 +7027,17 @@ function FloorManagement() {
         )
       );
 
-      if (!building || (isBlockBasedBuilding(building) && !block) || (isDirectFloorBuilding(building) && block)) {
+      if (!building || (isCurrentBlockBasedBuilding(building) && !block) || (isCurrentDirectFloorBuilding(building) && block)) {
         skippedRows.push(`row ${index + 2}`);
         continue;
       }
 
-      const blockId = block?.id || await ensureDirectBuildingBlock(building.id, blocks, buildings);
+      const blockId = block?.id || await ensureDirectBuildingBlock(building.id, currentBlocks, currentBuildings);
       const floorCountValue = getImportValue(row, ['Number of Floors', 'Floor Count']);
       const floorCount = floorCountValue == null ? 1 : Number(floorCountValue);
       const firstFloorNumberValue = getImportValue(row, ['First Floor Number', 'Floor Number']);
       const firstFloorNumber = firstFloorNumberValue == null ? 0 : Number(firstFloorNumberValue);
-      const selectedBlock = blocks.find(item => item.id === blockId);
+      const selectedBlock = currentBlocks.find(item => item.id === blockId);
       const prefix = floorIdPrefix ||
         selectedBlock?.block_id ||
         building.building_id;
@@ -7564,7 +7600,13 @@ function RoomManagement() {
   };
 
   const handleImport = async (data: any[]) => {
-    const knownRooms = [...rooms];
+    const [freshBuildingData, freshBlockData, freshFloorData, freshRoomData] = await fetchSharedLookupJsons([
+      '/api/buildings', '/api/blocks', '/api/floors', '/api/rooms',
+    ]);
+    const importBuildings = Array.isArray(freshBuildingData) ? freshBuildingData : buildings;
+    const importBlocks = Array.isArray(freshBlockData) ? freshBlockData : blocks;
+    const importFloors = Array.isArray(freshFloorData) ? freshFloorData : floors;
+    const knownRooms = Array.isArray(freshRoomData) ? [...freshRoomData] : [...rooms];
     const getRowRoomLabels = (row: any) => [
       row['Room Number'],
       row['Room ID'],
@@ -7679,10 +7721,10 @@ function RoomManagement() {
         }
 
         try {
-          const building = buildings.find(b => normalizeLookupValue(b.name) === normalizeLookupValue(getImportValue(row, ['Building'])));
+          const building = importBuildings.find((b: any) => normalizeLookupValue(b.name) === normalizeLookupValue(getImportValue(row, ['Building'])));
           const blockLabel = getImportValue(row, ['Block / Direct Floors', 'Block']);
           const normalizedBlockLabel = normalizeLookupValue(blockLabel);
-          const block = blocks.find(b =>
+          const block = importBlocks.find((b: any) =>
             (!building || idsMatch(b.building_id, building.id)) &&
             (
               normalizeLookupValue(b.name) === normalizedBlockLabel ||
@@ -7690,13 +7732,13 @@ function RoomManagement() {
             )
           );
           const floorValue = getImportValue(row, ['Floor', 'Floor ID']);
-          const floor = floors.find(f =>
+          const floor = importFloors.find((f: any) =>
             (!block || f.block_id === block.id) &&
             (
               f.id?.toString() === floorValue?.toString() ||
               f.floor_number?.toString() === floorValue?.toString() ||
               normalizeLookupValue(getFloorName(f.floor_number)) === normalizeLookupValue(floorValue) ||
-              normalizeLookupValue(getFloorDisplayLabel(f, blocks, buildings)) === normalizeLookupValue(floorValue)
+              normalizeLookupValue(getFloorDisplayLabel(f, importBlocks, importBuildings)) === normalizeLookupValue(floorValue)
             )
           );
           const parentRoomValue = normalizeOptionalImportValue(getImportValue(row, ['Parent Room', 'Inside / Parent Room']));
