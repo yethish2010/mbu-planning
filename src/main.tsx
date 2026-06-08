@@ -8,15 +8,17 @@ const configuredApiBaseUrl = ((import.meta as any).env?.VITE_API_BASE_URL || '')
   .trim()
   .replace(/\/+$/, '');
 const isGitHubPages = typeof window !== 'undefined' && window.location.hostname === 'yethish2010.github.io';
-const apiBaseUrl = configuredApiBaseUrl;
+const defaultGitHubPagesApiBaseUrl = 'https://mbu-planning.vercel.app';
+const apiBaseUrl = configuredApiBaseUrl || (isGitHubPages ? defaultGitHubPagesApiBaseUrl : '');
 
 const STATIC_SESSION_STORAGE_KEY = 'smart-campus-static-session';
 const STATIC_DB_STORAGE_KEY = 'smart-campus-static-db-v1';
 const STATIC_DB_COUNTER_STORAGE_KEY = 'smart-campus-static-db-counter-v1';
+const STATIC_PASSWORD_STORAGE_KEY = 'smart-campus-static-password';
 const staticAdminUser = {
   id: 1,
   email: 'admin@smartcampus.ai',
-  role: 'Administrator',
+  role: 'Master Admin',
   name: 'Master Admin',
   department: 'Administration',
   designation: 'System Administrator',
@@ -51,12 +53,54 @@ const STATIC_CRUD_TABLES = new Set([
   'maintenance',
 ]);
 
+const getStoredStaticPassword = () => {
+  if (typeof window === 'undefined') return 'admin123';
+
+  try {
+    return window.localStorage.getItem(STATIC_PASSWORD_STORAGE_KEY) || 'admin123';
+  } catch {
+    return 'admin123';
+  }
+};
+
+const persistStaticPassword = (password: string) => {
+  if (typeof window === 'undefined') return;
+
+  try {
+    window.localStorage.setItem(STATIC_PASSWORD_STORAGE_KEY, password);
+  } catch {
+    // Ignore storage errors in static demo mode.
+  }
+};
+
+const normalizeStaticSession = (user: any) => {
+  if (!user || typeof user !== 'object') return null;
+
+  if (
+    user.email === staticAdminUser.email &&
+    user.name === staticAdminUser.name &&
+    user.role === 'Administrator'
+  ) {
+    return {
+      ...user,
+      role: 'Master Admin',
+    };
+  }
+
+  return user;
+};
+
 const getStoredStaticSession = () => {
   if (typeof window === 'undefined') return null;
 
   try {
     const rawValue = window.localStorage.getItem(STATIC_SESSION_STORAGE_KEY);
-    return rawValue ? JSON.parse(rawValue) : null;
+    const parsedValue = rawValue ? JSON.parse(rawValue) : null;
+    const normalizedValue = normalizeStaticSession(parsedValue);
+    if (normalizedValue && JSON.stringify(normalizedValue) !== JSON.stringify(parsedValue)) {
+      window.localStorage.setItem(STATIC_SESSION_STORAGE_KEY, JSON.stringify(normalizedValue));
+    }
+    return normalizedValue;
   } catch {
     return null;
   }
@@ -162,7 +206,7 @@ const handleStaticApiRequest = async (input: RequestInfo | URL, init?: RequestIn
     const email = requestBody?.email?.toString().trim().toLowerCase();
     const password = requestBody?.password?.toString();
 
-    if (email === staticAdminUser.email && password === 'admin123') {
+    if (email === staticAdminUser.email && password === getStoredStaticPassword()) {
       persistStaticSession(staticAdminUser);
       return createJsonResponse({ user: staticAdminUser });
     }
@@ -188,7 +232,20 @@ const handleStaticApiRequest = async (input: RequestInfo | URL, init?: RequestIn
       return createJsonResponse({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    return createJsonResponse({ user });
+    const requestBody = await readRequestJsonBody(input, init);
+    const password = requestBody?.password?.toString() || '';
+    if (password.length < 8) {
+      return createJsonResponse({ error: 'Password must be at least 8 characters.' }, { status: 400 });
+    }
+
+    const updatedUser = {
+      ...user,
+      force_password_change: false,
+    };
+    persistStaticPassword(password);
+    persistStaticSession(updatedUser);
+
+    return createJsonResponse({ user: updatedUser });
   }
 
   if (pathname.startsWith('/api/') && !isAuthenticated) {
@@ -289,17 +346,17 @@ const handleStaticApiRequest = async (input: RequestInfo | URL, init?: RequestIn
   return null;
 };
 
-if (apiBaseUrl && typeof window !== 'undefined') {
+if (typeof window !== 'undefined') {
   const nativeFetch = window.fetch.bind(window);
 
-  const fetchWithStaticFallback = async (
+  const fetchApiWithFallback = async (
     input: RequestInfo | URL,
-    init: RequestInit | undefined,
-    rewrittenInput: RequestInfo | URL,
+    init?: RequestInit,
+    rewrittenInput?: RequestInfo | URL,
     rewrittenInit?: RequestInit,
   ) => {
     try {
-      const response = await nativeFetch(rewrittenInput, rewrittenInit);
+      const response = await nativeFetch(rewrittenInput ?? input, rewrittenInit ?? init);
       if (response.status !== 404 && response.status < 500) return response;
 
       const requestPath = getRequestPath(input);
@@ -320,36 +377,59 @@ if (apiBaseUrl && typeof window !== 'undefined') {
     }
   };
 
-  window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+  const buildApiFetchTarget = (input: RequestInfo | URL, init?: RequestInit) => {
     if (typeof input === 'string' && input.startsWith('/api/')) {
-      return fetchWithStaticFallback(input, init, `${apiBaseUrl}${input}`, {
-        ...init,
-        credentials: init?.credentials ?? 'include',
-      });
+      if (apiBaseUrl) {
+        return {
+          rewrittenInput: `${apiBaseUrl}${input}` as RequestInfo | URL,
+          rewrittenInit: {
+            ...init,
+            credentials: init?.credentials ?? 'include',
+          },
+        };
+      }
+
+      return {
+        rewrittenInput: input,
+        rewrittenInit: {
+          ...init,
+          credentials: init?.credentials ?? 'include',
+        },
+      };
     }
 
     if (input instanceof Request) {
       const currentOrigin = window.location.origin;
       if (input.url.startsWith(`${currentOrigin}/api/`)) {
-        const rewrittenUrl = `${apiBaseUrl}${input.url.slice(currentOrigin.length)}`;
-        const rewrittenRequest = new Request(rewrittenUrl, input);
-        return fetchWithStaticFallback(input, {
-          ...init,
-          credentials: init?.credentials ?? input.credentials ?? 'include',
-        }, rewrittenRequest);
+        if (apiBaseUrl) {
+          const rewrittenUrl = `${apiBaseUrl}${input.url.slice(currentOrigin.length)}`;
+          const rewrittenRequest = new Request(rewrittenUrl, input);
+          return {
+            rewrittenInput: rewrittenRequest as RequestInfo | URL,
+            rewrittenInit: {
+              ...init,
+              credentials: init?.credentials ?? input.credentials ?? 'include',
+            },
+          };
+        }
+
+        return {
+          rewrittenInput: input,
+          rewrittenInit: {
+            ...init,
+            credentials: init?.credentials ?? input.credentials ?? 'include',
+          },
+        };
       }
     }
 
-    return nativeFetch(input, init);
+    return null;
   };
-} else if (isGitHubPages && typeof window !== 'undefined') {
-  const nativeFetch = window.fetch.bind(window);
 
-  window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-    const requestPath = getRequestPath(input);
-    if (requestPath.startsWith('/api/')) {
-      const mockResponse = await handleStaticApiRequest(input, init);
-      if (mockResponse) return mockResponse;
+  window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+    const apiTarget = buildApiFetchTarget(input, init);
+    if (apiTarget) {
+      return fetchApiWithFallback(input, init, apiTarget.rewrittenInput, apiTarget.rewrittenInit);
     }
 
     return nativeFetch(input, init);
