@@ -5226,12 +5226,12 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
 
     const recentAlerts = await db.prepare(`
       SELECT m.*, r.room_number, bld.name as building_name
-      FROM maintenance m 
+      FROM maintenance m
       JOIN rooms r ON m.room_id = r.id
-      JOIN floors f ON r.floor_id = f.id
-      JOIN blocks b ON f.block_id = b.id
-      JOIN buildings bld ON b.building_id = bld.id
-      ORDER BY m.reported_date DESC 
+      LEFT JOIN floors f ON r.floor_id = f.id
+      LEFT JOIN blocks b ON f.block_id = b.id
+      LEFT JOIN buildings bld ON b.building_id = bld.id
+      ORDER BY m.reported_date DESC
       LIMIT 5
     `).all();
 
@@ -5279,9 +5279,9 @@ app.get("/api/dashboard/overview", authenticate, async (_req, res) => {
       SELECT m.*, r.room_number, bld.name as building_name
       FROM maintenance m
       JOIN rooms r ON m.room_id = r.id
-      JOIN floors f ON r.floor_id = f.id
-      JOIN blocks b ON f.block_id = b.id
-      JOIN buildings bld ON b.building_id = bld.id
+      LEFT JOIN floors f ON r.floor_id = f.id
+      LEFT JOIN blocks b ON f.block_id = b.id
+      LEFT JOIN buildings bld ON b.building_id = bld.id
       ORDER BY m.reported_date DESC
       LIMIT 5
     `).all() as any[];
@@ -5291,9 +5291,9 @@ app.get("/api/dashboard/overview", authenticate, async (_req, res) => {
              r.lab_name, r.restroom_type, r.capacity, r.status, f.id as floor_id, f.floor_number,
              bld.id as building_id, bld.name as building_name, b.id as block_id, b.name as block_name
       FROM rooms r
-      JOIN floors f ON r.floor_id = f.id
-      JOIN blocks b ON f.block_id = b.id
-      JOIN buildings bld ON b.building_id = bld.id
+      LEFT JOIN floors f ON r.floor_id = f.id
+      LEFT JOIN blocks b ON f.block_id = b.id
+      LEFT JOIN buildings bld ON b.building_id = bld.id
     `).all() as any[];
     const schedules = await db.prepare("SELECT room_id, department_id, year_of_study, semester, section, start_time, end_time FROM schedules").all() as any[];
     const approvedBookings = await db.prepare("SELECT room_id, date, start_time, end_time FROM bookings WHERE status = 'Approved'").all() as any[];
@@ -5808,10 +5808,10 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
       SELECT r.*, pr.room_number as parent_room_number, bld.name as building_name, b.name as block_name, f.floor_number, c.name as campus_name
       FROM rooms r
       LEFT JOIN rooms pr ON r.parent_room_id = pr.id
-      JOIN floors f ON r.floor_id = f.id
-      JOIN blocks b ON f.block_id = b.id
-      JOIN buildings bld ON b.building_id = bld.id
-      JOIN campuses c ON bld.campus_id = c.id
+      LEFT JOIN floors f ON r.floor_id = f.id
+      LEFT JOIN blocks b ON f.block_id = b.id
+      LEFT JOIN buildings bld ON b.building_id = bld.id
+      LEFT JOIN campuses c ON bld.campus_id = c.id
     `).all() as any[];
     const schedules = await db.prepare("SELECT * FROM schedules").all() as any[];
     const bookings = await db.prepare("SELECT * FROM bookings WHERE status = 'Approved'").all() as any[];
