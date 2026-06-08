@@ -56,3 +56,5 @@ To make `https://yethish2010.github.io/mbu-planning/` work correctly, configure 
 4. On the backend host, set `FRONTEND_ORIGIN=https://yethish2010.github.io` so cookie-based auth can work from the Pages domain.
 
 GitHub Pages will only host the frontend. The Express and SQLite backend still needs a real server host.
+
+Deployment trigger refresh: this note is safe to keep and helps force a normal branch deployment when a rollback was pushed with history rewriting.
