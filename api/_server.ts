@@ -8,7 +8,7 @@ import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import { GoogleGenAI } from "@google/genai";
 import * as mammoth from "mammoth";
-import { createDatabaseClient, type DatabaseDialect } from "./_db.ts";
+import { createDatabaseClient, type DatabaseClient, type DatabaseDialect } from "./_db.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
