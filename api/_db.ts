@@ -70,7 +70,7 @@ const adaptPostgresSql = (sql: string, mode: "get" | "all" | "run") => {
 };
 
 const createPreparedStatement = (
-  dialect: DatabaseDialect,
+  _dialect: DatabaseDialect,
   executor: (sql: string, params: any[], mode: "get" | "all" | "run") => Promise<any>
 ) => (sql: string): PreparedStatement => ({
   get: (...params: any[]) => executor(sql, params, "get"),
@@ -205,8 +205,13 @@ export const createDatabaseClient = async (options: CreateDatabaseOptions): Prom
     throw new Error("DATABASE_URL is required when DATABASE_PROVIDER is postgres.");
   }
 
+  // pg-connection-string v3+ treats sslmode=require as verify-full, overriding the explicit ssl
+  // config and failing on Supabase's self-signed pooler certificate. Strip sslmode from the URL
+  // so the explicit ssl option below has sole control over certificate verification.
+  const cleanUrl = options.databaseUrl.replace(/([?&])sslmode=[^&]*/i, "$1").replace(/[?&]$/, "");
+
   const pool = new Pool({
-    connectionString: options.databaseUrl,
+    connectionString: cleanUrl,
     ssl: process.env.PGSSL === "disable" ? false : { rejectUnauthorized: false },
   });
 
