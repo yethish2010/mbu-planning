@@ -35,7 +35,7 @@ var adaptPostgresSql = (sql, mode) => {
   }
   return normalizedSql;
 };
-var createPreparedStatement = (dialect, executor) => (sql) => ({
+var createPreparedStatement = (_dialect, executor) => (sql) => ({
   get: (...params) => executor(sql, params, "get"),
   all: (...params) => executor(sql, params, "all"),
   run: (...params) => executor(sql, params, "run")
@@ -153,8 +153,9 @@ var createDatabaseClient = async (options) => {
   if (!options.databaseUrl) {
     throw new Error("DATABASE_URL is required when DATABASE_PROVIDER is postgres.");
   }
+  const cleanUrl = options.databaseUrl.replace(/([?&])sslmode=[^&]*/i, "$1").replace(/[?&]$/, "");
   const pool = new Pool({
-    connectionString: options.databaseUrl,
+    connectionString: cleanUrl,
     ssl: process.env.PGSSL === "disable" ? false : { rejectUnauthorized: false }
   });
   return createPostgresAdapter(() => pool);
@@ -4393,49 +4394,66 @@ createCrudRoutes("campuses");
 createCrudRoutes("buildings");
 createCrudRoutes("blocks");
 createCrudRoutes("floors");
-createCrudRoutes("rooms");
-createCrudRoutes("schools");
-createCrudRoutes("departments");
-createCrudRoutes("department_allocations");
-createCrudRoutes("academic_calendars");
-createCrudRoutes("timing_profiles");
-createCrudRoutes("batch_room_allocations");
-createCrudRoutes("equipment");
-createCrudRoutes("schedules");
-createCrudRoutes("bookings");
-createCrudRoutes("maintenance");
 app.get(`/api/rooms`, authenticate, async (req, res) => {
   try {
     const scopedRoomIds = await getScopedMappedRoomIdsForUser(req.user);
-    const items = (await db.prepare(`SELECT * FROM rooms`).all()).filter(
-      (room) => !scopedRoomIds || scopedRoomIds.has(room?.id?.toString?.() || "")
-    );
     const { date: currentDate, time: currentTime } = getCampusDateTimeParts();
     const activeSchedules = await getEffectiveSchedulesForDate(
       currentDate,
       (schedule) => schedule.start_time <= currentTime && schedule.end_time > currentTime
     );
-    const enrichedItems = [];
-    for (const room of items) {
-      if (room.status !== "Available") {
-        enrichedItems.push(room);
-        continue;
+    const scheduledRoomIds = new Set(
+      activeSchedules.map((s) => s.room_id?.toString()).filter(Boolean)
+    );
+    const bookedRoomIds = new Set(
+      (await db.prepare(`
+        SELECT DISTINCT room_id FROM bookings
+        WHERE date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
+      `).all(currentDate, currentTime, currentTime)).map((b) => b.room_id?.toString()).filter(Boolean)
+    );
+    const floorId = req.query.floor_id?.toString() || "";
+    const blockId = req.query.block_id?.toString() || "";
+    const buildingId = req.query.building_id?.toString() || "";
+    const campusId = req.query.campus_id?.toString() || "";
+    let roomItems;
+    if (floorId || blockId || buildingId || campusId) {
+      const whereParts = [];
+      const whereValues = [];
+      if (floorId) {
+        whereParts.push("r.floor_id = ?");
+        whereValues.push(floorId);
       }
-      const schedule = activeSchedules.find((item) => idsEqual(item.room_id, room.id));
-      if (schedule) {
-        enrichedItems.push({ ...room, status: "Occupied (Scheduled)" });
-        continue;
+      if (blockId) {
+        whereParts.push("bl.id = ?");
+        whereValues.push(blockId);
       }
-      const booking = await db.prepare(`
-          SELECT * FROM bookings 
-          WHERE room_id = ? AND date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
-        `).get(room.id, currentDate, currentTime, currentTime);
-      if (booking) {
-        enrichedItems.push({ ...room, status: "Occupied (Booked)" });
-        continue;
+      if (buildingId) {
+        whereParts.push("b.id = ?");
+        whereValues.push(buildingId);
       }
-      enrichedItems.push(room);
+      if (campusId) {
+        whereParts.push("b.campus_id = ?");
+        whereValues.push(campusId);
+      }
+      roomItems = await db.prepare(`
+        SELECT r.* FROM rooms r
+        LEFT JOIN floors f ON r.floor_id = f.id
+        LEFT JOIN blocks bl ON f.block_id = bl.id
+        LEFT JOIN buildings b ON bl.building_id = b.id
+        WHERE ${whereParts.join(" AND ")}
+      `).all(...whereValues);
+    } else {
+      roomItems = await db.prepare(`SELECT * FROM rooms`).all();
     }
+    if (scopedRoomIds) {
+      roomItems = roomItems.filter((room) => scopedRoomIds.has(room?.id?.toString?.() || ""));
+    }
+    const enrichedItems = roomItems.map((room) => {
+      if (room.status !== "Available") return room;
+      if (scheduledRoomIds.has(room.id?.toString())) return { ...room, status: "Occupied (Scheduled)" };
+      if (bookedRoomIds.has(room.id?.toString())) return { ...room, status: "Occupied (Booked)" };
+      return room;
+    });
     const requestedSearch = req.query.q?.toString().trim().toLowerCase() || "";
     const requestedSortKey = req.query.sortKey?.toString().trim() || "room_number";
     const requestedSortDir = normalizeImportMatchValue(req.query.sortDir) === "desc" ? "desc" : "asc";
@@ -4444,22 +4462,7 @@ app.get(`/api/rooms`, authenticate, async (req, res) => {
     const wantsPagination = req.query.paginate?.toString() === "1";
     const wantsServerQuery = wantsPagination || !!requestedSearch || !!req.query.sortKey?.toString().trim();
     const searchFields = (req.query.searchFields?.toString() || "").split(",").map((field) => field.trim()).filter(Boolean);
-    const floorsData = await db.prepare("SELECT id, block_id FROM floors").all();
-    const blocksData = await db.prepare("SELECT id, building_id FROM blocks").all();
-    const buildingsData = await db.prepare("SELECT id, campus_id FROM buildings").all();
-    const floorById = new Map(floorsData.map((floor) => [floor?.id?.toString?.(), floor]));
-    const blockById = new Map(blocksData.map((block) => [block?.id?.toString?.(), block]));
-    const buildingById = new Map(buildingsData.map((building) => [building?.id?.toString?.(), building]));
-    let filteredItems = enrichedItems.filter((room) => {
-      if (req.query.floor_id && !idsEqual(room?.floor_id, req.query.floor_id)) return false;
-      const floor = floorById.get(room?.floor_id?.toString?.());
-      const block = blockById.get(floor?.block_id?.toString?.());
-      const building = buildingById.get(block?.building_id?.toString?.());
-      if (req.query.block_id && !idsEqual(block?.id, req.query.block_id)) return false;
-      if (req.query.building_id && !idsEqual(building?.id, req.query.building_id)) return false;
-      if (req.query.campus_id && !idsEqual(building?.campus_id, req.query.campus_id)) return false;
-      return true;
-    });
+    let filteredItems = enrichedItems;
     if (requestedSearch) {
       const allowedSearchFields = searchFields.length > 0 ? searchFields : ["room_id", "room_number", "room_name", "room_type", "status", "usage_category", "lab_name", "room_aliases"];
       filteredItems = filteredItems.filter(
@@ -4468,30 +4471,20 @@ app.get(`/api/rooms`, authenticate, async (req, res) => {
         )
       );
     }
-    const compareRoomValues = (left, right) => {
+    filteredItems.sort((left, right) => {
       const leftValue = left?.[requestedSortKey];
       const rightValue = right?.[requestedSortKey];
-      if (requestedSortKey === "room_number") {
-        return (leftValue ?? "").toString().localeCompare((rightValue ?? "").toString(), void 0, {
-          numeric: true,
-          sensitivity: "base"
-        });
-      }
-      return (leftValue ?? "").toString().localeCompare((rightValue ?? "").toString(), void 0, {
+      const result = (leftValue ?? "").toString().localeCompare((rightValue ?? "").toString(), void 0, {
         numeric: true,
         sensitivity: "base"
       });
-    };
-    filteredItems.sort((left, right) => {
-      const result = compareRoomValues(left, right);
       return requestedSortDir === "desc" ? -result : result;
     });
     if (wantsServerQuery) {
       const total = filteredItems.length;
       const offset = (requestedPage - 1) * requestedPageSize;
-      const pagedItems = filteredItems.slice(offset, offset + requestedPageSize);
       return res.json({
-        items: pagedItems,
+        items: filteredItems.slice(offset, offset + requestedPageSize),
         total,
         page: requestedPage,
         pageSize: requestedPageSize
@@ -4517,6 +4510,17 @@ app.get(`/api/rooms/:roomId/schedule`, authenticate, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+createCrudRoutes("rooms");
+createCrudRoutes("schools");
+createCrudRoutes("departments");
+createCrudRoutes("department_allocations");
+createCrudRoutes("academic_calendars");
+createCrudRoutes("timing_profiles");
+createCrudRoutes("batch_room_allocations");
+createCrudRoutes("equipment");
+createCrudRoutes("schedules");
+createCrudRoutes("bookings");
+createCrudRoutes("maintenance");
 app.get("/api/dashboard/stats", authenticate, async (req, res) => {
   try {
     const totalBuildings = await db.prepare("SELECT COUNT(*) as count FROM buildings").get();
@@ -4549,12 +4553,12 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
     const availableNow = Math.max(0, totalRooms.count - maintenanceRooms.count - occupiedRoomIds.size);
     const recentAlerts = await db.prepare(`
       SELECT m.*, r.room_number, bld.name as building_name
-      FROM maintenance m 
+      FROM maintenance m
       JOIN rooms r ON m.room_id = r.id
-      JOIN floors f ON r.floor_id = f.id
-      JOIN blocks b ON f.block_id = b.id
-      JOIN buildings bld ON b.building_id = bld.id
-      ORDER BY m.reported_date DESC 
+      LEFT JOIN floors f ON r.floor_id = f.id
+      LEFT JOIN blocks b ON f.block_id = b.id
+      LEFT JOIN buildings bld ON b.building_id = bld.id
+      ORDER BY m.reported_date DESC
       LIMIT 5
     `).all();
     res.json({
@@ -4598,9 +4602,9 @@ app.get("/api/dashboard/overview", authenticate, async (_req, res) => {
       SELECT m.*, r.room_number, bld.name as building_name
       FROM maintenance m
       JOIN rooms r ON m.room_id = r.id
-      JOIN floors f ON r.floor_id = f.id
-      JOIN blocks b ON f.block_id = b.id
-      JOIN buildings bld ON b.building_id = bld.id
+      LEFT JOIN floors f ON r.floor_id = f.id
+      LEFT JOIN blocks b ON f.block_id = b.id
+      LEFT JOIN buildings bld ON b.building_id = bld.id
       ORDER BY m.reported_date DESC
       LIMIT 5
     `).all();
@@ -4609,9 +4613,9 @@ app.get("/api/dashboard/overview", authenticate, async (_req, res) => {
              r.lab_name, r.restroom_type, r.capacity, r.status, f.id as floor_id, f.floor_number,
              bld.id as building_id, bld.name as building_name, b.id as block_id, b.name as block_name
       FROM rooms r
-      JOIN floors f ON r.floor_id = f.id
-      JOIN blocks b ON f.block_id = b.id
-      JOIN buildings bld ON b.building_id = bld.id
+      LEFT JOIN floors f ON r.floor_id = f.id
+      LEFT JOIN blocks b ON f.block_id = b.id
+      LEFT JOIN buildings bld ON b.building_id = bld.id
     `).all();
     const schedules = await db.prepare("SELECT room_id, department_id, year_of_study, semester, section, start_time, end_time FROM schedules").all();
     const approvedBookings = await db.prepare("SELECT room_id, date, start_time, end_time FROM bookings WHERE status = 'Approved'").all();
@@ -5036,10 +5040,10 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
       SELECT r.*, pr.room_number as parent_room_number, bld.name as building_name, b.name as block_name, f.floor_number, c.name as campus_name
       FROM rooms r
       LEFT JOIN rooms pr ON r.parent_room_id = pr.id
-      JOIN floors f ON r.floor_id = f.id
-      JOIN blocks b ON f.block_id = b.id
-      JOIN buildings bld ON b.building_id = bld.id
-      JOIN campuses c ON bld.campus_id = c.id
+      LEFT JOIN floors f ON r.floor_id = f.id
+      LEFT JOIN blocks b ON f.block_id = b.id
+      LEFT JOIN buildings bld ON b.building_id = bld.id
+      LEFT JOIN campuses c ON bld.campus_id = c.id
     `).all();
     const schedules = await db.prepare("SELECT * FROM schedules").all();
     const bookings = await db.prepare("SELECT * FROM bookings WHERE status = 'Approved'").all();

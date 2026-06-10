@@ -8814,7 +8814,7 @@ function BatchRoomAllocationManagement() {
     { key: 'notes', label: 'Notes', fullWidth: true, required: false },
   ];
 
-  const handleImport = async (data: any[]) => {
+  const handleImport = async (data: any[]): Promise<ImportAuditResult> => {
     const calendarLookup = new Map<string, any[]>();
     calendars.forEach(item => {
       appendLookupCandidate(calendarLookup, normalizeLookupValue(item.calendar_id), item);
@@ -8844,7 +8844,11 @@ function BatchRoomAllocationManagement() {
       appendLookupCandidate(reservableRoomLookup, normalizeLookupValue(getRoomDisplayLabel(room, rooms)), room);
     });
 
-    const entries = data.map((row) => {
+    const auditRows: ImportAuditRow[] = [];
+    const validEntries: BulkImportEntry[] = [];
+
+    data.forEach((row) => {
+      const rowNum = row.__rowNumber ?? '?';
       const calendarLookupValue = normalizeLookupValue(getImportValue(row, ['Academic Calendar', 'Calendar ID'])) || normalizeLookupValue(getImportValue(row, ['Academic Calendar', 'Title']));
       const calendar = (calendarLookup.get(calendarLookupValue) || [])[0];
       const school = (schoolLookup.get(normalizeLookupValue(row['School'])) || [])[0];
@@ -8878,40 +8882,119 @@ function BatchRoomAllocationManagement() {
 
       const startDate = formatExcelDate(getImportValue(row, ['Start Date'])) || calendar?.start_date;
       const endDate = formatExcelDate(getImportValue(row, ['End Date'])) || calendar?.end_date;
-      const payload = {
-        allocation_id: row['Allocation ID']?.toString(),
-        academic_calendar_id: calendar?.id || null,
-        school_id: department?.school_id || school?.id,
-        department_id: department?.id,
-        room_id: room?.id,
-        program: normalizeProgramValue(row['Program']) || calendar?.program,
-        batch: row['Batch'] || calendar?.batch,
-        specialization: getImportValue(row, [SPECIALIZATION_BRANCH_LABEL, 'Specialization', 'Branch'])?.toString().trim() || calendar?.specialization || null,
-        academic_year: row['Academic Year'] || calendar?.academic_year,
-        year_of_study: normalizeYearOfStudyValue(getImportValue(row, ['Year / Semester', 'Year of Study'])) || calendar?.year_of_study,
-        semester: normalizeSemesterValue(getImportValue(row, [SEMESTER_TYPE_LABEL, 'Semester']), '') || calendar?.semester,
-        allocation_mode: getImportValue(row, ['Allocation Mode'])?.toString() || 'Shared',
-        allocation_pattern: normalizeBatchAllocationPatternValue(getImportValue(row, ['Allocation Pattern', 'Pattern'])),
-        split_group_id: getImportValue(row, ['Split Allocation Group', 'Split Group'])?.toString().trim() || null,
-        room_type: row['Room Type'] || room?.room_type,
-        capacity: parseInt(getImportValue(row, ['Required Capacity', 'Capacity'])?.toString() || '0', 10) || 0,
-        start_date: startDate,
-        end_date: endDate,
-        status: getRangeLifecycleStatus(startDate, endDate, 'Released', 'Planned'),
-        notes: row['Notes'] || null,
+      const capacity = parseInt(getImportValue(row, ['Required Capacity', 'Capacity'])?.toString() || '0', 10) || 0;
+
+      const auditBase = {
+        Row: rowNum,
+        'Allocation ID': row['Allocation ID']?.toString() || '',
+        School: row['School'] || '',
+        Department: row['Department'] || '',
+        Room: getImportValue(row, ['Room', 'Room Number']) || '',
+        [SEMESTER_TYPE_LABEL]: getImportValue(row, [SEMESTER_TYPE_LABEL, 'Semester']) || '',
       };
 
-      return !payload.allocation_id || !payload.department_id || !payload.room_id || !payload.start_date || !payload.end_date || payload.capacity <= 0
-        ? null
-        : {
-            payload,
-            uniqueFieldGroups: [
-              ['allocation_id'],
-              ['room_id', 'department_id', 'program', 'batch', 'specialization', 'year_of_study', 'semester', 'start_date', 'end_date'],
-            ],
-          };
-    }).filter(Boolean) as BulkImportEntry[];
-    await upsertImportRecordsBulk('/api/batch_room_allocations', entries);
+      if (!row['Allocation ID']?.toString()) {
+        auditRows.push({ ...auditBase, Status: 'Skipped', Reason: 'Allocation ID is required' });
+        return;
+      }
+      if (!department?.id) {
+        auditRows.push({ ...auditBase, Status: 'Skipped', Reason: `Department "${row['Department'] || ''}" not found` });
+        return;
+      }
+      if (!room?.id) {
+        auditRows.push({ ...auditBase, Status: 'Skipped', Reason: `Room "${getImportValue(row, ['Room', 'Room Number']) || ''}" not found, not bookable/available, or not linked to this department` });
+        return;
+      }
+      if (!startDate) {
+        auditRows.push({ ...auditBase, Status: 'Skipped', Reason: 'Start Date is required (no explicit date and no matching Academic Calendar found)' });
+        return;
+      }
+      if (!endDate) {
+        auditRows.push({ ...auditBase, Status: 'Skipped', Reason: 'End Date is required (no explicit date and no matching Academic Calendar found)' });
+        return;
+      }
+      if (capacity <= 0) {
+        auditRows.push({ ...auditBase, Status: 'Skipped', Reason: 'Required Capacity must be greater than 0' });
+        return;
+      }
+
+      validEntries.push({
+        payload: {
+          allocation_id: row['Allocation ID']?.toString(),
+          academic_calendar_id: calendar?.id || null,
+          school_id: department?.school_id || school?.id,
+          department_id: department?.id,
+          room_id: room?.id,
+          program: normalizeProgramValue(row['Program']) || calendar?.program,
+          batch: row['Batch'] || calendar?.batch,
+          specialization: getImportValue(row, [SPECIALIZATION_BRANCH_LABEL, 'Specialization', 'Branch'])?.toString().trim() || calendar?.specialization || null,
+          academic_year: row['Academic Year'] || calendar?.academic_year,
+          year_of_study: normalizeYearOfStudyValue(getImportValue(row, ['Year / Semester', 'Year of Study'])) || calendar?.year_of_study,
+          semester: normalizeSemesterValue(getImportValue(row, [SEMESTER_TYPE_LABEL, 'Semester']), '') || calendar?.semester,
+          allocation_mode: getImportValue(row, ['Allocation Mode'])?.toString() || 'Shared',
+          allocation_pattern: normalizeBatchAllocationPatternValue(getImportValue(row, ['Allocation Pattern', 'Pattern'])),
+          split_group_id: getImportValue(row, ['Split Allocation Group', 'Split Group'])?.toString().trim() || null,
+          room_type: row['Room Type'] || room?.room_type,
+          capacity,
+          start_date: startDate,
+          end_date: endDate,
+          status: getRangeLifecycleStatus(startDate, endDate, 'Released', 'Planned'),
+          notes: row['Notes'] || null,
+        },
+        uniqueFieldGroups: [
+          ['allocation_id'],
+          ['room_id', 'department_id', 'program', 'batch', 'specialization', 'year_of_study', 'semester', 'start_date', 'end_date'],
+        ],
+      });
+      auditRows.push({ ...auditBase, Status: 'Pending', Reason: '' });
+    });
+
+    const skippedCount = auditRows.filter(r => r['Status'] === 'Skipped').length;
+
+    if (validEntries.length === 0) {
+      throw new Error(
+        `No valid rows found in the import file. ${skippedCount > 0
+          ? `${skippedCount} row(s) were skipped — check that allocation ID, department, room, start/end dates, and capacity are all valid.`
+          : 'Ensure the file has the correct column headers and data.'}`
+      );
+    }
+
+    const results = await upsertImportRecordsBulk('/api/batch_room_allocations', validEntries);
+    let created = 0, updated = 0, failed = 0;
+    let pendingIndex = 0;
+    auditRows.forEach((row) => {
+      if (row['Status'] !== 'Pending') return;
+      const result = results[pendingIndex++];
+      if (result?.ok) {
+        row['Status'] = result.action === 'updated' ? 'Updated' : 'Created';
+        row['Reason'] = '';
+        if (result.action === 'updated') updated++; else created++;
+      } else {
+        row['Status'] = 'Failed';
+        row['Reason'] = result?.error || 'Server validation failed';
+        failed++;
+      }
+    });
+
+    const importedCount = created + updated;
+    const parts: string[] = [];
+    if (created > 0) parts.push(`${created} created`);
+    if (updated > 0) parts.push(`${updated} updated`);
+    const summaryDetail = parts.length ? ` (${parts.join(', ')})` : '';
+    const skippedNote = skippedCount > 0 ? ` ${skippedCount} row(s) skipped.` : '';
+    const failedNote = failed > 0 ? ` ${failed} row(s) failed server validation.` : '';
+
+    return {
+      message: `Imported ${importedCount} batch room allocation(s)${summaryDetail}.${skippedNote}${failedNote}`,
+      auditTitle: 'Batch Room Allocation Import Results',
+      auditHeaders: ['Row', 'Allocation ID', 'School', 'Department', 'Room', SEMESTER_TYPE_LABEL, 'Status', 'Reason'],
+      auditRows,
+      summary: {
+        totalRowsRead: data.length,
+        validRows: validEntries.length,
+        created, updated, skipped: skippedCount, failed,
+      },
+    };
   };
 
   const prepareFormData = (item: any) => {
@@ -9432,7 +9515,7 @@ function DepartmentAllocationManagement() {
     { key: 'capacity', label: 'Required Capacity', type: 'number', formOnly: true },
   ];
 
-  const handleImport = async (data: any[]) => {
+  const handleImport = async (data: any[]): Promise<ImportAuditResult> => {
     const schoolLookup = new Map<string, any[]>();
     schools.forEach(item => {
       appendLookupCandidate(schoolLookup, normalizeLookupValue(item.name), item);
@@ -9457,7 +9540,11 @@ function DepartmentAllocationManagement() {
       appendLookupCandidate(reservableRoomLookup, normalizeLookupValue(getRoomDisplayLabel(room, rooms)), room);
     });
 
-    const entries = data.map((row) => {
+    const auditRows: ImportAuditRow[] = [];
+    const validEntries: BulkImportEntry[] = [];
+
+    data.forEach((row) => {
+      const rowNum = row.__rowNumber ?? '?';
       const school = (schoolLookup.get(normalizeLookupValue(row['School'])) || [])[0];
       const department = (departmentLookup.get(`${school?.id?.toString() || '*'}|${normalizeLookupValue(row['Department'])}`) ||
         departmentLookup.get(`*|${normalizeLookupValue(row['Department'])}`) ||
@@ -9481,31 +9568,101 @@ function DepartmentAllocationManagement() {
         }
         return true;
       });
-      
-      const payload = {
-        school_id: school?.id,
-        department_id: department?.id,
-        room_id: room?.id,
-        semester: normalizeSemester(getImportValue(row, [SEMESTER_TYPE_LABEL, 'Semester'])),
-        room_type: row['Room Type'],
-        capacity: parseInt(getImportValue(row, ['Required Capacity', 'Capacity'])?.toString() || '0', 10) || 0
-      };
-      
-      if (room && payload.capacity > room.capacity) return null;
 
-      if (
-        !payload.school_id ||
-        !payload.department_id ||
-        !payload.room_id ||
-        !semesterOptions.includes(payload.semester)
-      ) return null;
-      
-      return {
-        payload,
-        uniqueFieldGroups: [['room_id', 'department_id', 'semester']],
+      const auditBase = {
+        Row: rowNum,
+        School: row['School'] || '',
+        Department: row['Department'] || '',
+        Room: getImportValue(row, ['Room', 'Room Number']) || '',
+        [SEMESTER_TYPE_LABEL]: getImportValue(row, [SEMESTER_TYPE_LABEL, 'Semester']) || '',
       };
-    }).filter(Boolean) as BulkImportEntry[];
-    await upsertImportRecordsBulk('/api/department_allocations', entries);
+
+      if (!school) {
+        auditRows.push({ ...auditBase, Status: 'Skipped', Reason: `School "${row['School'] || ''}" not found` });
+        return;
+      }
+      if (!department) {
+        auditRows.push({ ...auditBase, Status: 'Skipped', Reason: `Department "${row['Department'] || ''}" not found in school` });
+        return;
+      }
+      if (!room) {
+        auditRows.push({ ...auditBase, Status: 'Skipped', Reason: `Room "${getImportValue(row, ['Room', 'Room Number']) || ''}" not found or not bookable/available` });
+        return;
+      }
+
+      const semester = normalizeSemester(getImportValue(row, [SEMESTER_TYPE_LABEL, 'Semester']));
+      if (!semesterOptions.includes(semester)) {
+        auditRows.push({ ...auditBase, Status: 'Skipped', Reason: `Invalid ${SEMESTER_TYPE_LABEL} value "${getImportValue(row, [SEMESTER_TYPE_LABEL, 'Semester']) || ''}" — must be Odd or Even` });
+        return;
+      }
+
+      const capacity = parseInt(getImportValue(row, ['Required Capacity', 'Capacity'])?.toString() || '0', 10) || 0;
+      if (capacity > room.capacity) {
+        auditRows.push({ ...auditBase, Status: 'Skipped', Reason: `Required capacity ${capacity} exceeds room capacity ${room.capacity}` });
+        return;
+      }
+
+      validEntries.push({
+        payload: {
+          school_id: school.id,
+          department_id: department.id,
+          room_id: room.id,
+          semester,
+          room_type: row['Room Type'] || room.room_type,
+          capacity,
+        },
+        uniqueFieldGroups: [['room_id', 'department_id', 'semester']],
+      });
+      auditRows.push({ ...auditBase, Status: 'Pending', Reason: '' });
+    });
+
+    const skippedCount = auditRows.filter(r => r['Status'] === 'Skipped').length;
+
+    if (validEntries.length === 0) {
+      throw new Error(
+        `No valid rows found in the import file. ${skippedCount > 0 ? `${skippedCount} row(s) were skipped — check that school, department, and room names exactly match existing records, rooms are bookable and available, and the ${SEMESTER_TYPE_LABEL} is Odd or Even.` : 'Ensure the file has the correct column headers and data.'}`
+      );
+    }
+
+    const results = await upsertImportRecordsBulk('/api/department_allocations', validEntries);
+    let created = 0, updated = 0, failed = 0;
+    let pendingIndex = 0;
+    auditRows.forEach((row) => {
+      if (row['Status'] !== 'Pending') return;
+      const result = results[pendingIndex++];
+      if (result?.ok) {
+        row['Status'] = result.action === 'updated' ? 'Updated' : 'Created';
+        row['Reason'] = '';
+        if (result.action === 'updated') updated++; else created++;
+      } else {
+        row['Status'] = 'Failed';
+        row['Reason'] = result?.error || 'Server validation failed';
+        failed++;
+      }
+    });
+
+    const importedCount = created + updated;
+    const parts: string[] = [];
+    if (created > 0) parts.push(`${created} created`);
+    if (updated > 0) parts.push(`${updated} updated`);
+    const summaryDetail = parts.length ? ` (${parts.join(', ')})` : '';
+    const skippedNote = skippedCount > 0 ? ` ${skippedCount} row(s) skipped.` : '';
+    const failedNote = failed > 0 ? ` ${failed} row(s) failed server validation.` : '';
+
+    return {
+      message: `Imported ${importedCount} department room mapping(s)${summaryDetail}.${skippedNote}${failedNote}`,
+      auditTitle: 'Department Room Mapping Import Results',
+      auditHeaders: ['Row', 'School', 'Department', 'Room', SEMESTER_TYPE_LABEL, 'Status', 'Reason'],
+      auditRows,
+      summary: {
+        totalRowsRead: data.length,
+        validRows: validEntries.length,
+        created,
+        updated,
+        skipped: skippedCount,
+        failed,
+      },
+    };
   };
 
   const prepareFormData = (item: any) => {
