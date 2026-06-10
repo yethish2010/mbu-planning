@@ -1597,44 +1597,37 @@ createCrudRoutes("campuses");
 createCrudRoutes("buildings");
 createCrudRoutes("blocks");
 createCrudRoutes("floors");
-createCrudRoutes("rooms");
-createCrudRoutes("schools");
-createCrudRoutes("departments");
-createCrudRoutes("department_allocations");
-createCrudRoutes("equipment");
-createCrudRoutes("schedules");
-createCrudRoutes("bookings");
-createCrudRoutes("maintenance");
-  app.get(`/api/rooms`, authenticate, async (req, res) => {
-    try {
-      const items = await db.prepare(`SELECT * FROM rooms`).all() as any[];
-      
-      const now = new Date();
-      const dayOfWeek = now.toLocaleDateString('en-US', { weekday: 'long' });
-      const currentTime = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
-      const currentDate = now.toISOString().split('T')[0];
 
-      const enrichedItems = [];
-      for (const room of items) {
-        if (room.status !== 'Available') {
-          enrichedItems.push(room);
-          continue;
-        }
+app.get(`/api/rooms`, authenticate, async (req, res) => {
+  try {
+    const items = await db.prepare(`SELECT * FROM rooms`).all() as any[];
 
-        const schedule = await db.prepare(`
-          SELECT * FROM schedules 
-          WHERE room = ? AND day_of_week = ? AND start_time <= ? AND end_time > ?
-        `).get(room.room_number, dayOfWeek, currentTime, currentTime);
+    const now = new Date();
+    const dayOfWeek = now.toLocaleDateString('en-US', { weekday: 'long' });
+    const currentTime = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
+    const currentDate = now.toISOString().split('T')[0];
 
-        if (schedule) {
-          enrichedItems.push({ ...room, status: 'Occupied (Scheduled)' });
-          continue;
-        }
+    const enrichedItems = [];
+    for (const room of items) {
+      if (room.status !== 'Available') {
+        enrichedItems.push(room);
+        continue;
+      }
 
-        const booking = await db.prepare(`
-          SELECT * FROM bookings 
-          WHERE room_number = ? AND date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
-        `).get(room.room_number, currentDate, currentTime, currentTime);
+      const schedule = await db.prepare(`
+        SELECT * FROM schedules
+        WHERE room_id = ? AND day_of_week = ? AND start_time <= ? AND end_time > ?
+      `).get(room.id, dayOfWeek, currentTime, currentTime);
+
+      if (schedule) {
+        enrichedItems.push({ ...room, status: 'Occupied (Scheduled)' });
+        continue;
+      }
+
+      const booking = await db.prepare(`
+        SELECT * FROM bookings
+        WHERE room_id = ? AND date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
+      `).get(room.id, currentDate, currentTime, currentTime);
 
         if (booking) {
           enrichedItems.push({ ...room, status: 'Occupied (Booked)' });
@@ -1735,6 +1728,15 @@ createCrudRoutes("maintenance");
       res.status(500).json({ error: err.message });
     }
   });
+
+createCrudRoutes("rooms");
+createCrudRoutes("schools");
+createCrudRoutes("departments");
+createCrudRoutes("department_allocations");
+createCrudRoutes("equipment");
+createCrudRoutes("schedules");
+createCrudRoutes("bookings");
+createCrudRoutes("maintenance");
 
 // --- DASHBOARD STATS ---
 
