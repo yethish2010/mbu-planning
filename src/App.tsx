@@ -350,12 +350,14 @@ const roomLookupMatches = (candidate: unknown, targetVariants: Set<string>) => {
   return getRoomLookupVariants(candidate).some(variant => targetVariants.has(variant));
 };
 
-// Strips the " - Good fit, N seats - Floor..." or " - Under capacity, N seats - Floor..." suffix
+// Strips the " - Good fit, N seats - ..." or " - Under capacity, N seats - ..." suffix
 // that appears in exported Excel room values from the dropdown option labels
-// e.g. "524 - Good fit, 30 seats - Floor 1 (MNS)" → "524"
+// e.g. "524 - Good fit, 30 seats - Floor 1 (MNS)"   → "524"
+//      "408 - Good fit, 30 seats - Ground Floor (MNS)" → "408"
+//      "4001 & 4002 - Good fit, 140 seats - Basement 1 (NAB)" → "4001 & 4002"
 const stripRoomDropdownLabel = (value: unknown): string => {
   const str = value?.toString().trim() || '';
-  return str.replace(/\s*-\s*(?:good fit|under capacity|\d+),?\s*\d*\s*seats?\s*-\s*floor\b.*/gi, '').trim();
+  return str.replace(/\s*-\s*(?:good fit|under capacity),\s*\d+\s*seats?\b.*/gi, '').trim();
 };
 
 const idsMatch = (left: unknown, right: unknown) =>
