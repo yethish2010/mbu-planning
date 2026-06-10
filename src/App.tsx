@@ -1194,6 +1194,18 @@ const isRoomReservable = (room: any) => {
   return BOOKABLE_ROOM_TYPES.has(roomType) || BOOKABLE_USAGE_CATEGORIES.has(usageCategory);
 };
 
+// Like isRoomReservable but allows temporarily occupied rooms (Occupied (Scheduled) / Occupied (Booked))
+// Used for semester allocation imports where current occupancy is irrelevant
+const isRoomAllocatable = (room: any) => {
+  if (!isRoomBookable(room)) return false;
+  const status = room?.status;
+  if (status && status !== 'Available' && status !== 'Occupied (Scheduled)' && status !== 'Occupied (Booked)') return false;
+  const roomType = normalizeRoomTypeValue(room?.room_type);
+  if (isNonCapacityRoomType(roomType)) return false;
+  const usageCategory = normalizeUsageCategoryValue(room?.usage_category, roomType);
+  return BOOKABLE_ROOM_TYPES.has(roomType) || BOOKABLE_USAGE_CATEGORIES.has(usageCategory);
+};
+
 const splitAliasTokens = (value: unknown): string[] =>
   String(value ?? '')
     .split(/[\n,;|/]+/)
@@ -8838,7 +8850,7 @@ function BatchRoomAllocationManagement() {
       appendLookupCandidate(buildingLookup, normalizeLookupValue(item.name), item);
     });
     const reservableRoomLookup = new Map<string, any[]>();
-    rooms.filter(isRoomReservable).forEach(room => {
+    rooms.filter(isRoomAllocatable).forEach(room => {
       appendLookupCandidate(reservableRoomLookup, normalizeLookupValue(room.room_id), room);
       appendLookupCandidate(reservableRoomLookup, normalizeLookupValue(room.room_number), room);
       appendLookupCandidate(reservableRoomLookup, normalizeLookupValue(getRoomDisplayLabel(room, rooms)), room);
@@ -8952,11 +8964,13 @@ function BatchRoomAllocationManagement() {
     const skippedCount = auditRows.filter(r => r['Status'] === 'Skipped').length;
 
     if (validEntries.length === 0) {
-      throw new Error(
-        `No valid rows found in the import file. ${skippedCount > 0
-          ? `${skippedCount} row(s) were skipped — check that allocation ID, department, room, start/end dates, and capacity are all valid.`
-          : 'Ensure the file has the correct column headers and data.'}`
-      );
+      return {
+        message: `0 batch room allocations imported.${skippedCount > 0 ? ` ${skippedCount} row(s) were skipped — see audit below for per-row details.` : ' Ensure the file has the correct column headers and data.'}`,
+        auditTitle: 'Batch Room Allocation Import Results',
+        auditHeaders: ['Row', 'Allocation ID', 'School', 'Department', 'Room', SEMESTER_TYPE_LABEL, 'Status', 'Reason'],
+        auditRows,
+        summary: { totalRowsRead: data.length, validRows: 0, created: 0, updated: 0, skipped: skippedCount, failed: 0 },
+      };
     }
 
     const results = await upsertImportRecordsBulk('/api/batch_room_allocations', validEntries);
@@ -9534,7 +9548,7 @@ function DepartmentAllocationManagement() {
       appendLookupCandidate(buildingLookup, normalizeLookupValue(item.name), item);
     });
     const reservableRoomLookup = new Map<string, any[]>();
-    rooms.filter(isRoomReservable).forEach(room => {
+    rooms.filter(isRoomAllocatable).forEach(room => {
       appendLookupCandidate(reservableRoomLookup, normalizeLookupValue(room.room_id), room);
       appendLookupCandidate(reservableRoomLookup, normalizeLookupValue(room.room_number), room);
       appendLookupCandidate(reservableRoomLookup, normalizeLookupValue(getRoomDisplayLabel(room, rooms)), room);
@@ -9619,9 +9633,13 @@ function DepartmentAllocationManagement() {
     const skippedCount = auditRows.filter(r => r['Status'] === 'Skipped').length;
 
     if (validEntries.length === 0) {
-      throw new Error(
-        `No valid rows found in the import file. ${skippedCount > 0 ? `${skippedCount} row(s) were skipped — check that school, department, and room names exactly match existing records, rooms are bookable and available, and the ${SEMESTER_TYPE_LABEL} is Odd or Even.` : 'Ensure the file has the correct column headers and data.'}`
-      );
+      return {
+        message: `0 department room mappings imported.${skippedCount > 0 ? ` ${skippedCount} row(s) were skipped — see audit below for per-row details.` : ' Ensure the file has the correct column headers and data.'}`,
+        auditTitle: 'Department Room Mapping Import Results',
+        auditHeaders: ['Row', 'School', 'Department', 'Room', SEMESTER_TYPE_LABEL, 'Status', 'Reason'],
+        auditRows,
+        summary: { totalRowsRead: data.length, validRows: 0, created: 0, updated: 0, skipped: skippedCount, failed: 0 },
+      };
     }
 
     const results = await upsertImportRecordsBulk('/api/department_allocations', validEntries);

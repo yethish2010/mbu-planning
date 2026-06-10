@@ -16,3 +16,8 @@ campus.db
 
 .codex-checkpoints/
 .codex-work/
+
+# Database exports
+smart_campus_export.sql
+smart_campus_neon.sql
+*.sql.bak
