@@ -106,8 +106,7 @@ const getDigitalTwinStatusLabel = (status: unknown, isBookable = true) => {
 
 const formatStatusBreakdownLine = (items: Array<{ label: string; count: number }> | undefined, fallback: string) => {
   const safeItems = (Array.isArray(items) ? items : [])
-    .filter((item) => Number(item?.count) > 0 && item?.label)
-    .slice(0, 5);
+    .filter((item) => Number(item?.count) > 0 && item?.label);
   if (safeItems.length === 0) return fallback;
   return safeItems.map((item) => `${item.label}: ${item.count}`).join(' | ');
 };
