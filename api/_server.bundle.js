@@ -3649,7 +3649,8 @@ var createCrudRoutes = (tableName, idField = "id") => {
         await syncBatchAllocationStatuses();
       }
       if (wantsServerQuery) {
-        const tableColumns = (await db.prepare(`PRAGMA table_info(${tableName})`).all()).map((column) => column?.name?.toString()).filter(Boolean);
+        const rawColumns = db.dialect === "postgres" ? await db.prepare(`SELECT column_name as name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ?`).all(tableName) : await db.prepare(`PRAGMA table_info(${tableName})`).all();
+        const tableColumns = rawColumns.map((column) => column?.name?.toString()).filter(Boolean);
         const allowedSearchFields = (searchFields.length > 0 ? searchFields : tableColumns).filter((field) => tableColumns.includes(field));
         const sortKey = tableColumns.includes(requestedSortKey) ? requestedSortKey : tableColumns.includes("id") ? "id" : tableColumns[0];
         if (tableName === "schedules") {

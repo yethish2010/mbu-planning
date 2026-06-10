@@ -4228,9 +4228,10 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       }
 
       if (wantsServerQuery) {
-        const tableColumns = (await db.prepare(`PRAGMA table_info(${tableName})`).all() as any[])
-          .map((column: any) => column?.name?.toString())
-          .filter(Boolean);
+        const rawColumns = db.dialect === "postgres"
+          ? (await db.prepare(`SELECT column_name as name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ?`).all(tableName) as any[])
+          : (await db.prepare(`PRAGMA table_info(${tableName})`).all() as any[]);
+        const tableColumns = rawColumns.map((column: any) => column?.name?.toString()).filter(Boolean);
         const allowedSearchFields = (searchFields.length > 0 ? searchFields : tableColumns)
           .filter(field => tableColumns.includes(field));
         const sortKey = tableColumns.includes(requestedSortKey) ? requestedSortKey : (tableColumns.includes("id") ? "id" : tableColumns[0]);
