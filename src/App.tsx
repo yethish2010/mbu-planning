@@ -4382,7 +4382,7 @@ function DashboardHome() {
 
   const composeInsightMessage = (statsPayload: any, schoolReportsPayload: any[]) => {
     const rankedSchools = (Array.isArray(schoolReportsPayload) ? schoolReportsPayload : [])
-      .filter((school: any) => school?.name)
+      .filter((school: any) => school?.name && school.name !== 'Unmapped')
       .sort((a: any, b: any) => (Number(b?.avgUtilization) || 0) - (Number(a?.avgUtilization) || 0));
     const topSchool = rankedSchools[0];
 
@@ -4538,7 +4538,7 @@ function DashboardHome() {
     const colorClasses = ['bg-emerald-500', 'bg-blue-500', 'bg-amber-500', 'bg-rose-500', 'bg-indigo-500'];
 
     return (Array.isArray(schoolUsage) ? schoolUsage : [])
-      .filter((school: any) => school?.name)
+      .filter((school: any) => school?.name && school.name !== 'Unmapped')
       .sort((a: any, b: any) => (Number(b?.avgUtilization) || 0) - (Number(a?.avgUtilization) || 0))
       .map((school: any, index: number) => ({
         name: school.name,

@@ -2218,7 +2218,7 @@ const parseAIJsonResponse = (text: string) => {
 
 const composeDashboardInsightFallback = (stats: any, schoolReports: any[]) => {
   const topSchool = (Array.isArray(schoolReports) ? schoolReports : [])
-    .filter((school: any) => school?.name)
+    .filter((school: any) => school?.name && school.name !== "Unmapped")
     .sort((a: any, b: any) => (Number(b?.avgUtilization) || 0) - (Number(a?.avgUtilization) || 0))[0];
 
   if (!topSchool) {
@@ -5397,7 +5397,7 @@ app.get("/api/dashboard/overview", authenticate, async (_req, res) => {
       return acc;
     }, { classrooms: 0, labs: 0 });
 
-    const schoolReports = Array.from(new Set(baseReports.map((report: any) => report.school).filter(Boolean))).map((schoolName: string) => {
+    const schoolReports = Array.from(new Set(baseReports.map((report: any) => report.school).filter((s: any) => s && s !== "Unmapped"))).map((schoolName: string) => {
       const schoolRooms = baseReports.filter((report: any) => report.school === schoolName);
       const deptCount = new Set(
         schoolRooms
@@ -6003,7 +6003,7 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
     }).filter(report => report.roomCount > 0);
 
     // Aggregate by School (room-weighted, only schools that actually have mapped rooms)
-    const schoolReports = Array.from(new Set(reports.map(report => report.school).filter(Boolean))).map((schoolName) => {
+    const schoolReports = Array.from(new Set(reports.map(report => report.school).filter(s => s && s !== "Unmapped"))).map((schoolName) => {
       const schoolRooms = reports.filter(report => report.school === schoolName);
       const deptCount = new Set(
         schoolRooms

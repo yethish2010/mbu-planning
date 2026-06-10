@@ -2004,7 +2004,7 @@ var parseAIJsonResponse = (text) => {
   return JSON.parse(cleanText);
 };
 var composeDashboardInsightFallback = (stats, schoolReports) => {
-  const topSchool = (Array.isArray(schoolReports) ? schoolReports : []).filter((school) => school?.name).sort((a, b) => (Number(b?.avgUtilization) || 0) - (Number(a?.avgUtilization) || 0))[0];
+  const topSchool = (Array.isArray(schoolReports) ? schoolReports : []).filter((school) => school?.name && school.name !== "Unmapped").sort((a, b) => (Number(b?.avgUtilization) || 0) - (Number(a?.avgUtilization) || 0))[0];
   if (!topSchool) {
     return "No school utilization data is available yet. Add room allocations, schedules, or approved bookings to populate live insights.";
   }
@@ -4715,7 +4715,7 @@ app.get("/api/dashboard/overview", authenticate, async (_req, res) => {
       if (bucket === "lab") acc.labs += 1;
       return acc;
     }, { classrooms: 0, labs: 0 });
-    const schoolReports = Array.from(new Set(baseReports.map((report) => report.school).filter(Boolean))).map((schoolName) => {
+    const schoolReports = Array.from(new Set(baseReports.map((report) => report.school).filter((s) => s && s !== "Unmapped"))).map((schoolName) => {
       const schoolRooms = baseReports.filter((report) => report.school === schoolName);
       const deptCount = new Set(
         schoolRooms.map((report) => report.department).filter((departmentName) => departmentName && departmentName !== "Unmapped")
@@ -5217,7 +5217,7 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
         roomCount: deptRooms.length
       };
     }).filter((report) => report.roomCount > 0);
-    const schoolReports = Array.from(new Set(reports.map((report) => report.school).filter(Boolean))).map((schoolName) => {
+    const schoolReports = Array.from(new Set(reports.map((report) => report.school).filter((s) => s && s !== "Unmapped"))).map((schoolName) => {
       const schoolRooms = reports.filter((report) => report.school === schoolName);
       const deptCount = new Set(
         schoolRooms.map((report) => report.department).filter((departmentName) => departmentName && departmentName !== "Unmapped")
