@@ -5040,41 +5040,62 @@ createCrudRoutes("floors");
 app.get(`/api/rooms`, authenticate, async (req, res) => {
   try {
     const scopedRoomIds = await getScopedMappedRoomIdsForUser((req as any).user);
-    const items = (await db.prepare(`SELECT * FROM rooms`).all() as any[]).filter((room: any) =>
-      !scopedRoomIds || scopedRoomIds.has(room?.id?.toString?.() || "")
-    );
-
     const { date: currentDate, time: currentTime } = getCampusDateTimeParts();
+
+    // Batch pre-fetch #1: scheduled room IDs (single query via academic calendar logic)
     const activeSchedules = await getEffectiveSchedulesForDate(currentDate, schedule =>
       schedule.start_time <= currentTime && schedule.end_time > currentTime
     );
+    const scheduledRoomIds = new Set(
+      (activeSchedules as any[]).map(s => s.room_id?.toString()).filter(Boolean)
+    );
 
-    const enrichedItems = [];
-    for (const room of items) {
-      if (room.status !== 'Available') {
-        enrichedItems.push(room);
-        continue;
-      }
+    // Batch pre-fetch #2: booked room IDs (single query — replaces N per-room queries)
+    const bookedRoomIds = new Set(
+      (await db.prepare(`
+        SELECT DISTINCT room_id FROM bookings
+        WHERE date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
+      `).all(currentDate, currentTime, currentTime) as any[])
+        .map((b: any) => b.room_id?.toString()).filter(Boolean)
+    );
 
-      const schedule = activeSchedules.find(item => idsEqual(item.room_id, room.id));
+    // Push location filtering to SQL with JOINs — eliminates 3 extra lookup queries
+    const floorId = req.query.floor_id?.toString() || "";
+    const blockId = req.query.block_id?.toString() || "";
+    const buildingId = req.query.building_id?.toString() || "";
+    const campusId = req.query.campus_id?.toString() || "";
 
-      if (schedule) {
-        enrichedItems.push({ ...room, status: 'Occupied (Scheduled)' });
-        continue;
-      }
-
-      const booking = await db.prepare(`
-        SELECT * FROM bookings
-        WHERE room_id = ? AND date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
-      `).get(room.id, currentDate, currentTime, currentTime);
-
-      if (booking) {
-        enrichedItems.push({ ...room, status: 'Occupied (Booked)' });
-        continue;
-      }
-
-      enrichedItems.push(room);
+    let roomItems: any[];
+    if (floorId || blockId || buildingId || campusId) {
+      const whereParts: string[] = [];
+      const whereValues: any[] = [];
+      if (floorId) { whereParts.push("r.floor_id = ?"); whereValues.push(floorId); }
+      if (blockId) { whereParts.push("bl.id = ?"); whereValues.push(blockId); }
+      if (buildingId) { whereParts.push("b.id = ?"); whereValues.push(buildingId); }
+      if (campusId) { whereParts.push("b.campus_id = ?"); whereValues.push(campusId); }
+      roomItems = await db.prepare(`
+        SELECT r.* FROM rooms r
+        LEFT JOIN floors f ON r.floor_id = f.id
+        LEFT JOIN blocks bl ON f.block_id = bl.id
+        LEFT JOIN buildings b ON bl.building_id = b.id
+        WHERE ${whereParts.join(" AND ")}
+      `).all(...whereValues) as any[];
+    } else {
+      roomItems = await db.prepare(`SELECT * FROM rooms`).all() as any[];
     }
+
+    // Apply scope filter
+    if (scopedRoomIds) {
+      roomItems = roomItems.filter((room: any) => scopedRoomIds.has(room?.id?.toString?.() || ""));
+    }
+
+    // Enrich occupancy using pre-built Sets — O(1) per room, zero DB queries in loop
+    const enrichedItems = roomItems.map((room: any) => {
+      if (room.status !== 'Available') return room;
+      if (scheduledRoomIds.has(room.id?.toString())) return { ...room, status: 'Occupied (Scheduled)' };
+      if (bookedRoomIds.has(room.id?.toString())) return { ...room, status: 'Occupied (Booked)' };
+      return room;
+    });
 
     const requestedSearch = req.query.q?.toString().trim().toLowerCase() || "";
     const requestedSortKey = req.query.sortKey?.toString().trim() || "room_number";
@@ -5088,32 +5109,12 @@ app.get(`/api/rooms`, authenticate, async (req, res) => {
       .map(field => field.trim())
       .filter(Boolean);
 
-    const floorsData = await db.prepare("SELECT id, block_id FROM floors").all() as any[];
-    const blocksData = await db.prepare("SELECT id, building_id FROM blocks").all() as any[];
-    const buildingsData = await db.prepare("SELECT id, campus_id FROM buildings").all() as any[];
-    const floorById = new Map(floorsData.map((floor: any) => [floor?.id?.toString?.(), floor]));
-    const blockById = new Map(blocksData.map((block: any) => [block?.id?.toString?.(), block]));
-    const buildingById = new Map(buildingsData.map((building: any) => [building?.id?.toString?.(), building]));
-
-    let filteredItems = enrichedItems.filter((room: any) => {
-      if (req.query.floor_id && !idsEqual(room?.floor_id, req.query.floor_id)) return false;
-
-      const floor = floorById.get(room?.floor_id?.toString?.());
-      const block = blockById.get(floor?.block_id?.toString?.());
-      const building = buildingById.get(block?.building_id?.toString?.());
-
-      if (req.query.block_id && !idsEqual(block?.id, req.query.block_id)) return false;
-      if (req.query.building_id && !idsEqual(building?.id, req.query.building_id)) return false;
-      if (req.query.campus_id && !idsEqual(building?.campus_id, req.query.campus_id)) return false;
-
-      return true;
-    });
+    let filteredItems = enrichedItems;
 
     if (requestedSearch) {
-      const allowedSearchFields = (searchFields.length > 0
+      const allowedSearchFields = searchFields.length > 0
         ? searchFields
-        : ["room_id", "room_number", "room_name", "room_type", "status", "usage_category", "lab_name", "room_aliases"]
-      );
+        : ["room_id", "room_number", "room_name", "room_type", "status", "usage_category", "lab_name", "room_aliases"];
       filteredItems = filteredItems.filter((room: any) =>
         allowedSearchFields.some((field) =>
           room?.[field] != null && room[field].toString().toLowerCase().includes(requestedSearch)
@@ -5121,34 +5122,21 @@ app.get(`/api/rooms`, authenticate, async (req, res) => {
       );
     }
 
-    const compareRoomValues = (left: any, right: any) => {
+    filteredItems.sort((left: any, right: any) => {
       const leftValue = left?.[requestedSortKey];
       const rightValue = right?.[requestedSortKey];
-
-      if (requestedSortKey === "room_number") {
-        return (leftValue ?? "").toString().localeCompare((rightValue ?? "").toString(), undefined, {
-          numeric: true,
-          sensitivity: "base",
-        });
-      }
-
-      return (leftValue ?? "").toString().localeCompare((rightValue ?? "").toString(), undefined, {
+      const result = (leftValue ?? "").toString().localeCompare((rightValue ?? "").toString(), undefined, {
         numeric: true,
         sensitivity: "base",
       });
-    };
-
-    filteredItems.sort((left: any, right: any) => {
-      const result = compareRoomValues(left, right);
       return requestedSortDir === "desc" ? -result : result;
     });
 
     if (wantsServerQuery) {
       const total = filteredItems.length;
       const offset = (requestedPage - 1) * requestedPageSize;
-      const pagedItems = filteredItems.slice(offset, offset + requestedPageSize);
       return res.json({
-        items: pagedItems,
+        items: filteredItems.slice(offset, offset + requestedPageSize),
         total,
         page: requestedPage,
         pageSize: requestedPageSize,

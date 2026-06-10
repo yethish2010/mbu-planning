@@ -1600,119 +1600,113 @@ createCrudRoutes("floors");
 
 app.get(`/api/rooms`, authenticate, async (req, res) => {
   try {
-    const items = await db.prepare(`SELECT * FROM rooms`).all() as any[];
-
     const now = new Date();
     const dayOfWeek = now.toLocaleDateString('en-US', { weekday: 'long' });
     const currentTime = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
     const currentDate = now.toISOString().split('T')[0];
 
-    const enrichedItems = [];
-    for (const room of items) {
-      if (room.status !== 'Available') {
-        enrichedItems.push(room);
-        continue;
-      }
+    // Batch pre-fetch #1: scheduled room IDs (single query — replaces N per-room queries)
+    const scheduledRoomIds = new Set(
+      (await db.prepare(`
+        SELECT DISTINCT room_id FROM schedules
+        WHERE day_of_week = ? AND start_time <= ? AND end_time > ?
+      `).all(dayOfWeek, currentTime, currentTime) as any[])
+        .map((s: any) => s.room_id?.toString()).filter(Boolean)
+    );
 
-      const schedule = await db.prepare(`
-        SELECT * FROM schedules
-        WHERE room_id = ? AND day_of_week = ? AND start_time <= ? AND end_time > ?
-      `).get(room.id, dayOfWeek, currentTime, currentTime);
+    // Batch pre-fetch #2: booked room IDs (single query — replaces N per-room queries)
+    const bookedRoomIds = new Set(
+      (await db.prepare(`
+        SELECT DISTINCT room_id FROM bookings
+        WHERE date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
+      `).all(currentDate, currentTime, currentTime) as any[])
+        .map((b: any) => b.room_id?.toString()).filter(Boolean)
+    );
 
-      if (schedule) {
-        enrichedItems.push({ ...room, status: 'Occupied (Scheduled)' });
-        continue;
-      }
+    // Push location filtering to SQL with JOINs — eliminates 3 extra lookup queries
+    const floorId = req.query.floor_id?.toString() || "";
+    const blockId = req.query.block_id?.toString() || "";
+    const buildingId = req.query.building_id?.toString() || "";
+    const campusId = req.query.campus_id?.toString() || "";
 
-      const booking = await db.prepare(`
-        SELECT * FROM bookings
-        WHERE room_id = ? AND date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
-      `).get(room.id, currentDate, currentTime, currentTime);
-
-        if (booking) {
-          enrichedItems.push({ ...room, status: 'Occupied (Booked)' });
-          continue;
-        }
-
-        enrichedItems.push(room);
-      }
-
-      const requestedSearch = req.query.q?.toString().trim().toLowerCase() || "";
-      const requestedSortKey = req.query.sortKey?.toString().trim() || "room_number";
-      const requestedSortDir = req.query.sortDir?.toString().trim().toLowerCase() === "desc" ? "desc" : "asc";
-      const requestedPage = Math.max(parseInt(req.query.page?.toString() || "1", 10) || 1, 1);
-      const requestedPageSize = Math.min(Math.max(parseInt(req.query.pageSize?.toString() || "50", 10) || 50, 1), 200);
-      const wantsPagination = req.query.paginate?.toString() === "1";
-      const wantsServerQuery = wantsPagination || !!requestedSearch || !!req.query.sortKey?.toString().trim();
-      const searchFields = (req.query.searchFields?.toString() || "")
-        .split(",")
-        .map(field => field.trim())
-        .filter(Boolean);
-
-      const floorsData = await db.prepare("SELECT id, block_id FROM floors").all() as any[];
-      const blocksData = await db.prepare("SELECT id, building_id FROM blocks").all() as any[];
-      const buildingsData = await db.prepare("SELECT id, campus_id FROM buildings").all() as any[];
-      const floorById = new Map(floorsData.map((floor: any) => [floor?.id?.toString?.(), floor]));
-      const blockById = new Map(blocksData.map((block: any) => [block?.id?.toString?.(), block]));
-      const buildingById = new Map(buildingsData.map((building: any) => [building?.id?.toString?.(), building]));
-
-      let filteredItems = enrichedItems.filter((room: any) => {
-        if (req.query.floor_id && room?.floor_id?.toString?.() !== req.query.floor_id?.toString()) return false;
-
-        const floor = floorById.get(room?.floor_id?.toString?.());
-        const block = blockById.get(floor?.block_id?.toString?.());
-        const building = buildingById.get(block?.building_id?.toString?.());
-
-        if (req.query.block_id && block?.id?.toString?.() !== req.query.block_id?.toString()) return false;
-        if (req.query.building_id && building?.id?.toString?.() !== req.query.building_id?.toString()) return false;
-        if (req.query.campus_id && building?.campus_id?.toString?.() !== req.query.campus_id?.toString()) return false;
-
-        return true;
-      });
-
-      if (requestedSearch) {
-        const allowedSearchFields = (searchFields.length > 0
-          ? searchFields
-          : ["room_id", "room_number", "room_name", "room_type", "status", "usage_category", "lab_name", "room_aliases"]
-        );
-        filteredItems = filteredItems.filter((room: any) =>
-          allowedSearchFields.some((field) =>
-            room?.[field] != null && room[field].toString().toLowerCase().includes(requestedSearch)
-          )
-        );
-      }
-
-      const compareRoomValues = (left: any, right: any) => {
-        const leftValue = left?.[requestedSortKey];
-        const rightValue = right?.[requestedSortKey];
-        return (leftValue ?? "").toString().localeCompare((rightValue ?? "").toString(), undefined, {
-          numeric: true,
-          sensitivity: "base",
-        });
-      };
-
-      filteredItems.sort((left: any, right: any) => {
-        const result = compareRoomValues(left, right);
-        return requestedSortDir === "desc" ? -result : result;
-      });
-
-      if (wantsServerQuery) {
-        const total = filteredItems.length;
-        const offset = (requestedPage - 1) * requestedPageSize;
-        const pagedItems = filteredItems.slice(offset, offset + requestedPageSize);
-        return res.json({
-          items: pagedItems,
-          total,
-          page: requestedPage,
-          pageSize: requestedPageSize,
-        });
-      }
-
-      res.json(filteredItems);
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
+    let roomItems: any[];
+    if (floorId || blockId || buildingId || campusId) {
+      const whereParts: string[] = [];
+      const whereValues: any[] = [];
+      if (floorId) { whereParts.push("r.floor_id = ?"); whereValues.push(floorId); }
+      if (blockId) { whereParts.push("bl.id = ?"); whereValues.push(blockId); }
+      if (buildingId) { whereParts.push("b.id = ?"); whereValues.push(buildingId); }
+      if (campusId) { whereParts.push("b.campus_id = ?"); whereValues.push(campusId); }
+      roomItems = await db.prepare(`
+        SELECT r.* FROM rooms r
+        LEFT JOIN floors f ON r.floor_id = f.id
+        LEFT JOIN blocks bl ON f.block_id = bl.id
+        LEFT JOIN buildings b ON bl.building_id = b.id
+        WHERE ${whereParts.join(" AND ")}
+      `).all(...whereValues) as any[];
+    } else {
+      roomItems = await db.prepare(`SELECT * FROM rooms`).all() as any[];
     }
-  });
+
+    // Enrich occupancy using pre-built Sets — O(1) per room, zero DB queries in loop
+    const enrichedItems = roomItems.map((room: any) => {
+      if (room.status !== 'Available') return room;
+      if (scheduledRoomIds.has(room.id?.toString())) return { ...room, status: 'Occupied (Scheduled)' };
+      if (bookedRoomIds.has(room.id?.toString())) return { ...room, status: 'Occupied (Booked)' };
+      return room;
+    });
+
+    const requestedSearch = req.query.q?.toString().trim().toLowerCase() || "";
+    const requestedSortKey = req.query.sortKey?.toString().trim() || "room_number";
+    const requestedSortDir = req.query.sortDir?.toString().trim().toLowerCase() === "desc" ? "desc" : "asc";
+    const requestedPage = Math.max(parseInt(req.query.page?.toString() || "1", 10) || 1, 1);
+    const requestedPageSize = Math.min(Math.max(parseInt(req.query.pageSize?.toString() || "50", 10) || 50, 1), 200);
+    const wantsPagination = req.query.paginate?.toString() === "1";
+    const wantsServerQuery = wantsPagination || !!requestedSearch || !!req.query.sortKey?.toString().trim();
+    const searchFields = (req.query.searchFields?.toString() || "")
+      .split(",")
+      .map(field => field.trim())
+      .filter(Boolean);
+
+    let filteredItems = enrichedItems;
+
+    if (requestedSearch) {
+      const allowedSearchFields = searchFields.length > 0
+        ? searchFields
+        : ["room_id", "room_number", "room_name", "room_type", "status", "usage_category", "lab_name", "room_aliases"];
+      filteredItems = filteredItems.filter((room: any) =>
+        allowedSearchFields.some((field) =>
+          room?.[field] != null && room[field].toString().toLowerCase().includes(requestedSearch)
+        )
+      );
+    }
+
+    filteredItems.sort((left: any, right: any) => {
+      const leftValue = left?.[requestedSortKey];
+      const rightValue = right?.[requestedSortKey];
+      const result = (leftValue ?? "").toString().localeCompare((rightValue ?? "").toString(), undefined, {
+        numeric: true,
+        sensitivity: "base",
+      });
+      return requestedSortDir === "desc" ? -result : result;
+    });
+
+    if (wantsServerQuery) {
+      const total = filteredItems.length;
+      const offset = (requestedPage - 1) * requestedPageSize;
+      return res.json({
+        items: filteredItems.slice(offset, offset + requestedPageSize),
+        total,
+        page: requestedPage,
+        pageSize: requestedPageSize,
+      });
+    }
+
+    res.json(filteredItems);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
   app.get(`/api/rooms/:roomId/schedule`, authenticate, async (req, res) => {
     try {
