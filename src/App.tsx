@@ -350,6 +350,14 @@ const roomLookupMatches = (candidate: unknown, targetVariants: Set<string>) => {
   return getRoomLookupVariants(candidate).some(variant => targetVariants.has(variant));
 };
 
+// Strips the " - Good fit, N seats - Floor..." or " - Under capacity, N seats - Floor..." suffix
+// that appears in exported Excel room values from the dropdown option labels
+// e.g. "524 - Good fit, 30 seats - Floor 1 (MNS)" → "524"
+const stripRoomDropdownLabel = (value: unknown): string => {
+  const str = value?.toString().trim() || '';
+  return str.replace(/\s*-\s*(?:good fit|under capacity|\d+),?\s*\d*\s*seats?\s*-\s*floor\b.*/gi, '').trim();
+};
+
 const idsMatch = (left: unknown, right: unknown) =>
   left !== undefined && left !== null && right !== undefined && right !== null && left.toString() === right.toString();
 
@@ -8874,13 +8882,20 @@ function BatchRoomAllocationManagement() {
       const building = (buildingLookup.get(normalizeLookupValue(getImportValue(row, ['Building']))) || [])[0];
       const blockLabel = getImportValue(row, ['Block', 'Block / Direct Floors']);
       const normalizedBlockLabel = normalizeLookupValue(blockLabel);
-      const normalizedRoomValue = normalizeLookupValue(getImportValue(row, ['Room', 'Room Number']));
-      const room = (reservableRoomLookup.get(normalizedRoomValue) || []).find(r => {
-        if (![
+      const rawRoomValue = getImportValue(row, ['Room', 'Room Number']);
+      const normalizedRoomValue = normalizeLookupValue(rawRoomValue);
+      const strippedRoomValue = normalizeLookupValue(stripRoomDropdownLabel(rawRoomValue));
+      const roomCandidates =
+        reservableRoomLookup.get(normalizedRoomValue) ||
+        (strippedRoomValue && strippedRoomValue !== normalizedRoomValue ? reservableRoomLookup.get(strippedRoomValue) : undefined) ||
+        [];
+      const room = roomCandidates.find(r => {
+        const roomKeys = [
           normalizeLookupValue(r.room_id),
           normalizeLookupValue(r.room_number),
           normalizeLookupValue(getRoomDisplayLabel(r, rooms)),
-        ].includes(normalizedRoomValue)) return false;
+        ];
+        if (!roomKeys.includes(normalizedRoomValue) && !roomKeys.includes(strippedRoomValue)) return false;
         const { block, building: roomBuilding } = getRoomPath(r);
         if (building && !idsMatch(roomBuilding?.id, building.id)) return false;
         if (normalizedBlockLabel) {
@@ -8901,7 +8916,7 @@ function BatchRoomAllocationManagement() {
         'Allocation ID': row['Allocation ID']?.toString() || '',
         School: row['School'] || '',
         Department: row['Department'] || '',
-        Room: getImportValue(row, ['Room', 'Room Number']) || '',
+        Room: rawRoomValue || '',
         [SEMESTER_TYPE_LABEL]: getImportValue(row, [SEMESTER_TYPE_LABEL, 'Semester']) || '',
       };
 
@@ -8914,7 +8929,7 @@ function BatchRoomAllocationManagement() {
         return;
       }
       if (!room?.id) {
-        auditRows.push({ ...auditBase, Status: 'Skipped', Reason: `Room "${getImportValue(row, ['Room', 'Room Number']) || ''}" not found, not bookable/available, or not linked to this department` });
+        auditRows.push({ ...auditBase, Status: 'Skipped', Reason: `Room "${rawRoomValue || ''}" not found, not bookable/available, or not linked to this department` });
         return;
       }
       if (!startDate) {
@@ -9566,13 +9581,21 @@ function DepartmentAllocationManagement() {
       const building = (buildingLookup.get(normalizeLookupValue(getImportValue(row, ['Building']))) || [])[0];
       const blockLabel = getImportValue(row, ['Block', 'Block / Direct Floors']);
       const normalizedBlockLabel = normalizeLookupValue(blockLabel);
-      const normalizedRoomValue = normalizeLookupValue(getImportValue(row, ['Room', 'Room Number']));
-      const room = (reservableRoomLookup.get(normalizedRoomValue) || []).find(r => {
-        if (![
+      const rawRoomValue = getImportValue(row, ['Room', 'Room Number']);
+      const normalizedRoomValue = normalizeLookupValue(rawRoomValue);
+      // Also try stripping the dropdown export suffix "524 - Good fit, 30 seats - Floor 1 (MNS)" → "524"
+      const strippedRoomValue = normalizeLookupValue(stripRoomDropdownLabel(rawRoomValue));
+      const roomCandidates =
+        reservableRoomLookup.get(normalizedRoomValue) ||
+        (strippedRoomValue && strippedRoomValue !== normalizedRoomValue ? reservableRoomLookup.get(strippedRoomValue) : undefined) ||
+        [];
+      const room = roomCandidates.find(r => {
+        const roomKeys = [
           normalizeLookupValue(r.room_id),
           normalizeLookupValue(r.room_number),
           normalizeLookupValue(getRoomDisplayLabel(r, rooms)),
-        ].includes(normalizedRoomValue)) return false;
+        ];
+        if (!roomKeys.includes(normalizedRoomValue) && !roomKeys.includes(strippedRoomValue)) return false;
         const { block, building: roomBuilding } = getRoomPath(r);
         if (building && !idsMatch(roomBuilding?.id, building.id)) return false;
         if (normalizedBlockLabel) {
@@ -9587,7 +9610,7 @@ function DepartmentAllocationManagement() {
         Row: rowNum,
         School: row['School'] || '',
         Department: row['Department'] || '',
-        Room: getImportValue(row, ['Room', 'Room Number']) || '',
+        Room: rawRoomValue || '',
         [SEMESTER_TYPE_LABEL]: getImportValue(row, [SEMESTER_TYPE_LABEL, 'Semester']) || '',
       };
 
@@ -9600,7 +9623,7 @@ function DepartmentAllocationManagement() {
         return;
       }
       if (!room) {
-        auditRows.push({ ...auditBase, Status: 'Skipped', Reason: `Room "${getImportValue(row, ['Room', 'Room Number']) || ''}" not found or not bookable/available` });
+        auditRows.push({ ...auditBase, Status: 'Skipped', Reason: `Room "${rawRoomValue || ''}" not found or not bookable/available` });
         return;
       }
 
