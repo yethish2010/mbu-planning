@@ -1933,25 +1933,22 @@ app.get("/api/events/search-rooms", authenticate, async (req, res) => {
 
 app.get("/api/reports/utilization", authenticate, async (req, res) => {
   try {
-    const rooms = await db.prepare(`
-      SELECT r.*, pr.room_number as parent_room_number, bld.name as building_name, b.name as block_name, f.floor_number
-      FROM rooms r
-      LEFT JOIN rooms pr ON r.parent_room_id = pr.id
-      JOIN floors f ON r.floor_id = f.id
-      JOIN blocks b ON f.block_id = b.id
-      JOIN buildings bld ON b.building_id = bld.id
-    `).all() as any[];
-    const schedules = await db.prepare("SELECT * FROM schedules").all() as any[];
-    const bookings = await db.prepare("SELECT * FROM bookings WHERE status = 'Approved'").all() as any[];
-    const allBookings = await db.prepare("SELECT * FROM bookings").all() as any[];
-    const maintenance = await db.prepare("SELECT * FROM maintenance").all() as any[];
-    const departments = await db.prepare("SELECT * FROM departments").all() as any[];
-    const schools = await db.prepare("SELECT * FROM schools").all() as any[];
-    const allocations = await db.prepare(`
-      SELECT room_id, department_id, school_id, id
-      FROM department_allocations
-      ORDER BY id DESC
-    `).all() as any[];
+    const [rooms, schedules, allBookings, maintenance, departments, schools, allocations] = await Promise.all([
+      db.prepare(`
+        SELECT r.*, pr.room_number as parent_room_number, bld.name as building_name, b.name as block_name, f.floor_number
+        FROM rooms r
+        LEFT JOIN rooms pr ON r.parent_room_id = pr.id
+        JOIN floors f ON r.floor_id = f.id
+        JOIN blocks b ON f.block_id = b.id
+        JOIN buildings bld ON b.building_id = bld.id
+      `).all(),
+      db.prepare("SELECT * FROM schedules").all(),
+      db.prepare("SELECT * FROM bookings").all(),
+      db.prepare("SELECT * FROM maintenance").all(),
+      db.prepare("SELECT * FROM departments").all(),
+      db.prepare("SELECT * FROM schools").all(),
+      db.prepare("SELECT room_id, department_id, school_id, id FROM department_allocations ORDER BY id DESC").all(),
+    ]) as [any[], any[], any[], any[], any[], any[], any[]];
 
     const calculateHours = (start: string, end: string) => {
       if (!start || !end) return 0;
@@ -1960,30 +1957,58 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
       return (h2 + m2 / 60) - (h1 + m1 / 60);
     };
 
+    // Pre-group by room_id to avoid O(rooms × records) filter loops in rooms.map
+    const schedulesByRoom = new Map<number, any[]>();
+    for (const s of schedules) {
+      const arr = schedulesByRoom.get(s.room_id);
+      if (arr) arr.push(s); else schedulesByRoom.set(s.room_id, [s]);
+    }
+    const approvedBookingsByRoom = new Map<number, any[]>();
+    const allBookingsByRoom = new Map<number, any[]>();
+    for (const b of allBookings) {
+      const allArr = allBookingsByRoom.get(b.room_id);
+      if (allArr) allArr.push(b); else allBookingsByRoom.set(b.room_id, [b]);
+      if (b.status === 'Approved') {
+        const approvedArr = approvedBookingsByRoom.get(b.room_id);
+        if (approvedArr) approvedArr.push(b); else approvedBookingsByRoom.set(b.room_id, [b]);
+      }
+    }
+    const openMaintenanceCountByRoom = new Map<number, number>();
+    for (const item of maintenance) {
+      if (item.status !== 'Completed') {
+        openMaintenanceCountByRoom.set(item.room_id, (openMaintenanceCountByRoom.get(item.room_id) || 0) + 1);
+      }
+    }
+
     const latestAllocationByRoom = new Map<number, any>();
-    allocations.forEach((allocation) => {
+    for (const allocation of allocations) {
       if (!latestAllocationByRoom.has(allocation.room_id)) {
         latestAllocationByRoom.set(allocation.room_id, allocation);
       }
-    });
+    }
 
-    const reports = rooms.map(room => {
-      const roomSchedules = schedules.filter(s => s.room_id === room.id);
-      const roomBookings = bookings.filter(b => b.room_id === room.id);
-      const allRoomBookings = allBookings.filter(b => b.room_id === room.id);
+    const departmentById = new Map<number, any>();
+    for (const dept of departments) departmentById.set(dept.id, dept);
+    const schoolById = new Map<number, any>();
+    for (const school of schools) schoolById.set(school.id, school);
+
+    const reports = rooms.map((room: any) => {
+      const roomSchedules = schedulesByRoom.get(room.id) || [];
+      const roomBookings = approvedBookingsByRoom.get(room.id) || [];
+      const allRoomBookings = allBookingsByRoom.get(room.id) || [];
       const allocation = latestAllocationByRoom.get(room.id);
       const inferredDepartmentCounts = new Map<number, number>();
-      [...roomSchedules, ...allRoomBookings].forEach((entry: any) => {
-        if (!entry.department_id) return;
+      for (const entry of [...roomSchedules, ...allRoomBookings]) {
+        if (!entry.department_id) continue;
         inferredDepartmentCounts.set(entry.department_id, (inferredDepartmentCounts.get(entry.department_id) || 0) + 1);
-      });
+      }
       const inferredDepartmentId = Array.from(inferredDepartmentCounts.entries())
         .sort((a, b) => b[1] - a[1])[0]?.[0];
       const resolvedDepartmentId = allocation?.department_id || inferredDepartmentId || null;
-      const department = departments.find(dept => dept.id === resolvedDepartmentId);
+      const department = resolvedDepartmentId ? departmentById.get(resolvedDepartmentId) : undefined;
       const resolvedSchoolId = allocation?.school_id || department?.school_id || null;
-      const school = schools.find(item => item.id === resolvedSchoolId);
-      const maintenanceIssues = maintenance.filter(item => item.room_id === room.id && item.status !== "Completed").length;
+      const school = resolvedSchoolId ? schoolById.get(resolvedSchoolId) : undefined;
+      const maintenanceIssues = openMaintenanceCountByRoom.get(room.id) || 0;
 
       const scheduledHours = roomSchedules.reduce((acc, s) => acc + calculateHours(s.start_time, s.end_time), 0);
       const bookedHours = roomBookings.reduce((acc, b) => {
@@ -2033,43 +2058,65 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
       };
     });
 
-    const buildingReports = Array.from(new Set(reports.map(report => report.building))).map(building => {
-      const buildingRooms = reports.filter(report => report.building === building);
-      const avgUtilization = buildingRooms.reduce((acc, report) => acc + report.utilization, 0) / (buildingRooms.length || 1);
+    // Pre-group reports for O(1) lookups in aggregation
+    const reportsByBuilding = new Map<string, typeof reports>();
+    const reportsByDeptId = new Map<number, typeof reports>();
+    for (const report of reports) {
+      if (report.building) {
+        const arr = reportsByBuilding.get(report.building);
+        if (arr) arr.push(report); else reportsByBuilding.set(report.building, [report]);
+      }
+      if (report.department_id) {
+        const arr = reportsByDeptId.get(report.department_id);
+        if (arr) arr.push(report); else reportsByDeptId.set(report.department_id, [report]);
+      }
+    }
+
+    const buildingReports = Array.from(reportsByBuilding.entries()).map(([building, buildingRooms]) => {
+      const avgUtilization = buildingRooms.reduce((acc, r) => acc + r.utilization, 0) / (buildingRooms.length || 1);
       return {
         name: building,
         roomCount: buildingRooms.length,
         avgUtilization: Math.round(avgUtilization),
-        maintenanceIssues: buildingRooms.reduce((acc, report) => acc + report.maintenanceIssues, 0)
+        maintenanceIssues: buildingRooms.reduce((acc, r) => acc + r.maintenanceIssues, 0)
       };
     });
 
+    const bookingCountByStatus = new Map<string, number>();
+    for (const b of allBookings) {
+      if (b.status) bookingCountByStatus.set(b.status, (bookingCountByStatus.get(b.status) || 0) + 1);
+    }
     const bookingStatusReports = ["Pending", "HOD Recommended", "Approved", "Postponed", "Rejected"].map(status => ({
       name: status,
-      count: allBookings.filter(booking => booking.status === status).length
+      count: bookingCountByStatus.get(status) || 0,
     }));
 
     // Aggregate by Department
-    const deptReports = departments.map(dept => {
-      const deptRooms = reports.filter(r => r.department_id === dept.id);
+    const deptReports = departments.map((dept: any) => {
+      const deptRooms = reportsByDeptId.get(dept.id) || [];
       const totalUtilization = deptRooms.reduce((acc, r) => acc + r.utilization, 0);
       const avgUtilization = deptRooms.length > 0 ? totalUtilization / deptRooms.length : 0;
-
       return {
         name: dept.name,
         school_id: dept.school_id,
-        school: schools.find(school => school.id === dept.school_id)?.name || "Unmapped",
+        school: schoolById.get(dept.school_id)?.name || "Unmapped",
         avgUtilization: Math.round(avgUtilization),
         roomCount: deptRooms.length
       };
     });
 
     // Aggregate by School
-    const schoolReports = schools.map(school => {
-      const schoolDepts = deptReports.filter(d => d.school_id === school.id);
+    const deptReportsBySchoolId = new Map<number, typeof deptReports>();
+    for (const d of deptReports) {
+      if (d.school_id) {
+        const arr = deptReportsBySchoolId.get(d.school_id);
+        if (arr) arr.push(d); else deptReportsBySchoolId.set(d.school_id, [d]);
+      }
+    }
+    const schoolReports = schools.map((school: any) => {
+      const schoolDepts = deptReportsBySchoolId.get(school.id) || [];
       const totalUtilization = schoolDepts.reduce((acc, d) => acc + d.avgUtilization, 0);
       const avgUtilization = schoolDepts.length > 0 ? totalUtilization / schoolDepts.length : 0;
-
       return {
         name: school.name,
         avgUtilization: Math.round(avgUtilization),

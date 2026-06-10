@@ -16231,7 +16231,6 @@ function ReportGeneration() {
     widths.forEach((width, index) => {
       worksheet.getColumn(index + 1).width = Math.min(Math.max(width || 12, 12), 42);
     });
-    applyExcelDataRowStyle(worksheet, Math.max(headerRowCount + 1, 2));
     return worksheet;
   };
   const appendExcelDataSheet = (
@@ -16263,7 +16262,6 @@ function ReportGeneration() {
       );
       worksheet.getColumn(columnIndex + 1).width = Math.min(Math.max(maxLength + 2, 12), 36);
     });
-    applyExcelDataRowStyle(worksheet);
     return worksheet;
   };
   const appendExcelVisualizationDataSheet = (
@@ -16773,6 +16771,7 @@ function ReportGeneration() {
     options: {
       summarySheetName?: string;
       completeSheetName?: string;
+      includeImages?: boolean;
     } = {},
   ) => {
     const completeSheetName = options.completeSheetName || 'Complete Room List';
@@ -16791,7 +16790,9 @@ function ReportGeneration() {
     }
 
     appendExcelDataSheet(workbook, completeSheetName, categoryWiseRoomListRows, exportColumns);
-    appendExcelImageSheet(workbook, 'category_room_list', reportName, completeSheetName, categoryWiseRoomListRows, exportColumns);
+    if (options.includeImages) {
+      appendExcelImageSheet(workbook, 'category_room_list', reportName, completeSheetName, categoryWiseRoomListRows, exportColumns);
+    }
     recommendationItems.push({
       reportType: 'category_room_list',
       reportName,
@@ -16803,7 +16804,9 @@ function ReportGeneration() {
     CATEGORY_ROOM_REPORT_GROUP_ORDER.forEach((groupName) => {
       const rows = categoryWiseReportGroups[groupName] || [];
       appendExcelDataSheet(workbook, groupName, rows, groupedSheetColumns);
-      appendExcelImageSheet(workbook, 'category_room_list', `${reportName} - ${groupName}`, groupName, rows, groupedSheetColumns);
+      if (options.includeImages) {
+        appendExcelImageSheet(workbook, 'category_room_list', `${reportName} - ${groupName}`, groupName, rows, groupedSheetColumns);
+      }
       recommendationItems.push({
         reportType: 'category_room_list',
         reportName: `${reportName} - ${groupName}`,
@@ -16840,7 +16843,6 @@ function ReportGeneration() {
         return;
       }
       appendExcelDataSheet(workbook, config.sheetName, config.rows, exportColumns);
-      appendExcelImageSheet(workbook, reportType, reportName, config.sheetName, config.rows, exportColumns);
       recommendationItems.push({
         reportType,
         reportName,
@@ -17274,6 +17276,7 @@ function ReportGeneration() {
     const recommendationItems = appendCategoryRoomWorkbookSections(workbook, reportName, {
       summarySheetName: 'Report Summary',
       completeSheetName: 'Complete Room List',
+      includeImages: true,
     });
 
     appendExcelChartRecommendationsSheet(workbook, recommendationItems);
@@ -17355,28 +17358,26 @@ function ReportGeneration() {
       'Total Rows': totalRowsAcrossReports,
     });
 
+    // Use first row of each report to derive columns (all rows share the same schema)
     const completeDataDynamicColumns = Array.from(new Set(
       orderedReportTypes.flatMap((reportType) => {
         const report = reportConfigs[reportType as keyof typeof reportConfigs];
-        return report.rows.flatMap((row: any) => Object.keys(row || {}));
+        return report.rows[0] ? Object.keys(report.rows[0]) : [];
       })
     ));
     const completeDataHeaders = ['Report Type', 'Report Name', 'Sheet Name', 'Row No', ...completeDataDynamicColumns];
+    const colDefaults = Object.fromEntries(completeDataDynamicColumns.map((col) => [col, '']));
     const completeDataRows = orderedReportTypes.flatMap((reportType) => {
       const report = reportConfigs[reportType as keyof typeof reportConfigs];
       const reportName = reportLabels.get(reportType) || report.sheetName;
-      return report.rows.map((row: any, rowIndex: number) => {
-        const baseRow: Record<string, any> = {
-          'Report Type': reportType,
-          'Report Name': reportName,
-          'Sheet Name': report.sheetName,
-          'Row No': rowIndex + 1,
-        };
-        completeDataDynamicColumns.forEach((column) => {
-          baseRow[column] = row?.[column] ?? '';
-        });
-        return baseRow;
-      });
+      return report.rows.map((row: any, rowIndex: number) => ({
+        'Report Type': reportType,
+        'Report Name': reportName,
+        'Sheet Name': report.sheetName,
+        'Row No': rowIndex + 1,
+        ...colDefaults,
+        ...row,
+      }));
     });
 
     const workbook = await createExcelWorkbook();
@@ -17397,7 +17398,6 @@ function ReportGeneration() {
         );
       } else {
         appendExcelDataSheet(workbook, report.sheetName, report.rows, exportColumns);
-        appendExcelImageSheet(workbook, reportType, reportName, report.sheetName, report.rows, exportColumns);
         recommendationItems.push({
           reportType,
           reportName,
