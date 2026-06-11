@@ -1834,6 +1834,7 @@ const SHARED_LOOKUP_CACHE_PATHS = new Set([
   '/api/batch_room_allocations',
   '/api/department_allocations',
   '/api/equipment',
+  '/api/schedules',
 ]);
 
 const sharedLookupCache = new Map<string, Promise<any>>();
@@ -4644,6 +4645,22 @@ function DashboardHome() {
       };
 
       try {
+        const isRoleBasedView = user?.role === 'HOD' || user?.role === 'Dean';
+
+        // Fire role-specific secondary requests in parallel with the overview so
+        // both sets of data are in-flight at the same time.
+        const secondaryPromise = isRoleBasedView
+          ? Promise.all([
+              fetchJson<any[]>('/api/bookings', []),
+              fetchSharedLookupJson('/api/rooms'),
+              fetchSharedLookupJson('/api/departments'),
+              fetchSharedLookupJson('/api/schools'),
+              fetchSharedLookupJson('/api/department_allocations'),
+              fetchSharedLookupJson('/api/batch_room_allocations'),
+              fetchSharedLookupJson('/api/schedules'),
+            ])
+          : Promise.resolve(null);
+
         const overviewData = await fetchJson<any>('/api/dashboard/overview', {});
 
         if (!isActive) return;
@@ -4659,7 +4676,8 @@ function DashboardHome() {
         setDashboardOverview(overviewData || {});
         setDigitalTwinSnapshot(overviewData?.digitalTwinSnapshot || { statusCounts: {}, statusBreakdowns: {}, buildings: [] });
 
-        if (user?.role === 'HOD' || user?.role === 'Dean') {
+        if (isRoleBasedView) {
+          const secondaryData = await secondaryPromise;
           const [
             bookingData,
             roomData,
@@ -4668,15 +4686,7 @@ function DashboardHome() {
             allocationData,
             batchAllocationData,
             scheduleData,
-          ] = await Promise.all([
-            fetchJson<any[]>('/api/bookings', []),
-            fetchSharedLookupJson('/api/rooms'),
-            fetchSharedLookupJson('/api/departments'),
-            fetchSharedLookupJson('/api/schools'),
-            fetchSharedLookupJson('/api/department_allocations'),
-            fetchSharedLookupJson('/api/batch_room_allocations'),
-            fetchJson<any[]>('/api/schedules', []),
-          ]);
+          ] = secondaryData!;
 
           if (!isActive) return;
 
@@ -19531,16 +19541,31 @@ function TimetableBuilder() {
 
   const fetchData = async () => {
     try {
-      const [sData, rData, schoolData, dData, cData, tpData, baData, daData] = await Promise.all([
-        apiJson('/api/schedules'),
-        fetchSharedLookupJson('/api/rooms'),
-        fetchSharedLookupJson('/api/schools'),
-        fetchSharedLookupJson('/api/departments'),
-        fetchSharedLookupJson('/api/academic_calendars'),
-        fetchSharedLookupJson('/api/timing_profiles'),
-        fetchSharedLookupJson('/api/batch_room_allocations'),
-        fetchSharedLookupJson('/api/department_allocations'),
-      ]);
+      // Single round-trip to the bundle endpoint (server fetches all 8 tables in
+      // parallel and serves cached data where possible). Falls back to individual
+      // requests if the bundle endpoint fails.
+      let bundle: any = null;
+      try {
+        bundle = await apiJson('/api/timetable-bundle');
+      } catch {
+        // fallback handled below
+      }
+      const sData = Array.isArray(bundle?.schedules) ? bundle.schedules
+        : await fetchSharedLookupJson('/api/schedules');
+      const rData = Array.isArray(bundle?.rooms) ? bundle.rooms
+        : await fetchSharedLookupJson('/api/rooms');
+      const schoolData = Array.isArray(bundle?.schools) ? bundle.schools
+        : await fetchSharedLookupJson('/api/schools');
+      const dData = Array.isArray(bundle?.departments) ? bundle.departments
+        : await fetchSharedLookupJson('/api/departments');
+      const cData = Array.isArray(bundle?.academic_calendars) ? bundle.academic_calendars
+        : await fetchSharedLookupJson('/api/academic_calendars');
+      const tpData = Array.isArray(bundle?.timing_profiles) ? bundle.timing_profiles
+        : await fetchSharedLookupJson('/api/timing_profiles');
+      const baData = Array.isArray(bundle?.batch_room_allocations) ? bundle.batch_room_allocations
+        : await fetchSharedLookupJson('/api/batch_room_allocations');
+      const daData = Array.isArray(bundle?.department_allocations) ? bundle.department_allocations
+        : await fetchSharedLookupJson('/api/department_allocations');
       const dedupedSchedules = deduplicateScheduleRows(Array.isArray(sData) ? sData : []);
       const requestedRoomIdsFromSchedules = new Set<string>();
       dedupedSchedules.forEach((schedule: any) => {

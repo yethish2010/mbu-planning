@@ -383,6 +383,17 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       token TEXT NOT NULL,
       expires_at ${timestampType} NOT NULL
     );
+
+    CREATE INDEX IF NOT EXISTS idx_schedules_room_id ON schedules(room_id);
+    CREATE INDEX IF NOT EXISTS idx_schedules_day_of_week ON schedules(day_of_week);
+    CREATE INDEX IF NOT EXISTS idx_schedules_department_id ON schedules(department_id);
+    CREATE INDEX IF NOT EXISTS idx_rooms_floor_id ON rooms(floor_id);
+    CREATE INDEX IF NOT EXISTS idx_batch_room_allocations_department_id ON batch_room_allocations(department_id);
+    CREATE INDEX IF NOT EXISTS idx_batch_room_allocations_room_id ON batch_room_allocations(room_id);
+    CREATE INDEX IF NOT EXISTS idx_department_allocations_room_id ON department_allocations(room_id);
+    CREATE INDEX IF NOT EXISTS idx_department_allocations_department_id ON department_allocations(department_id);
+    CREATE INDEX IF NOT EXISTS idx_bookings_room_id ON bookings(room_id);
+    CREATE INDEX IF NOT EXISTS idx_bookings_date ON bookings(date);
   `;
 };
 
@@ -1381,6 +1392,36 @@ const syncBatchAllocationStatuses = async () => {
   }
 };
 
+// --- SERVER-SIDE TABLE CACHE ---
+// Caches SELECT * results for lookup tables that change rarely.
+// TTL: 30 s. Busted on every write (POST / PUT / DELETE / import-bulk).
+const SERVER_CACHE_TTL_MS = 30_000;
+const serverTableCache = new Map<string, { data: any; expiresAt: number }>();
+const CACHEABLE_SERVER_TABLES = new Set([
+  "rooms", "schools", "departments", "buildings", "blocks", "floors",
+  "timing_profiles", "academic_calendars", "equipment",
+  "department_allocations", "batch_room_allocations", "campuses", "schedules",
+]);
+const getFromServerCache = (key: string): any | null => {
+  const entry = serverTableCache.get(key);
+  if (entry && entry.expiresAt > Date.now()) return entry.data;
+  serverTableCache.delete(key);
+  return null;
+};
+const setInServerCache = (key: string, data: any) =>
+  serverTableCache.set(key, { data, expiresAt: Date.now() + SERVER_CACHE_TTL_MS });
+const bustServerCache = (...tableNames: string[]) =>
+  tableNames.forEach(n => serverTableCache.delete(n));
+
+// Throttled sync: reads can trigger status auto-update at most once per 60 s.
+let lastBatchSyncAt = 0;
+const maybeSyncBatchAllocationStatuses = async () => {
+  if (Date.now() - lastBatchSyncAt < 60_000) return;
+  lastBatchSyncAt = Date.now();
+  bustServerCache("batch_room_allocations");
+  await syncBatchAllocationStatuses();
+};
+
 const getDayOfWeekForDate = (date: string) =>
   new Date(`${date}T00:00:00`).toLocaleDateString("en-US", { weekday: "long" });
 
@@ -1671,13 +1712,16 @@ const assignScheduleCode = async (payload: any, existingId?: any, existingItem?:
 };
 
 const backfillMissingScheduleCodes = async (rows: any[]) => {
-  for (const row of Array.isArray(rows) ? rows : []) {
-    if (!row?.id) continue;
-    const existingCode = row?.schedule_code?.toString().trim() || "";
+  const rowArray = Array.isArray(rows) ? rows : [];
+  // Fast path: skip all DB work when every row already has a schedule_code
+  const rowsNeedingBackfill = rowArray.filter(row => row?.id && !row?.schedule_code?.toString().trim());
+  if (rowsNeedingBackfill.length === 0) return rows;
+  for (const row of rowsNeedingBackfill) {
     const scheduleCode = await assignScheduleCode(row, row.id, row);
-    if (existingCode === scheduleCode) continue;
-    await db.prepare("UPDATE schedules SET schedule_code = ? WHERE id = ?").run(scheduleCode, row.id);
-    row.schedule_code = scheduleCode;
+    if (row.schedule_code !== scheduleCode) {
+      await db.prepare("UPDATE schedules SET schedule_code = ? WHERE id = ?").run(scheduleCode, row.id);
+      row.schedule_code = scheduleCode;
+    }
   }
   return rows;
 };
@@ -3559,6 +3603,7 @@ const persistBulkImportRecord = async (tableName: string, payload: any, existing
 
 await cleanupDuplicateSchedules();
 await syncBatchAllocationStatuses();
+lastBatchSyncAt = Date.now();
 
 const isPastDateTime = (date: string, time: string) => {
   const value = new Date(`${date}T${time}`);
@@ -4224,7 +4269,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       }
 
       if (tableName === "batch_room_allocations") {
-        await syncBatchAllocationStatuses();
+        await maybeSyncBatchAllocationStatuses();
       }
 
       if (wantsServerQuery) {
@@ -4496,6 +4541,11 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         });
       }
 
+      // Serve from in-memory cache when available (30 s TTL, busted on writes).
+      if (CACHEABLE_SERVER_TABLES.has(tableName) && !req.query.date) {
+        const cached = getFromServerCache(tableName);
+        if (cached) return res.json(cached);
+      }
       const items = await db.prepare(`SELECT * FROM ${tableName}`).all();
       if (tableName === "schedules") {
         const hydratedItems = await backfillMissingScheduleCodes(items as any[]);
@@ -4504,8 +4554,10 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         if (requestedDate) {
           return res.json(await filterSchedulesByAcademicCalendar(deduplicatedItems, requestedDate));
         }
+        setInServerCache("schedules", deduplicatedItems);
         return res.json(deduplicatedItems);
       }
+      if (CACHEABLE_SERVER_TABLES.has(tableName)) setInServerCache(tableName, items);
       res.json(items);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -4588,6 +4640,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         return transactionResults;
       });
 
+      bustServerCache(tableName);
       res.json({ results });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
@@ -4754,6 +4807,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
           await notifyBookingAuthorities(req.body, "Room booking approved", `${req.body.event_name || "A room request"} was approved directly.`);
         }
       }
+      bustServerCache(tableName);
       res.json({ id: info.lastInsertRowid, ...req.body });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
@@ -4930,6 +4984,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
           }
         }
       }
+      bustServerCache(tableName);
       res.json({ success: true });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
@@ -4948,6 +5003,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         }
       }
       await db.prepare(`DELETE FROM ${tableName}`).run();
+      bustServerCache(tableName);
       res.json({ success: true });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
@@ -4978,6 +5034,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         await createNotification(null, existingItem.faculty_name, title, message);
         await notifyBookingAuthorities(existingItem, title, message);
       }
+      bustServerCache(tableName);
       res.json({ success: true });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
@@ -5178,6 +5235,48 @@ createCrudRoutes("equipment");
 createCrudRoutes("schedules");
 createCrudRoutes("bookings");
 createCrudRoutes("maintenance");
+
+// --- TIMETABLE BUNDLE ---
+// Returns all 8 data sets needed by TimetableBuilder in a single request,
+// running all queries in parallel and leveraging the server-side cache.
+app.get("/api/timetable-bundle", authenticate, async (req, res) => {
+  try {
+    await maybeSyncBatchAllocationStatuses();
+
+    const getCached = async (name: string): Promise<any[]> => {
+      const hit = getFromServerCache(name);
+      if (hit) return hit;
+      const rows = await db.prepare(`SELECT * FROM ${name}`).all() as any[];
+      setInServerCache(name, rows);
+      return rows;
+    };
+
+    const getSchedules = async (): Promise<any[]> => {
+      const hit = getFromServerCache("schedules");
+      if (hit) return hit;
+      const rows = await db.prepare("SELECT * FROM schedules").all() as any[];
+      const hydrated = await backfillMissingScheduleCodes(rows);
+      const deduped = deduplicateSchedules(hydrated).kept;
+      setInServerCache("schedules", deduped);
+      return deduped;
+    };
+
+    const [schedules, rooms, schools, departments, academic_calendars, timing_profiles, batch_room_allocations, department_allocations] = await Promise.all([
+      getSchedules(),
+      getCached("rooms"),
+      getCached("schools"),
+      getCached("departments"),
+      getCached("academic_calendars"),
+      getCached("timing_profiles"),
+      getCached("batch_room_allocations"),
+      getCached("department_allocations"),
+    ]);
+
+    res.json({ schedules, rooms, schools, departments, academic_calendars, timing_profiles, batch_room_allocations, department_allocations });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // --- DASHBOARD STATS ---
 

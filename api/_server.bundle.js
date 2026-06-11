@@ -509,6 +509,17 @@ var getPrimarySchemaSql = (dialect) => {
       token TEXT NOT NULL,
       expires_at ${timestampType} NOT NULL
     );
+
+    CREATE INDEX IF NOT EXISTS idx_schedules_room_id ON schedules(room_id);
+    CREATE INDEX IF NOT EXISTS idx_schedules_day_of_week ON schedules(day_of_week);
+    CREATE INDEX IF NOT EXISTS idx_schedules_department_id ON schedules(department_id);
+    CREATE INDEX IF NOT EXISTS idx_rooms_floor_id ON rooms(floor_id);
+    CREATE INDEX IF NOT EXISTS idx_batch_room_allocations_department_id ON batch_room_allocations(department_id);
+    CREATE INDEX IF NOT EXISTS idx_batch_room_allocations_room_id ON batch_room_allocations(room_id);
+    CREATE INDEX IF NOT EXISTS idx_department_allocations_room_id ON department_allocations(room_id);
+    CREATE INDEX IF NOT EXISTS idx_department_allocations_department_id ON department_allocations(department_id);
+    CREATE INDEX IF NOT EXISTS idx_bookings_room_id ON bookings(room_id);
+    CREATE INDEX IF NOT EXISTS idx_bookings_date ON bookings(date);
   `;
 };
 if (process.env.DATABASE_RESET === "true" && (!databaseProvider || databaseProvider.trim().toLowerCase() === "sqlite") && !databaseUrl) {
@@ -1349,6 +1360,38 @@ var syncBatchAllocationStatuses = async () => {
     }
   }
 };
+var SERVER_CACHE_TTL_MS = 3e4;
+var serverTableCache = /* @__PURE__ */ new Map();
+var CACHEABLE_SERVER_TABLES = /* @__PURE__ */ new Set([
+  "rooms",
+  "schools",
+  "departments",
+  "buildings",
+  "blocks",
+  "floors",
+  "timing_profiles",
+  "academic_calendars",
+  "equipment",
+  "department_allocations",
+  "batch_room_allocations",
+  "campuses",
+  "schedules"
+]);
+var getFromServerCache = (key) => {
+  const entry = serverTableCache.get(key);
+  if (entry && entry.expiresAt > Date.now()) return entry.data;
+  serverTableCache.delete(key);
+  return null;
+};
+var setInServerCache = (key, data) => serverTableCache.set(key, { data, expiresAt: Date.now() + SERVER_CACHE_TTL_MS });
+var bustServerCache = (...tableNames) => tableNames.forEach((n) => serverTableCache.delete(n));
+var lastBatchSyncAt = 0;
+var maybeSyncBatchAllocationStatuses = async () => {
+  if (Date.now() - lastBatchSyncAt < 6e4) return;
+  lastBatchSyncAt = Date.now();
+  bustServerCache("batch_room_allocations");
+  await syncBatchAllocationStatuses();
+};
 var getDayOfWeekForDate = (date) => (/* @__PURE__ */ new Date(`${date}T00:00:00`)).toLocaleDateString("en-US", { weekday: "long" });
 var parseSemesterNumber = (value) => {
   const normalized = normalizeDuplicateValue(value)?.toString() || "";
@@ -1581,13 +1624,15 @@ var assignScheduleCode = async (payload, existingId, existingItem, context) => {
   return `${prefix}-${String(maxSequence + 1).padStart(3, "0")}`;
 };
 var backfillMissingScheduleCodes = async (rows) => {
-  for (const row of Array.isArray(rows) ? rows : []) {
-    if (!row?.id) continue;
-    const existingCode = row?.schedule_code?.toString().trim() || "";
+  const rowArray = Array.isArray(rows) ? rows : [];
+  const rowsNeedingBackfill = rowArray.filter((row) => row?.id && !row?.schedule_code?.toString().trim());
+  if (rowsNeedingBackfill.length === 0) return rows;
+  for (const row of rowsNeedingBackfill) {
     const scheduleCode = await assignScheduleCode(row, row.id, row);
-    if (existingCode === scheduleCode) continue;
-    await db.prepare("UPDATE schedules SET schedule_code = ? WHERE id = ?").run(scheduleCode, row.id);
-    row.schedule_code = scheduleCode;
+    if (row.schedule_code !== scheduleCode) {
+      await db.prepare("UPDATE schedules SET schedule_code = ? WHERE id = ?").run(scheduleCode, row.id);
+      row.schedule_code = scheduleCode;
+    }
   }
   return rows;
 };
@@ -3077,6 +3122,7 @@ var validateBulkImportPayload = async (tableName, payload, existingItem, context
 };
 await cleanupDuplicateSchedules();
 await syncBatchAllocationStatuses();
+lastBatchSyncAt = Date.now();
 var isPastDateTime = (date, time) => {
   const value = /* @__PURE__ */ new Date(`${date}T${time}`);
   return Number.isNaN(value.getTime()) || value.getTime() < Date.now();
@@ -3646,7 +3692,7 @@ var createCrudRoutes = (tableName, idField = "id") => {
         return res.json(bookings.filter((booking) => booking.faculty_name === user.name));
       }
       if (tableName === "batch_room_allocations") {
-        await syncBatchAllocationStatuses();
+        await maybeSyncBatchAllocationStatuses();
       }
       if (wantsServerQuery) {
         const rawColumns = db.dialect === "postgres" ? await db.prepare(`SELECT column_name as name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ?`).all(tableName) : await db.prepare(`PRAGMA table_info(${tableName})`).all();
@@ -3900,6 +3946,10 @@ var createCrudRoutes = (tableName, idField = "id") => {
           pageSize: requestedPageSize
         });
       }
+      if (CACHEABLE_SERVER_TABLES.has(tableName) && !req.query.date) {
+        const cached = getFromServerCache(tableName);
+        if (cached) return res.json(cached);
+      }
       const items = await db.prepare(`SELECT * FROM ${tableName}`).all();
       if (tableName === "schedules") {
         const hydratedItems = await backfillMissingScheduleCodes(items);
@@ -3908,8 +3958,10 @@ var createCrudRoutes = (tableName, idField = "id") => {
         if (requestedDate) {
           return res.json(await filterSchedulesByAcademicCalendar(deduplicatedItems, requestedDate));
         }
+        setInServerCache("schedules", deduplicatedItems);
         return res.json(deduplicatedItems);
       }
+      if (CACHEABLE_SERVER_TABLES.has(tableName)) setInServerCache(tableName, items);
       res.json(items);
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -3983,6 +4035,7 @@ var createCrudRoutes = (tableName, idField = "id") => {
         }
         return transactionResults;
       });
+      bustServerCache(tableName);
       res.json({ results });
     } catch (err) {
       res.status(400).json({ error: err.message });
@@ -4135,6 +4188,7 @@ var createCrudRoutes = (tableName, idField = "id") => {
           await notifyBookingAuthorities(req.body, "Room booking approved", `${req.body.event_name || "A room request"} was approved directly.`);
         }
       }
+      bustServerCache(tableName);
       res.json({ id: info.lastInsertRowid, ...req.body });
     } catch (err) {
       res.status(400).json({ error: err.message });
@@ -4299,6 +4353,7 @@ var createCrudRoutes = (tableName, idField = "id") => {
           }
         }
       }
+      bustServerCache(tableName);
       res.json({ success: true });
     } catch (err) {
       res.status(400).json({ error: err.message });
@@ -4316,6 +4371,7 @@ var createCrudRoutes = (tableName, idField = "id") => {
         }
       }
       await db.prepare(`DELETE FROM ${tableName}`).run();
+      bustServerCache(tableName);
       res.json({ success: true });
     } catch (err) {
       res.status(400).json({ error: err.message });
@@ -4345,6 +4401,7 @@ var createCrudRoutes = (tableName, idField = "id") => {
         await createNotification(null, existingItem.faculty_name, title, message);
         await notifyBookingAuthorities(existingItem, title, message);
       }
+      bustServerCache(tableName);
       res.json({ success: true });
     } catch (err) {
       res.status(400).json({ error: err.message });
@@ -4522,6 +4579,40 @@ createCrudRoutes("equipment");
 createCrudRoutes("schedules");
 createCrudRoutes("bookings");
 createCrudRoutes("maintenance");
+app.get("/api/timetable-bundle", authenticate, async (req, res) => {
+  try {
+    await maybeSyncBatchAllocationStatuses();
+    const getCached = async (name) => {
+      const hit = getFromServerCache(name);
+      if (hit) return hit;
+      const rows = await db.prepare(`SELECT * FROM ${name}`).all();
+      setInServerCache(name, rows);
+      return rows;
+    };
+    const getSchedules = async () => {
+      const hit = getFromServerCache("schedules");
+      if (hit) return hit;
+      const rows = await db.prepare("SELECT * FROM schedules").all();
+      const hydrated = await backfillMissingScheduleCodes(rows);
+      const deduped = deduplicateSchedules(hydrated).kept;
+      setInServerCache("schedules", deduped);
+      return deduped;
+    };
+    const [schedules, rooms, schools, departments, academic_calendars, timing_profiles, batch_room_allocations, department_allocations] = await Promise.all([
+      getSchedules(),
+      getCached("rooms"),
+      getCached("schools"),
+      getCached("departments"),
+      getCached("academic_calendars"),
+      getCached("timing_profiles"),
+      getCached("batch_room_allocations"),
+      getCached("department_allocations")
+    ]);
+    res.json({ schedules, rooms, schools, departments, academic_calendars, timing_profiles, batch_room_allocations, department_allocations });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 app.get("/api/dashboard/stats", authenticate, async (req, res) => {
   try {
     const totalBuildings = await db.prepare("SELECT COUNT(*) as count FROM buildings").get();
