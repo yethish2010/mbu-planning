@@ -3661,6 +3661,7 @@ var createCrudRoutes = (tableName, idField = "id") => {
             scheduleItems = await filterSchedulesByAcademicCalendar(scheduleItems, requestedDate);
           }
           const scheduleDepartmentId = req.query.department_id?.toString() || "";
+          const scheduleSchoolId = req.query.school_id?.toString() || "";
           const scheduleProgram = req.query.program?.toString().trim() || "";
           const scheduleYear = req.query.year?.toString().trim() || "";
           const scheduleSpecialization = req.query.specialization?.toString().trim() || "";
@@ -3670,17 +3671,23 @@ var createCrudRoutes = (tableName, idField = "id") => {
           const scheduleBuildingId = req.query.building_id?.toString() || "";
           const scheduleBlockId = req.query.block_id?.toString() || "";
           const scheduleFloorId = req.query.floor_id?.toString() || "";
-          if (scheduleDepartmentId || scheduleProgram || scheduleYear || scheduleSpecialization || scheduleRoomId || scheduleDay || scheduleCampusId || scheduleBuildingId || scheduleBlockId || scheduleFloorId) {
+          if (scheduleDepartmentId || scheduleSchoolId || scheduleProgram || scheduleYear || scheduleSpecialization || scheduleRoomId || scheduleDay || scheduleCampusId || scheduleBuildingId || scheduleBlockId || scheduleFloorId) {
+            const departments = await db.prepare("SELECT id, school_id FROM departments").all();
             const rooms = await db.prepare("SELECT id, floor_id FROM rooms").all();
             const floors = await db.prepare("SELECT id, block_id FROM floors").all();
             const blocks = await db.prepare("SELECT id, building_id FROM blocks").all();
             const buildings = await db.prepare("SELECT id, campus_id FROM buildings").all();
+            const departmentById = new Map(departments.map((department) => [department.id?.toString(), department]));
             const roomById = new Map(rooms.map((room) => [room.id?.toString(), room]));
             const floorById = new Map(floors.map((floor) => [floor.id?.toString(), floor]));
             const blockById = new Map(blocks.map((block) => [block.id?.toString(), block]));
             const buildingById = new Map(buildings.map((building) => [building.id?.toString(), building]));
             scheduleItems = scheduleItems.filter((schedule) => {
               if (scheduleDepartmentId && !idsEqual(schedule?.department_id, scheduleDepartmentId)) return false;
+              if (scheduleSchoolId) {
+                const department = departmentById.get(schedule?.department_id?.toString());
+                if (!idsEqual(department?.school_id, scheduleSchoolId)) return false;
+              }
               if (scheduleProgram && normalizeScheduleProgramValue(schedule?.program) !== normalizeScheduleProgramValue(scheduleProgram)) return false;
               if (scheduleYear) {
                 const yearLabel = getYearDisplayLabel(schedule?.year_of_study, schedule?.semester);
@@ -4507,6 +4514,24 @@ app.get(`/api/rooms/:roomId/schedule`, authenticate, async (req, res) => {
     const schedules = await getEffectiveSchedulesForDate(date, (schedule) => idsEqual(schedule.room_id, roomId));
     const bookings = await db.prepare(`SELECT * FROM bookings WHERE room_id = ? AND date = ? AND status = 'Approved'`).all(roomId, date);
     res.json({ schedules, bookings });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+app.get("/api/schedules/room-index", authenticate, async (req, res) => {
+  try {
+    const scopedRoomIds = await getScopedMappedRoomIdsForUser(req.user);
+    const rows = await db.prepare(`
+      SELECT room_id, COUNT(*) as schedule_count
+      FROM schedules
+      WHERE room_id IS NOT NULL
+      GROUP BY room_id
+    `).all();
+    const filteredRows = Array.isArray(rows) ? rows.filter((row) => !scopedRoomIds || scopedRoomIds.has(row?.room_id?.toString?.() || "")) : [];
+    res.json(filteredRows.map((row) => ({
+      room_id: row.room_id,
+      schedule_count: Number(row.schedule_count || 0)
+    })));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -1837,14 +1837,17 @@ const SHARED_LOOKUP_CACHE_PATHS = new Set([
 ]);
 
 const sharedLookupCache = new Map<string, Promise<any>>();
+const sharedDataCache = new Map<string, Promise<any>>();
 
 const invalidateSharedLookupCache = (paths?: string[]) => {
   if (!paths?.length) {
     sharedLookupCache.clear();
+    sharedDataCache.clear();
     return;
   }
   paths.forEach(path => {
     sharedLookupCache.delete(path);
+    sharedDataCache.delete(path);
   });
 };
 
@@ -1865,6 +1868,18 @@ const fetchSharedLookupJson = async (path: string) => {
 
 const fetchSharedLookupJsons = async (paths: string[]) =>
   Promise.all(paths.map(path => fetchSharedLookupJson(path)));
+
+const fetchCachedJson = async (url: string) => {
+  const cached = sharedDataCache.get(url);
+  if (cached) return cached;
+
+  const request = apiJson(url).catch((error) => {
+    sharedDataCache.delete(url);
+    throw error;
+  });
+  sharedDataCache.set(url, request);
+  return request;
+};
 
 const buildUtilizationReportQueryString = (filters: Partial<{
   reportType: string;
@@ -4565,22 +4580,38 @@ function DashboardHome() {
         setDigitalTwinSnapshot(overviewData?.digitalTwinSnapshot || { statusCounts: {}, statusBreakdowns: {}, buildings: [] });
 
         if (user?.role === 'HOD' || user?.role === 'Dean') {
-          const [
-            bookingData,
-            roomData,
-            departmentData,
-            schoolData,
-            allocationData,
-            batchAllocationData,
-            scheduleData,
-          ] = await Promise.all([
+          const [bookingData, roomData, departmentData, schoolData] = await Promise.all([
             fetchJson<any[]>('/api/bookings', []),
             fetchSharedLookupJson('/api/rooms'),
             fetchSharedLookupJson('/api/departments'),
             fetchSharedLookupJson('/api/schools'),
-            fetchSharedLookupJson('/api/department_allocations'),
-            fetchSharedLookupJson('/api/batch_room_allocations'),
-            fetchJson<any[]>('/api/schedules', []),
+          ]);
+
+          if (!isActive) return;
+
+          const safeDepartments = Array.isArray(departmentData) ? departmentData : [];
+          const safeSchools = Array.isArray(schoolData) ? schoolData : [];
+          const scopedDepartment = safeDepartments.find((department: any) =>
+            normalizeLookupValue(department?.name) === normalizeLookupValue(user?.department),
+          );
+          const scopedSchool = safeSchools.find((school: any) =>
+            normalizeLookupValue(school?.name) === normalizeLookupValue(user?.school),
+          ) || safeSchools.find((school: any) => idsMatch(school?.id, scopedDepartment?.school_id));
+
+          const scheduleScopeUrl = user?.role === 'HOD'
+            ? (scopedDepartment?.id ? `/api/schedules?department_id=${encodeURIComponent(scopedDepartment.id.toString())}&sortKey=day_of_week` : '/api/schedules?sortKey=day_of_week')
+            : (scopedSchool?.id ? `/api/schedules?school_id=${encodeURIComponent(scopedSchool.id.toString())}&sortKey=day_of_week` : '/api/schedules?sortKey=day_of_week');
+          const departmentAllocationScopeUrl = user?.role === 'HOD'
+            ? (scopedDepartment?.id ? `/api/department_allocations?department_id=${encodeURIComponent(scopedDepartment.id.toString())}&sortKey=id` : '/api/department_allocations?sortKey=id')
+            : (scopedSchool?.id ? `/api/department_allocations?school_id=${encodeURIComponent(scopedSchool.id.toString())}&sortKey=id` : '/api/department_allocations?sortKey=id');
+          const batchAllocationScopeUrl = user?.role === 'HOD'
+            ? (scopedDepartment?.id ? `/api/batch_room_allocations?department_id=${encodeURIComponent(scopedDepartment.id.toString())}&sortKey=id` : '/api/batch_room_allocations?sortKey=id')
+            : (scopedSchool?.id ? `/api/batch_room_allocations?school_id=${encodeURIComponent(scopedSchool.id.toString())}&sortKey=id` : '/api/batch_room_allocations?sortKey=id');
+
+          const [allocationData, batchAllocationData, scheduleData] = await Promise.all([
+            fetchJson<any[]>(departmentAllocationScopeUrl, []),
+            fetchJson<any[]>(batchAllocationScopeUrl, []),
+            fetchJson<any[]>(scheduleScopeUrl, []),
           ]);
 
           if (!isActive) return;
@@ -4588,8 +4619,8 @@ function DashboardHome() {
           setRoleDashboardData({
             bookings: Array.isArray(bookingData) ? bookingData : [],
             rooms: Array.isArray(roomData) ? roomData : [],
-            departments: Array.isArray(departmentData) ? departmentData : [],
-            schools: Array.isArray(schoolData) ? schoolData : [],
+            departments: safeDepartments,
+            schools: safeSchools,
             departmentAllocations: Array.isArray(allocationData) ? allocationData : [],
             batchAllocations: Array.isArray(batchAllocationData) ? batchAllocationData : [],
             schedules: Array.isArray(scheduleData) ? scheduleData : [],
@@ -4612,8 +4643,10 @@ function DashboardHome() {
           Array.isArray(overviewData?.topBusyRooms) ? overviewData.topBusyRooms.length : 0,
         );
 
+        if (isActive) setLoading(false);
+
         const aiStartedAt = performance.now();
-        const aiInsightResponse = await fetchJson<{ insight?: string; source?: string } | null>(
+        const aiInsightResponsePromise = fetchJson<{ insight?: string; source?: string } | null>(
           '/api/ai/dashboard-insight',
           null,
           {
@@ -4625,12 +4658,12 @@ function DashboardHome() {
             }),
           }
         );
-
-        if (!isActive) return;
-
-        const generatedInsight = aiInsightResponse?.insight?.toString().trim() || '';
-        setAiInsightMessage(generatedInsight || fallbackInsight);
-        void trackModuleLoadMetric('DashboardHome', 'ai-insight', performance.now() - aiStartedAt, safeSchoolReports.length);
+        void aiInsightResponsePromise.then((aiInsightResponse) => {
+          if (!isActive) return;
+          const generatedInsight = aiInsightResponse?.insight?.toString().trim() || '';
+          setAiInsightMessage(generatedInsight || fallbackInsight);
+          void trackModuleLoadMetric('DashboardHome', 'ai-insight', performance.now() - aiStartedAt, safeSchoolReports.length);
+        });
       } catch (err) {
         console.error(err);
       } finally {
@@ -10060,14 +10093,13 @@ function SchedulingManagement() {
   });
 
   const refreshSchedulingLookups = async () => {
-    const [campusData, buildingData, blockData, floorData, roomData, departmentData, allocationData] = await fetchSharedLookupJsons([
+    const [campusData, buildingData, blockData, floorData, roomData, departmentData] = await fetchSharedLookupJsons([
       '/api/campuses',
       '/api/buildings',
       '/api/blocks',
       '/api/floors',
       '/api/rooms',
       '/api/departments',
-      '/api/department_allocations',
     ]);
     setCampuses(Array.isArray(campusData) ? campusData : []);
     setBuildings(Array.isArray(buildingData) ? buildingData : []);
@@ -10075,7 +10107,6 @@ function SchedulingManagement() {
     setFloors(Array.isArray(floorData) ? floorData : []);
     setRooms(Array.isArray(roomData) ? roomData : []);
     setDepartments(Array.isArray(departmentData) ? departmentData : []);
-    setAllocations(Array.isArray(allocationData) ? allocationData : []);
   };
 
   useEffect(() => {
@@ -19074,6 +19105,7 @@ function TimetableBuilder() {
   const [timingProfiles, setTimingProfiles] = useState<any[]>([]);
   const [batchRoomAllocations, setBatchRoomAllocations] = useState<any[]>([]);
   const [departmentAllocations, setDepartmentAllocations] = useState<any[]>([]);
+  const [scheduledRoomIds, setScheduledRoomIds] = useState<Set<string>>(new Set());
   const [selectedRoom, setSelectedRoom] = useState<string>('');
   const [roomScheduleStatusFilter, setRoomScheduleStatusFilter] = useState<(typeof TIMETABLE_ROOM_STATUS_OPTIONS)[number]>('All');
   const [referenceDate, setReferenceDate] = useState(formatLocalDate(new Date()));
@@ -19118,14 +19150,6 @@ function TimetableBuilder() {
     return schedules.filter((schedule: any) => schedule?.department_id != null && scopedDepartmentIds.has(schedule.department_id.toString()));
   }, [scopedDepartmentIds, schedules]);
 
-  const visibleScheduleRoomIds = useMemo(() => {
-    const resolvedRoomIds = new Set<string>();
-    visibleSchedules.forEach((schedule: any) => {
-      getResolvedScheduleRoomIds(rooms, schedule).forEach((roomId) => resolvedRoomIds.add(roomId));
-    });
-    return resolvedRoomIds;
-  }, [rooms, visibleSchedules]);
-
   const visibleRoomIds = useMemo(() => {
     if (scopedDepartmentIds.size === 0) return null;
     const allowedRoomIds = new Set<string>(
@@ -19134,9 +19158,9 @@ function TimetableBuilder() {
         .map((allocation: any) => allocation?.room_id?.toString?.())
         .filter(Boolean),
     );
-    visibleScheduleRoomIds.forEach((roomId) => allowedRoomIds.add(roomId));
+    scheduledRoomIds.forEach((roomId) => allowedRoomIds.add(roomId));
     return allowedRoomIds;
-  }, [departmentAllocations, scopedDepartmentIds, visibleScheduleRoomIds]);
+  }, [departmentAllocations, scheduledRoomIds, scopedDepartmentIds]);
 
   const visibleRooms = useMemo(() => {
     if (!visibleRoomIds) return rooms;
@@ -19145,27 +19169,27 @@ function TimetableBuilder() {
 
   const roomMatchesScheduleStatus = (room: any) => {
     const roomKey = room?.id?.toString?.() || '';
-    const isScheduledRoom = visibleScheduleRoomIds.has(roomKey);
+    const isScheduledRoom = scheduledRoomIds.has(roomKey);
     if (roomScheduleStatusFilter === 'Scheduled') return isScheduledRoom;
     if (roomScheduleStatusFilter === 'Unscheduled') return !isScheduledRoom && isRoomTimetableEligible(room);
     return isScheduledRoom || isRoomTimetableEligible(room);
   };
 
   const scheduledRoomCount = useMemo(
-    () => visibleRooms.filter((room: any) => visibleScheduleRoomIds.has(room?.id?.toString?.() || '')).length,
-    [visibleRooms, visibleScheduleRoomIds],
+    () => visibleRooms.filter((room: any) => scheduledRoomIds.has(room?.id?.toString?.() || '')).length,
+    [scheduledRoomIds, visibleRooms],
   );
 
   const unscheduledRoomCount = useMemo(
-    () => visibleRooms.filter((room: any) => !visibleScheduleRoomIds.has(room?.id?.toString?.() || '') && isRoomTimetableEligible(room)).length,
-    [visibleRooms, visibleScheduleRoomIds],
+    () => visibleRooms.filter((room: any) => !scheduledRoomIds.has(room?.id?.toString?.() || '') && isRoomTimetableEligible(room)).length,
+    [scheduledRoomIds, visibleRooms],
   );
 
   const allRoomCount = scheduledRoomCount + unscheduledRoomCount;
 
   const timetableRoomOptions = useMemo(() => visibleRooms
     .filter(roomMatchesScheduleStatus)
-    .sort((a, b) => getRoomDisplayLabel(a, rooms).localeCompare(getRoomDisplayLabel(b, rooms), undefined, { numeric: true })), [rooms, visibleRooms, visibleScheduleRoomIds, roomScheduleStatusFilter]);
+    .sort((a, b) => getRoomDisplayLabel(a, rooms).localeCompare(getRoomDisplayLabel(b, rooms), undefined, { numeric: true })), [rooms, roomScheduleStatusFilter, visibleRooms, scheduledRoomIds]);
 
   const activeRoom = useMemo(
     () => timetableRoomOptions.find(r => r.id?.toString() === selectedRoom) ?? null,
@@ -19385,8 +19409,8 @@ function TimetableBuilder() {
 
   const fetchData = async () => {
     try {
-      const [sData, rData, schoolData, dData, cData, tpData, baData, daData] = await Promise.all([
-        apiJson('/api/schedules'),
+      const [roomIndexData, rData, schoolData, dData, cData, tpData, baData, daData] = await Promise.all([
+        fetchCachedJson('/api/schedules/room-index'),
         fetchSharedLookupJson('/api/rooms'),
         fetchSharedLookupJson('/api/schools'),
         fetchSharedLookupJson('/api/departments'),
@@ -19395,12 +19419,12 @@ function TimetableBuilder() {
         fetchSharedLookupJson('/api/batch_room_allocations'),
         fetchSharedLookupJson('/api/department_allocations'),
       ]);
-      const dedupedSchedules = deduplicateScheduleRows(Array.isArray(sData) ? sData : []);
       const requestedRoomIdsFromSchedules = new Set<string>();
-      dedupedSchedules.forEach((schedule: any) => {
-        getResolvedScheduleRoomIds(rData, schedule).forEach((roomId) => requestedRoomIdsFromSchedules.add(roomId));
+      (Array.isArray(roomIndexData) ? roomIndexData : []).forEach((row: any) => {
+        const roomId = row?.room_id?.toString?.() || '';
+        if (roomId) requestedRoomIdsFromSchedules.add(roomId);
       });
-      setSchedules(dedupedSchedules);
+      setScheduledRoomIds(requestedRoomIdsFromSchedules);
       setRooms(rData);
       setSchools(Array.isArray(schoolData) ? schoolData : []);
       setDepartments(dData);
@@ -19445,6 +19469,30 @@ function TimetableBuilder() {
   useEffect(() => {
     fetchData();
   }, [location.search]);
+
+  useEffect(() => {
+    let isActive = true;
+
+    const fetchRoomSchedules = async () => {
+      if (!selectedRoom) {
+        if (isActive) setSchedules([]);
+        return;
+      }
+      try {
+        const data = await apiJson(`/api/schedules?room_id=${encodeURIComponent(selectedRoom)}&sortKey=day_of_week`);
+        if (!isActive) return;
+        setSchedules(deduplicateScheduleRows(Array.isArray(data) ? data : []));
+      } catch (error) {
+        console.error(error);
+        if (isActive) setSchedules([]);
+      }
+    };
+
+    void fetchRoomSchedules();
+    return () => {
+      isActive = false;
+    };
+  }, [selectedRoom]);
 
   useEffect(() => {
     if (roomScheduleStatusFilter !== 'Unscheduled') return;
