@@ -19057,6 +19057,7 @@ function ReportGeneration() {
 function TimetableBuilder() {
   const { user } = useAuth();
   const location = useLocation();
+  const TIMETABLE_ROOM_STATUS_OPTIONS = ['All', 'Scheduled', 'Unscheduled'] as const;
   const [schedules, setSchedules] = useState<any[]>([]);
   const [rooms, setRooms] = useState<any[]>([]);
   const [schools, setSchools] = useState<any[]>([]);
@@ -19066,6 +19067,7 @@ function TimetableBuilder() {
   const [batchRoomAllocations, setBatchRoomAllocations] = useState<any[]>([]);
   const [departmentAllocations, setDepartmentAllocations] = useState<any[]>([]);
   const [selectedRoom, setSelectedRoom] = useState<string>('');
+  const [roomScheduleStatusFilter, setRoomScheduleStatusFilter] = useState<(typeof TIMETABLE_ROOM_STATUS_OPTIONS)[number]>('All');
   const [referenceDate, setReferenceDate] = useState(formatLocalDate(new Date()));
   const [timetableContext, setTimetableContext] = useState({ department_id: '', program: '', year: '', semester: '', specialization: '', section: '' });
   const [loading, setLoading] = useState(true);
@@ -19133,9 +19135,33 @@ function TimetableBuilder() {
     return rooms.filter((room: any) => visibleRoomIds.has(room?.id?.toString()) || idsMatch(room?.id, selectedRoom));
   }, [rooms, selectedRoom, visibleRoomIds]);
 
+  const roomMatchesScheduleStatus = (room: any) => {
+    const roomKey = room?.id?.toString?.() || '';
+    const isScheduledRoom = visibleScheduleRoomIds.has(roomKey);
+    if (roomScheduleStatusFilter === 'Scheduled') return isScheduledRoom;
+    if (roomScheduleStatusFilter === 'Unscheduled') return !isScheduledRoom && isRoomTimetableEligible(room);
+    return isScheduledRoom || isRoomTimetableEligible(room);
+  };
+
+  const scheduledRoomCount = useMemo(
+    () => visibleRooms.filter((room: any) => visibleScheduleRoomIds.has(room?.id?.toString?.() || '')).length,
+    [visibleRooms, visibleScheduleRoomIds],
+  );
+
+  const unscheduledRoomCount = useMemo(
+    () => visibleRooms.filter((room: any) => !visibleScheduleRoomIds.has(room?.id?.toString?.() || '') && isRoomTimetableEligible(room)).length,
+    [visibleRooms, visibleScheduleRoomIds],
+  );
+
+  const allRoomCount = scheduledRoomCount + unscheduledRoomCount;
+
+  const timetableRoomOptions = useMemo(() => visibleRooms
+    .filter(roomMatchesScheduleStatus)
+    .sort((a, b) => getRoomDisplayLabel(a, rooms).localeCompare(getRoomDisplayLabel(b, rooms), undefined, { numeric: true })), [rooms, visibleRooms, visibleScheduleRoomIds, roomScheduleStatusFilter]);
+
   const activeRoom = useMemo(
-    () => visibleRooms.find(r => r.id?.toString() === selectedRoom) ?? null,
-    [visibleRooms, selectedRoom],
+    () => timetableRoomOptions.find(r => r.id?.toString() === selectedRoom) ?? null,
+    [selectedRoom, timetableRoomOptions],
   );
 
   const roomScopedSchedules = useMemo(() => visibleSchedules.filter(schedule => {
@@ -19406,6 +19432,18 @@ function TimetableBuilder() {
     fetchData();
   }, [location.search]);
 
+  useEffect(() => {
+    if (roomScheduleStatusFilter !== 'Unscheduled') return;
+    setTimetableContext({
+      department_id: '',
+      program: '',
+      year: '',
+      semester: '',
+      specialization: '',
+      section: '',
+    });
+  }, [roomScheduleStatusFilter]);
+
   const handleDelete = async (id: number) => {
     if (confirm('Remove this class from the timetable?')) {
       const res = await fetch(`/api/schedules/${id}`, { 
@@ -19419,9 +19457,6 @@ function TimetableBuilder() {
   };
 
   const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const timetableRoomOptions = visibleRooms
-    .filter((room: any) => visibleScheduleRoomIds.has(room?.id?.toString?.() || '') || isRoomTimetableEligible(room))
-    .sort((a, b) => getRoomDisplayLabel(a, rooms).localeCompare(getRoomDisplayLabel(b, rooms), undefined, { numeric: true }));
 
   useEffect(() => {
     if (!timetableRoomOptions.length) return;
@@ -19531,6 +19566,18 @@ function TimetableBuilder() {
               ))}
             </select>
           </div>
+          <div className="flex items-center gap-3 bg-slate-50 px-4 py-2 rounded-xl border border-slate-200">
+            <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Schedule Status:</span>
+            <select
+              value={roomScheduleStatusFilter}
+              onChange={(e) => setRoomScheduleStatusFilter(e.target.value as (typeof TIMETABLE_ROOM_STATUS_OPTIONS)[number])}
+              className="bg-transparent text-sm font-bold text-slate-700 focus:outline-none cursor-pointer"
+            >
+              <option value="All">All ({allRoomCount})</option>
+              <option value="Scheduled">Scheduled ({scheduledRoomCount})</option>
+              <option value="Unscheduled">Unscheduled ({unscheduledRoomCount})</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -19541,6 +19588,7 @@ function TimetableBuilder() {
             <select
               value={timetableContext.department_id}
               onChange={e => setTimetableContext(prev => ({ ...prev, department_id: e.target.value, program: '', specialization: '', section: '' }))}
+              disabled={roomScheduleStatusFilter === 'Unscheduled'}
               className="w-full bg-transparent text-sm font-bold text-slate-700 focus:outline-none"
             >
               <option value="">All Departments</option>
@@ -19554,6 +19602,7 @@ function TimetableBuilder() {
             <select
               value={timetableContext.program}
               onChange={e => setTimetableContext(prev => ({ ...prev, program: e.target.value, specialization: '', section: '' }))}
+              disabled={roomScheduleStatusFilter === 'Unscheduled'}
               className="w-full bg-transparent text-sm font-bold text-slate-700 focus:outline-none"
             >
               <option value="">All Programs</option>
@@ -19567,6 +19616,7 @@ function TimetableBuilder() {
             <select
               value={timetableContext.year}
               onChange={e => setTimetableContext(prev => ({ ...prev, year: e.target.value, specialization: '', section: '' }))}
+              disabled={roomScheduleStatusFilter === 'Unscheduled'}
               className="w-full bg-transparent text-sm font-bold text-slate-700 focus:outline-none"
             >
               <option value="">All Years</option>
@@ -19580,6 +19630,7 @@ function TimetableBuilder() {
             <select
               value={timetableContext.semester}
               onChange={e => setTimetableContext(prev => ({ ...prev, semester: e.target.value, specialization: '', section: '' }))}
+              disabled={roomScheduleStatusFilter === 'Unscheduled'}
               className="w-full bg-transparent text-sm font-bold text-slate-700 focus:outline-none"
             >
               <option value="">All Semesters</option>
@@ -19593,6 +19644,7 @@ function TimetableBuilder() {
             <select
               value={timetableContext.specialization}
               onChange={e => setTimetableContext(prev => ({ ...prev, specialization: e.target.value, section: '' }))}
+              disabled={roomScheduleStatusFilter === 'Unscheduled'}
               className="w-full bg-transparent text-sm font-bold text-slate-700 focus:outline-none"
             >
               <option value="">All Branches</option>
@@ -19606,6 +19658,7 @@ function TimetableBuilder() {
             <select
               value={timetableContext.section}
               onChange={e => setTimetableContext(prev => ({ ...prev, section: e.target.value }))}
+              disabled={roomScheduleStatusFilter === 'Unscheduled'}
               className="w-full bg-transparent text-sm font-bold text-slate-700 focus:outline-none"
             >
               <option value="">All Sections</option>
@@ -19618,6 +19671,11 @@ function TimetableBuilder() {
         <p className="mt-3 text-[11px] text-slate-500">
           Vacancy is computed inside the selected academic context. Use these filters when the same room is shared by multiple programs, years, semesters, branches, or sections with different timing patterns.
         </p>
+        {roomScheduleStatusFilter === 'Unscheduled' && (
+          <p className="mt-2 text-[11px] text-amber-700">
+            Academic context filters are disabled for unscheduled rooms because no timetable rows exist yet for department, program, year, semester, branch, or section.
+          </p>
+        )}
         {activeTimingProfile && (
           <div className="mt-3 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
             Active timing profile: <span className="font-bold">{getTimingProfileDisplayLabel(activeTimingProfile)}</span>
