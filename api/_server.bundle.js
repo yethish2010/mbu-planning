@@ -2919,6 +2919,54 @@ var compareServerSortValues = (left, right) => {
   const rightValue = right == null ? "" : right.toString();
   return leftValue.localeCompare(rightValue, void 0, { numeric: true, sensitivity: "base" });
 };
+var getAcademicCalendarEventRank = (eventType) => {
+  const normalized = normalizeImportMatchValue(eventType);
+  if (normalized.includes("semester")) return 0;
+  if (normalized.includes("class")) return 1;
+  if (normalized.includes("exam") || normalized.includes("ciat")) return 2;
+  if (normalized.includes("holiday")) return 3;
+  if (normalized.includes("vacation")) return 4;
+  if (normalized.includes("registration")) return 5;
+  if (normalized.includes("orientation")) return 6;
+  if (normalized.includes("project")) return 7;
+  if (normalized.includes("internship")) return 8;
+  return 99;
+};
+var compareAcademicCalendarItems = (left, right, departmentNamesById, sortKey, sortDir = "asc") => {
+  if (sortKey && sortKey !== "start_date") {
+    const comparison = compareServerSortValues(left?.[sortKey], right?.[sortKey]);
+    return sortDir === "desc" ? -comparison : comparison;
+  }
+  const departmentCompare = compareServerSortValues(
+    departmentNamesById.get(left?.department_id?.toString() || "") || "",
+    departmentNamesById.get(right?.department_id?.toString() || "") || ""
+  );
+  if (departmentCompare !== 0) {
+    return sortDir === "desc" ? -departmentCompare : departmentCompare;
+  }
+  const startCompare = compareServerSortValues(left?.start_date, right?.start_date);
+  if (startCompare !== 0) {
+    return sortDir === "desc" ? -startCompare : startCompare;
+  }
+  const specializationCompare = compareServerSortValues(left?.specialization, right?.specialization);
+  if (specializationCompare !== 0) {
+    return sortDir === "desc" ? -specializationCompare : specializationCompare;
+  }
+  const endCompare = compareServerSortValues(left?.end_date, right?.end_date);
+  if (endCompare !== 0) {
+    return sortDir === "desc" ? -endCompare : endCompare;
+  }
+  const eventCompare = getAcademicCalendarEventRank(left?.event_type) - getAcademicCalendarEventRank(right?.event_type);
+  if (eventCompare !== 0) {
+    return sortDir === "desc" ? -eventCompare : eventCompare;
+  }
+  const titleCompare = compareServerSortValues(left?.title, right?.title);
+  if (titleCompare !== 0) {
+    return sortDir === "desc" ? -titleCompare : titleCompare;
+  }
+  const idCompare = compareServerSortValues(left?.id, right?.id);
+  return sortDir === "desc" ? -idCompare : idCompare;
+};
 var scheduleDayOrder = /* @__PURE__ */ new Map([
   ["monday", 0],
   ["tuesday", 1],
@@ -3880,6 +3928,35 @@ var createCrudRoutes = (tableName, idField = "id") => {
             pageSize: requestedPageSize
           });
         }
+        if (tableName === "academic_calendars") {
+          let calendarItems = await db.prepare(`SELECT * FROM ${tableName}`).all();
+          if (requestedSearch && allowedSearchFields.length > 0) {
+            const normalizedSearch = requestedSearch.toLowerCase();
+            calendarItems = calendarItems.filter(
+              (item) => allowedSearchFields.some(
+                (field) => item?.[field] != null && item[field].toString().toLowerCase().includes(normalizedSearch)
+              )
+            );
+          }
+          const departments = await db.prepare("SELECT id, name FROM departments").all();
+          const departmentNamesById = new Map(
+            departments.map((department) => [department.id?.toString() || "", department.name?.toString() || ""])
+          );
+          calendarItems = calendarItems.slice().sort(
+            (left, right) => compareAcademicCalendarItems(left, right, departmentNamesById, sortKey, requestedSortDir)
+          );
+          if (!wantsPagination) {
+            return res.json(calendarItems);
+          }
+          const total2 = calendarItems.length;
+          const startIndex = (requestedPage - 1) * requestedPageSize;
+          return res.json({
+            items: calendarItems.slice(startIndex, startIndex + requestedPageSize),
+            total: total2,
+            page: requestedPage,
+            pageSize: requestedPageSize
+          });
+        }
         const whereClauses = [];
         const values = [];
         if (requestedSearch && allowedSearchFields.length > 0) {
@@ -3916,6 +3993,17 @@ var createCrudRoutes = (tableName, idField = "id") => {
           return res.json(await filterSchedulesByAcademicCalendar(deduplicatedItems, requestedDate));
         }
         return res.json(deduplicatedItems);
+      }
+      if (tableName === "academic_calendars") {
+        const departments = await db.prepare("SELECT id, name FROM departments").all();
+        const departmentNamesById = new Map(
+          departments.map((department) => [department.id?.toString() || "", department.name?.toString() || ""])
+        );
+        return res.json(
+          items.slice().sort(
+            (left, right) => compareAcademicCalendarItems(left, right, departmentNamesById, "start_date", "asc")
+          )
+        );
       }
       res.json(items);
     } catch (err) {
