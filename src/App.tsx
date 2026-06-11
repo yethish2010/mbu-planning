@@ -3291,6 +3291,66 @@ const resolveTimingProfileForContext = ({
     .at(0) || null;
 };
 
+const buildScheduleTimingContext = (schedule: any) => ({
+  school_id: schedule?.school_id || '',
+  department_id: schedule?.department_id || '',
+  program: normalizeProgramValue(schedule?.program) || '',
+  academic_year: schedule?.academic_year || '',
+  year_of_study: normalizeYearOfStudyValue(schedule?.year_of_study, ''),
+  semester: normalizeExactSemesterValue(schedule?.semester, schedule?.year_of_study, ''),
+  specialization: schedule?.specialization?.toString().trim() || '',
+  section: schedule?.section?.toString().trim() || '',
+});
+
+const getMergedTimingProfileSlotsForSchedules = ({
+  schedules,
+  timingProfiles,
+  academicCalendars,
+  activeDate,
+}: {
+  schedules: any[];
+  timingProfiles: any[];
+  academicCalendars: any[];
+  activeDate: string;
+}) => {
+  if (!Array.isArray(schedules) || schedules.length === 0) return [];
+
+  const slotMap = new Map<string, { start_time: string; end_time: string }>();
+  const uniqueContexts = new Map<string, any>();
+
+  schedules.forEach((schedule: any) => {
+    const context = buildScheduleTimingContext(schedule);
+    const contextKey = [
+      context.school_id?.toString() || '',
+      context.department_id?.toString() || '',
+      context.program || '',
+      context.academic_year || '',
+      context.year_of_study || '',
+      context.semester || '',
+      context.specialization || '',
+      context.section || '',
+    ].join('|');
+    if (contextKey.replace(/\|/g, '') !== '') {
+      uniqueContexts.set(contextKey, context);
+    }
+  });
+
+  uniqueContexts.forEach((context) => {
+    const profile = resolveTimingProfileForContext({
+      timingProfiles,
+      academicCalendars,
+      activeDate,
+      context,
+    });
+    parseTimingProfileSlots(profile?.slot_pattern).forEach((slot) => {
+      slotMap.set(getTimeSlotKey(slot), slot);
+    });
+  });
+
+  return Array.from(slotMap.values())
+    .sort((left, right) => (left.start_time || '').localeCompare(right.start_time || '') || (left.end_time || '').localeCompare(right.end_time || ''));
+};
+
 const getTimeSlotKey = (slot?: { start_time?: string; end_time?: string } | null) =>
   `${slot?.start_time || ''}-${slot?.end_time || ''}`;
 
@@ -19226,9 +19286,20 @@ function TimetableBuilder() {
     [activeTimingProfile],
   );
 
+  const mergedRoomTimingProfileSlots = useMemo(() => getMergedTimingProfileSlotsForSchedules({
+    schedules: roomScopedSchedules,
+    timingProfiles,
+    academicCalendars,
+    activeDate: referenceDate,
+  }), [academicCalendars, referenceDate, roomScopedSchedules, timingProfiles]);
+
   const roomTimeSlots = useMemo(() => {
     if (activeTimingProfileSlots.length > 0 && (!requiresContextFilterForVacancy || hasContextFilter || distinctContextCount <= 1)) {
       return activeTimingProfileSlots;
+    }
+
+    if (mergedRoomTimingProfileSlots.length > 0) {
+      return mergedRoomTimingProfileSlots;
     }
 
     const intervals = contextSchedules
@@ -19262,7 +19333,7 @@ function TimetableBuilder() {
     ).values()).sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
 
     return uniqueSlots.length > 0 ? uniqueSlots : DEFAULT_TIMETABLE_TIME_SLOTS;
-  }, [activeTimingProfileSlots, contextSchedules, distinctContextCount, hasContextFilter, requiresContextFilterForVacancy]);
+  }, [activeTimingProfileSlots, contextSchedules, distinctContextCount, hasContextFilter, mergedRoomTimingProfileSlots, requiresContextFilterForVacancy]);
 
   const fetchData = async () => {
     try {
@@ -19583,6 +19654,11 @@ function TimetableBuilder() {
         {activeTimingProfileSlots.length > 0 && (
           <p className="mt-2 text-[11px] text-emerald-700">
             This room is currently using the configured timing profile slot pattern instead of purely inferred timetable boundaries.
+          </p>
+        )}
+        {activeTimingProfileSlots.length === 0 && mergedRoomTimingProfileSlots.length > 0 && (
+          <p className="mt-2 text-[11px] text-blue-700">
+            Mixed academic contexts are using a merged timing-profile slot grid so vacant periods remain visible across the full uploaded room schedule.
           </p>
         )}
       </div>
