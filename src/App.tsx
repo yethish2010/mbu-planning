@@ -1215,6 +1215,14 @@ const isRoomAllocatable = (room: any) => {
   return BOOKABLE_ROOM_TYPES.has(roomType) || BOOKABLE_USAGE_CATEGORIES.has(usageCategory);
 };
 
+const isRoomTimetableEligible = (room: any) => {
+  const roomType = normalizeRoomTypeValue(room?.room_type);
+  if (!roomType) return false;
+  if (isNonCapacityRoomType(roomType)) return false;
+  const usageCategory = normalizeUsageCategoryValue(room?.usage_category, roomType);
+  return BOOKABLE_ROOM_TYPES.has(roomType) || BOOKABLE_USAGE_CATEGORIES.has(usageCategory);
+};
+
 const splitAliasTokens = (value: unknown): string[] =>
   String(value ?? '')
     .split(/[\n,;|/]+/)
@@ -10123,7 +10131,7 @@ function SchedulingManagement() {
   };
 
   const scheduleRoomOptions = rooms
-    .filter((room: any) => room?.id != null)
+    .filter((room: any) => room?.id != null && isRoomTimetableEligible(room))
     .filter(roomMatchesScheduleLocationFilters)
     .sort((a, b) => getRoomDisplayLabel(a, rooms).localeCompare(getRoomDisplayLabel(b, rooms)))
     .map(room => {
@@ -19373,8 +19381,8 @@ function TimetableBuilder() {
         : findRoomByImportLabel(rData, requestedRoomLabel);
       const currentRoom = selectedRoom ? rData.find((room: any) => idsMatch(room.id, selectedRoom)) : null;
       const firstScheduledRoom = rData.find((room: any) => requestedRoomIdsFromSchedules.has(room?.id?.toString?.() || ''));
-      const firstBookableRoom = rData.find(isRoomReservable);
-      const activeRoom = requestedRoom || currentRoom || firstScheduledRoom || firstBookableRoom;
+      const firstTimetableEligibleRoom = rData.find(isRoomTimetableEligible);
+      const activeRoom = requestedRoom || currentRoom || firstScheduledRoom || firstTimetableEligibleRoom;
       const requestedYear = params.get('year')?.trim() || '';
       setTimetableContext({
         department_id: requestedDepartmentId,
@@ -19412,6 +19420,7 @@ function TimetableBuilder() {
 
   const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const timetableRoomOptions = visibleRooms
+    .filter((room: any) => visibleScheduleRoomIds.has(room?.id?.toString?.() || '') || isRoomTimetableEligible(room))
     .sort((a, b) => getRoomDisplayLabel(a, rooms).localeCompare(getRoomDisplayLabel(b, rooms), undefined, { numeric: true }));
 
   useEffect(() => {
