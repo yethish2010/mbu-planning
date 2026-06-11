@@ -1351,8 +1351,10 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       }
 
       if (tableName === "schedules") {
-        const bookableError = await getBookableRoomError(req.body.room_id);
-        if (bookableError) return res.status(400).json({ error: bookableError });
+        if (req.body.room_id !== undefined && req.body.room_id !== null && req.body.room_id !== "") {
+          const room = await db.prepare("SELECT id FROM rooms WHERE id = ?").get(req.body.room_id) as any;
+          if (!room) return res.status(400).json({ error: "Please select a valid room." });
+        }
       }
 
       if (tableName === "bookings") {
@@ -1466,8 +1468,10 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
 
       if (tableName === "schedules") {
         const nextSchedule = { ...existingItem, ...req.body };
-        const bookableError = await getBookableRoomError(nextSchedule.room_id);
-        if (bookableError) return res.status(400).json({ error: bookableError });
+        if (nextSchedule.room_id !== undefined && nextSchedule.room_id !== null && nextSchedule.room_id !== "") {
+          const room = await db.prepare("SELECT id FROM rooms WHERE id = ?").get(nextSchedule.room_id) as any;
+          if (!room) return res.status(400).json({ error: "Please select a valid room." });
+        }
       }
 
       if (tableName === "bookings") {

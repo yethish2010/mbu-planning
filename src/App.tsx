@@ -1424,6 +1424,27 @@ const findRoomsByImportLabel = (rooms: any[], value: unknown) => {
   return { normalizedValue, matchType: 'none', matches: [] as any[] };
 };
 
+const getResolvedScheduleRoomIds = (rooms: any[], schedule: any) => {
+  const resolvedRoomIds = new Set<string>();
+  if (schedule?.room_id != null) {
+    resolvedRoomIds.add(schedule.room_id.toString());
+  }
+  if (schedule?.room_label) {
+    const resolution = resolveRoomSetForImport(rooms, schedule.room_label);
+    resolution.rooms.forEach((room: any) => {
+      const roomKey = room?.id?.toString();
+      if (roomKey) resolvedRoomIds.add(roomKey);
+    });
+  }
+  return resolvedRoomIds;
+};
+
+const doesScheduleLinkToRoom = (rooms: any[], schedule: any, roomId: unknown) => {
+  const roomKey = roomId?.toString();
+  if (!roomKey) return false;
+  return getResolvedScheduleRoomIds(rooms, schedule).has(roomKey);
+};
+
 const resolveRoomForImport = (rooms: any[], value: unknown) => {
   const { normalizedValue, matchType, matches } = findRoomsByImportLabel(rooms, value);
 
@@ -10042,7 +10063,7 @@ function SchedulingManagement() {
   };
 
   const scheduleRoomOptions = rooms
-    .filter(isRoomReservable)
+    .filter((room: any) => room?.id != null)
     .filter(roomMatchesScheduleLocationFilters)
     .sort((a, b) => getRoomDisplayLabel(a, rooms).localeCompare(getRoomDisplayLabel(b, rooms)))
     .map(room => {
@@ -19019,15 +19040,25 @@ function TimetableBuilder() {
     return schedules.filter((schedule: any) => schedule?.department_id != null && scopedDepartmentIds.has(schedule.department_id.toString()));
   }, [scopedDepartmentIds, schedules]);
 
+  const visibleScheduleRoomIds = useMemo(() => {
+    const resolvedRoomIds = new Set<string>();
+    visibleSchedules.forEach((schedule: any) => {
+      getResolvedScheduleRoomIds(rooms, schedule).forEach((roomId) => resolvedRoomIds.add(roomId));
+    });
+    return resolvedRoomIds;
+  }, [rooms, visibleSchedules]);
+
   const visibleRoomIds = useMemo(() => {
     if (scopedDepartmentIds.size === 0) return null;
-    return new Set(
+    const allowedRoomIds = new Set<string>(
       (departmentAllocations || [])
         .filter((allocation: any) => allocation?.department_id != null && scopedDepartmentIds.has(allocation.department_id.toString()))
         .map((allocation: any) => allocation?.room_id?.toString?.())
         .filter(Boolean),
     );
-  }, [departmentAllocations, scopedDepartmentIds]);
+    visibleScheduleRoomIds.forEach((roomId) => allowedRoomIds.add(roomId));
+    return allowedRoomIds;
+  }, [departmentAllocations, scopedDepartmentIds, visibleScheduleRoomIds]);
 
   const visibleRooms = useMemo(() => {
     if (!visibleRoomIds) return rooms;
@@ -19041,20 +19072,9 @@ function TimetableBuilder() {
 
   const roomScopedSchedules = useMemo(() => visibleSchedules.filter(schedule => {
     if (activeRoom) {
-      const resolvedRoomIds = new Set<string>();
-      if (schedule?.room_id != null) {
-        resolvedRoomIds.add(schedule.room_id.toString());
-      }
-      if (schedule?.room_label) {
-        const resolution = resolveRoomSetForImport(rooms, schedule.room_label);
-        resolution.rooms.forEach((room: any) => {
-          const roomKey = room?.id?.toString();
-          if (roomKey) resolvedRoomIds.add(roomKey);
-        });
-      }
-      return resolvedRoomIds.has(activeRoom.id?.toString());
+      return doesScheduleLinkToRoom(rooms, schedule, activeRoom.id);
     }
-    return schedule.room === selectedRoom;
+    return doesScheduleLinkToRoom(rooms, schedule, selectedRoom);
   }), [activeRoom, rooms, selectedRoom, visibleSchedules]);
 
   const roomDepartmentOptions = useMemo(() => Array.from(new Map(
@@ -19256,7 +19276,12 @@ function TimetableBuilder() {
         fetchSharedLookupJson('/api/batch_room_allocations'),
         fetchSharedLookupJson('/api/department_allocations'),
       ]);
-      setSchedules(deduplicateScheduleRows(Array.isArray(sData) ? sData : []));
+      const dedupedSchedules = deduplicateScheduleRows(Array.isArray(sData) ? sData : []);
+      const requestedRoomIdsFromSchedules = new Set<string>();
+      dedupedSchedules.forEach((schedule: any) => {
+        getResolvedScheduleRoomIds(rData, schedule).forEach((roomId) => requestedRoomIdsFromSchedules.add(roomId));
+      });
+      setSchedules(dedupedSchedules);
       setRooms(rData);
       setSchools(Array.isArray(schoolData) ? schoolData : []);
       setDepartments(dData);
@@ -19275,8 +19300,10 @@ function TimetableBuilder() {
       const requestedRoom = requestedRoomId
         ? rData.find((room: any) => idsMatch(room.id, requestedRoomId))
         : findRoomByImportLabel(rData, requestedRoomLabel);
+      const currentRoom = selectedRoom ? rData.find((room: any) => idsMatch(room.id, selectedRoom)) : null;
+      const firstScheduledRoom = rData.find((room: any) => requestedRoomIdsFromSchedules.has(room?.id?.toString?.() || ''));
       const firstBookableRoom = rData.find(isRoomReservable);
-      const activeRoom = requestedRoom || (selectedRoom ? rData.find((room: any) => idsMatch(room.id, selectedRoom)) : null) || firstBookableRoom;
+      const activeRoom = requestedRoom || currentRoom || firstScheduledRoom || firstBookableRoom;
       const requestedYear = params.get('year')?.trim() || '';
       setTimetableContext({
         department_id: requestedDepartmentId,
@@ -19314,15 +19341,15 @@ function TimetableBuilder() {
 
   const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const timetableRoomOptions = visibleRooms
-    .filter(room => isRoomReservable(room) || idsMatch(room.id, selectedRoom))
+    .filter(room => visibleScheduleRoomIds.has(room?.id?.toString?.() || '') || idsMatch(room.id, selectedRoom))
     .sort((a, b) => getRoomDisplayLabel(a, rooms).localeCompare(getRoomDisplayLabel(b, rooms), undefined, { numeric: true }));
 
   useEffect(() => {
-    if (!visibleRooms.length) return;
-    if (!visibleRooms.some((room: any) => idsMatch(room?.id, selectedRoom))) {
-      setSelectedRoom(visibleRooms[0].id?.toString() || '');
+    if (!timetableRoomOptions.length) return;
+    if (!timetableRoomOptions.some((room: any) => idsMatch(room?.id, selectedRoom))) {
+      setSelectedRoom(timetableRoomOptions[0].id?.toString() || '');
     }
-  }, [selectedRoom, visibleRooms]);
+  }, [selectedRoom, timetableRoomOptions]);
 
   const weekDates = useMemo(() => getWeekDatesForReferenceDate(referenceDate), [referenceDate]);
 
