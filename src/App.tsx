@@ -8357,11 +8357,22 @@ function TimingProfileManagement() {
     await upsertImportRecordsBulk('/api/timing_profiles', entries);
   };
 
+  const timingProfileSorter = (left: any, right: any) => {
+    const profileIdCompare = compareNaturalSortValues(left?.profile_id, right?.profile_id);
+    if (profileIdCompare !== 0) return profileIdCompare;
+
+    const profileNameCompare = compareNaturalSortValues(left?.profile_name, right?.profile_name);
+    if (profileNameCompare !== 0) return profileNameCompare;
+
+    return compareNaturalSortValues(left?.id, right?.id);
+  };
+
   return (
     <GenericCRUD
       type="Timing Profile"
       fields={fields}
       apiPath="/api/timing_profiles"
+      dataSorter={timingProfileSorter}
       onImport={handleImport}
       prepareSubmitData={prepareSubmitData}
       onDataChanged={refreshLookups}
@@ -8480,23 +8491,13 @@ function AcademicCalendarManagement() {
   };
 
   const academicCalendarSorter = (left: any, right: any) => {
-    const departmentCompare = (departments.find(item => idsMatch(item.id, left.department_id))?.name || '')
-      .localeCompare(departments.find(item => idsMatch(item.id, right.department_id))?.name || '');
-    if (departmentCompare !== 0) return departmentCompare;
+    const calendarIdCompare = compareNaturalSortValues(left?.calendar_id, right?.calendar_id);
+    if (calendarIdCompare !== 0) return calendarIdCompare;
 
-    const startCompare = (left.start_date || '').localeCompare(right.start_date || '');
+    const startCompare = compareNaturalSortValues(left?.start_date, right?.start_date);
     if (startCompare !== 0) return startCompare;
 
-    const specializationCompare = compareNaturalSortValues(left.specialization, right.specialization);
-    if (specializationCompare !== 0) return specializationCompare;
-
-    const endCompare = (left.end_date || '').localeCompare(right.end_date || '');
-    if (endCompare !== 0) return endCompare;
-
-    const eventCompare = getAcademicCalendarEventRank(left.event_type) - getAcademicCalendarEventRank(right.event_type);
-    if (eventCompare !== 0) return eventCompare;
-
-    return (left.title || '').localeCompare(right.title || '');
+    return compareNaturalSortValues(left?.id, right?.id);
   };
 
   const handleImport = async (data: any[]) => {
