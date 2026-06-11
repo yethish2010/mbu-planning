@@ -3289,8 +3289,8 @@ const timingProfileMatchesContext = (profile: any, context: any) => {
   if (profile.school_id && context.school_id && !idsMatch(profile.school_id, context.school_id)) return false;
   if (profile.department_id && !idsMatch(profile.department_id, context.department_id)) return false;
   if (profile.program && normalizeProgramValue(profile.program) !== normalizeProgramValue(context.program)) return false;
-  if (profile.specialization && normalizeLookupValue(profile.specialization) !== normalizeLookupValue(context.specialization)) return false;
-  if (profile.academic_year && normalizeLookupValue(profile.academic_year) !== normalizeLookupValue(context.academic_year)) return false;
+  if (profile.specialization && context.specialization && normalizeLookupValue(profile.specialization) !== normalizeLookupValue(context.specialization)) return false;
+  if (profile.academic_year && context.academic_year && normalizeLookupValue(profile.academic_year) !== normalizeLookupValue(context.academic_year)) return false;
   if (profile.year_of_study && normalizeYearOfStudyValue(profile.year_of_study, '') !== normalizeYearOfStudyValue(context.year_of_study, '')) return false;
   if (profile.semester && normalizeExactSemesterValue(profile.semester, profile.year_of_study, profile.semester || '') !== normalizeExactSemesterValue(context.semester, context.year_of_study, '')) return false;
   if (profile.section && normalizeLookupValue(profile.section) !== normalizeLookupValue(context.section)) return false;
@@ -3355,7 +3355,7 @@ const buildScheduleTimingContext = (schedule: any) => ({
   academic_year: schedule?.academic_year || '',
   year_of_study: normalizeYearOfStudyValue(schedule?.year_of_study, ''),
   semester: normalizeExactSemesterValue(schedule?.semester, schedule?.year_of_study, ''),
-  specialization: schedule?.specialization?.toString().trim() || '',
+  specialization: (schedule?.specialization?.toString().trim() || '').replace(/^-+$/, ''),
   section: schedule?.section?.toString().trim() || '',
 });
 
