@@ -3285,7 +3285,7 @@ const buildTimingContextVariants = (context: any) => {
 
 const timingProfileMatchesContext = (profile: any, context: any) => {
   if (!profile) return false;
-  if (profile.school_id && !idsMatch(profile.school_id, context.school_id)) return false;
+  if (profile.school_id && context.school_id && !idsMatch(profile.school_id, context.school_id)) return false;
   if (profile.department_id && !idsMatch(profile.department_id, context.department_id)) return false;
   if (profile.program && normalizeProgramValue(profile.program) !== normalizeProgramValue(context.program)) return false;
   if (profile.specialization && normalizeLookupValue(profile.specialization) !== normalizeLookupValue(context.specialization)) return false;
