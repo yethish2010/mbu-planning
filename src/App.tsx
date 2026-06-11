@@ -19341,11 +19341,11 @@ function TimetableBuilder() {
       (!requiresContextFilterForVacancy || hasContextFilter || distinctContextCount <= 1);
 
     if (shouldUseExactActiveProfile) {
-      return mergeTimetableSlots(activeTimingProfileSlots, DEFAULT_TIMETABLE_TIME_SLOTS);
+      return activeTimingProfileSlots;
     }
 
     if (mergedRoomTimingProfileSlots.length > 0) {
-      return mergeTimetableSlots(mergedRoomTimingProfileSlots, DEFAULT_TIMETABLE_TIME_SLOTS);
+      return mergedRoomTimingProfileSlots;
     }
 
     const intervals = contextSchedules
@@ -19379,7 +19379,7 @@ function TimetableBuilder() {
     ).values()).sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
 
     return inferredSlots.length > 0
-      ? mergeTimetableSlots(DEFAULT_TIMETABLE_TIME_SLOTS, inferredSlots)
+      ? inferredSlots
       : DEFAULT_TIMETABLE_TIME_SLOTS;
   }, [activeTimingProfileSlots, contextSchedules, distinctContextCount, hasContextFilter, mergedRoomTimingProfileSlots, requiresContextFilterForVacancy]);
 
