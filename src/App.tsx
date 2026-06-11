@@ -3370,6 +3370,30 @@ const mergeTimetableSlots = (...slotGroups: Array<Array<{ start_time: string; en
 const getTimeSlotKey = (slot?: { start_time?: string; end_time?: string } | null) =>
   `${slot?.start_time || ''}-${slot?.end_time || ''}`;
 
+const slotsOverlap = (
+  left?: { start_time?: string; end_time?: string } | null,
+  right?: { start_time?: string; end_time?: string } | null,
+) => {
+  if (!left?.start_time || !left?.end_time || !right?.start_time || !right?.end_time) return false;
+  return left.start_time < right.end_time && left.end_time > right.start_time;
+};
+
+const mergeTimetableSlotsWithFallback = (
+  primarySlots: Array<{ start_time: string; end_time: string }>,
+  fallbackSlots: Array<{ start_time: string; end_time: string }>,
+) => {
+  if (!Array.isArray(primarySlots) || primarySlots.length === 0) {
+    return mergeTimetableSlots(fallbackSlots);
+  }
+
+  const normalizedPrimarySlots = mergeTimetableSlots(primarySlots);
+  const uncoveredFallbackSlots = (Array.isArray(fallbackSlots) ? fallbackSlots : [])
+    .filter((slot) => slot?.start_time && slot?.end_time)
+    .filter((slot) => !normalizedPrimarySlots.some((primarySlot) => slotsOverlap(primarySlot, slot)));
+
+  return mergeTimetableSlots(normalizedPrimarySlots, uncoveredFallbackSlots);
+};
+
 const minutesToTime = (minutes: number) => {
   const hours = Math.floor(minutes / 60);
   const mins = minutes % 60;
@@ -19379,7 +19403,7 @@ function TimetableBuilder() {
     ).values()).sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
 
     return inferredSlots.length > 0
-      ? inferredSlots
+      ? mergeTimetableSlotsWithFallback(inferredSlots, DEFAULT_TIMETABLE_TIME_SLOTS)
       : DEFAULT_TIMETABLE_TIME_SLOTS;
   }, [activeTimingProfileSlots, contextSchedules, distinctContextCount, hasContextFilter, mergedRoomTimingProfileSlots, requiresContextFilterForVacancy]);
 
