@@ -3242,6 +3242,47 @@ const getTimingProfileSpecificityScore = (profile: any) => [
   profile?.section,
 ].filter(value => value !== undefined && value !== null && value.toString().trim() !== '').length;
 
+const buildTimingContextVariants = (context: any) => {
+  const baseContext = {
+    school_id: context?.school_id || '',
+    department_id: context?.department_id || '',
+    program: normalizeProgramValue(context?.program) || '',
+    academic_year: context?.academic_year || '',
+    year_of_study: normalizeYearOfStudyValue(context?.year_of_study, ''),
+    semester: normalizeExactSemesterValue(context?.semester, context?.year_of_study, ''),
+    specialization: context?.specialization?.toString().trim() || '',
+    section: context?.section?.toString().trim() || '',
+  };
+
+  const variants = [
+    baseContext,
+    { ...baseContext, section: '' },
+    { ...baseContext, specialization: '', section: '' },
+    { ...baseContext, academic_year: '', section: '' },
+    { ...baseContext, academic_year: '', specialization: '', section: '' },
+    { ...baseContext, year_of_study: '', semester: '', academic_year: '', specialization: '', section: '' },
+    { ...baseContext, program: '', year_of_study: '', semester: '', academic_year: '', specialization: '', section: '' },
+    { ...baseContext, department_id: '', program: '', year_of_study: '', semester: '', academic_year: '', specialization: '', section: '' },
+  ];
+
+  const seen = new Set<string>();
+  return variants.filter((variant) => {
+    const key = [
+      variant.school_id?.toString() || '',
+      variant.department_id?.toString() || '',
+      variant.program || '',
+      variant.academic_year || '',
+      variant.year_of_study || '',
+      variant.semester || '',
+      variant.specialization || '',
+      variant.section || '',
+    ].join('|');
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return key.replace(/\|/g, '') !== '';
+  });
+};
+
 const timingProfileMatchesContext = (profile: any, context: any) => {
   if (!profile) return false;
   if (profile.school_id && !idsMatch(profile.school_id, context.school_id)) return false;
@@ -3286,17 +3327,24 @@ const resolveTimingProfileForContext = ({
   if (!Array.isArray(timingProfiles) || timingProfiles.length === 0) return null;
 
   const profileById = new Map(timingProfiles.map(profile => [profile.id?.toString(), profile]));
-  const linkedProfile = academicCalendars
-    .filter(calendar => academicCalendarMatchesTimingContext(calendar, context, activeDate))
-    .sort((left, right) => getTimingProfileSpecificityScore(right) - getTimingProfileSpecificityScore(left))
-    .map(calendar => profileById.get(calendar.timing_profile_id?.toString()))
-    .find(Boolean);
-  if (linkedProfile) return linkedProfile;
+  const contextVariants = buildTimingContextVariants(context);
 
-  return timingProfiles
-    .filter(profile => timingProfileMatchesContext(profile, context))
-    .sort((left, right) => getTimingProfileSpecificityScore(right) - getTimingProfileSpecificityScore(left))
-    .at(0) || null;
+  for (const variant of contextVariants) {
+    const linkedProfile = academicCalendars
+      .filter(calendar => academicCalendarMatchesTimingContext(calendar, variant, activeDate))
+      .sort((left, right) => getTimingProfileSpecificityScore(right) - getTimingProfileSpecificityScore(left))
+      .map(calendar => profileById.get(calendar.timing_profile_id?.toString()))
+      .find(Boolean);
+    if (linkedProfile) return linkedProfile;
+
+    const matchedProfile = timingProfiles
+      .filter(profile => timingProfileMatchesContext(profile, variant))
+      .sort((left, right) => getTimingProfileSpecificityScore(right) - getTimingProfileSpecificityScore(left))
+      .at(0);
+    if (matchedProfile) return matchedProfile;
+  }
+
+  return null;
 };
 
 const buildScheduleTimingContext = (schedule: any) => ({
@@ -19381,12 +19429,16 @@ function TimetableBuilder() {
       if (roomTimingContexts.length > 0) return roomTimingContexts;
       return roomScopedSchedules.map((schedule: any) => buildScheduleTimingContext(schedule));
     })();
+    const uniqueSchoolIds = Array.from(new Set(candidateContexts.map(context => context.school_id?.toString()).filter(Boolean)));
     const uniqueDepartmentIds = Array.from(new Set(candidateContexts.map(context => context.department_id?.toString()).filter(Boolean)));
     const uniquePrograms = Array.from(new Set(candidateContexts.map(context => normalizeProgramValue(context?.program)).filter(Boolean)));
     const uniqueYears = Array.from(new Set(candidateContexts.map(context => normalizeYearOfStudyValue(context?.year_of_study, '')).filter(Boolean)));
     const uniqueSemesters = Array.from(new Set(candidateContexts.map(context => normalizeExactSemesterValue(context?.semester, context?.year_of_study, '')).filter(Boolean)));
     const uniqueSpecializations = Array.from(new Set(candidateContexts.map(context => context.specialization?.toString().trim()).filter(Boolean)));
     const uniqueSections = Array.from(new Set(candidateContexts.map(context => context.section?.toString().trim()).filter(Boolean)));
+    const resolvedDepartment = departments.find((department: any) =>
+      timetableContext.department_id && idsMatch(department?.id, timetableContext.department_id),
+    );
     const matchingCalendar = academicCalendars.find(calendar =>
       normalizeComparableDateValue(calendar?.start_date) <= normalizeComparableDateValue(referenceDate) &&
       normalizeComparableDateValue(calendar?.end_date) >= normalizeComparableDateValue(referenceDate) &&
@@ -19398,7 +19450,7 @@ function TimetableBuilder() {
     );
 
     return {
-      school_id: matchingCalendar?.school_id || '',
+      school_id: matchingCalendar?.school_id || resolvedDepartment?.school_id || (uniqueSchoolIds.length === 1 ? uniqueSchoolIds[0] : ''),
       department_id: timetableContext.department_id || (uniqueDepartmentIds.length === 1 ? uniqueDepartmentIds[0] : ''),
       program: timetableContext.program || matchingCalendar?.program || (uniquePrograms.length === 1 ? uniquePrograms[0] : ''),
       academic_year: matchingCalendar?.academic_year || '',
@@ -19407,7 +19459,7 @@ function TimetableBuilder() {
       specialization: timetableContext.specialization || (uniqueSpecializations.length === 1 ? uniqueSpecializations[0] : ''),
       section: timetableContext.section || (uniqueSections.length === 1 ? uniqueSections[0] : ''),
     };
-  }, [academicCalendars, contextSchedules, referenceDate, roomScopedSchedules, roomTimingContexts, timetableContext.department_id, timetableContext.program, timetableContext.section, timetableContext.semester, timetableContext.specialization, timetableContext.year]);
+  }, [academicCalendars, contextSchedules, departments, referenceDate, roomScopedSchedules, roomTimingContexts, timetableContext.department_id, timetableContext.program, timetableContext.section, timetableContext.semester, timetableContext.specialization, timetableContext.year]);
 
   const activeTimingProfile = useMemo(() => resolveTimingProfileForContext({
     timingProfiles,
