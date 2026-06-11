@@ -4565,38 +4565,22 @@ function DashboardHome() {
         setDigitalTwinSnapshot(overviewData?.digitalTwinSnapshot || { statusCounts: {}, statusBreakdowns: {}, buildings: [] });
 
         if (user?.role === 'HOD' || user?.role === 'Dean') {
-          const [bookingData, roomData, departmentData, schoolData] = await Promise.all([
+          const [
+            bookingData,
+            roomData,
+            departmentData,
+            schoolData,
+            allocationData,
+            batchAllocationData,
+            scheduleData,
+          ] = await Promise.all([
             fetchJson<any[]>('/api/bookings', []),
             fetchSharedLookupJson('/api/rooms'),
             fetchSharedLookupJson('/api/departments'),
             fetchSharedLookupJson('/api/schools'),
-          ]);
-
-          if (!isActive) return;
-
-          const safeDepartments = Array.isArray(departmentData) ? departmentData : [];
-          const safeSchools = Array.isArray(schoolData) ? schoolData : [];
-          const scopedDepartment = safeDepartments.find((department: any) =>
-            normalizeLookupValue(department?.name) === normalizeLookupValue(user?.department),
-          );
-          const scopedSchool = safeSchools.find((school: any) =>
-            normalizeLookupValue(school?.name) === normalizeLookupValue(user?.school),
-          ) || safeSchools.find((school: any) => idsMatch(school?.id, scopedDepartment?.school_id));
-
-          const scheduleScopeUrl = user?.role === 'HOD'
-            ? (scopedDepartment?.id ? `/api/schedules?department_id=${encodeURIComponent(scopedDepartment.id.toString())}&sortKey=day_of_week` : '/api/schedules?sortKey=day_of_week')
-            : (scopedSchool?.id ? `/api/schedules?school_id=${encodeURIComponent(scopedSchool.id.toString())}&sortKey=day_of_week` : '/api/schedules?sortKey=day_of_week');
-          const departmentAllocationScopeUrl = user?.role === 'HOD'
-            ? (scopedDepartment?.id ? `/api/department_allocations?department_id=${encodeURIComponent(scopedDepartment.id.toString())}&sortKey=id` : '/api/department_allocations?sortKey=id')
-            : (scopedSchool?.id ? `/api/department_allocations?school_id=${encodeURIComponent(scopedSchool.id.toString())}&sortKey=id` : '/api/department_allocations?sortKey=id');
-          const batchAllocationScopeUrl = user?.role === 'HOD'
-            ? (scopedDepartment?.id ? `/api/batch_room_allocations?department_id=${encodeURIComponent(scopedDepartment.id.toString())}&sortKey=id` : '/api/batch_room_allocations?sortKey=id')
-            : (scopedSchool?.id ? `/api/batch_room_allocations?school_id=${encodeURIComponent(scopedSchool.id.toString())}&sortKey=id` : '/api/batch_room_allocations?sortKey=id');
-
-          const [allocationData, batchAllocationData, scheduleData] = await Promise.all([
-            fetchJson<any[]>(departmentAllocationScopeUrl, []),
-            fetchJson<any[]>(batchAllocationScopeUrl, []),
-            fetchJson<any[]>(scheduleScopeUrl, []),
+            fetchSharedLookupJson('/api/department_allocations'),
+            fetchSharedLookupJson('/api/batch_room_allocations'),
+            fetchJson<any[]>('/api/schedules', []),
           ]);
 
           if (!isActive) return;
@@ -4604,8 +4588,8 @@ function DashboardHome() {
           setRoleDashboardData({
             bookings: Array.isArray(bookingData) ? bookingData : [],
             rooms: Array.isArray(roomData) ? roomData : [],
-            departments: safeDepartments,
-            schools: safeSchools,
+            departments: Array.isArray(departmentData) ? departmentData : [],
+            schools: Array.isArray(schoolData) ? schoolData : [],
             departmentAllocations: Array.isArray(allocationData) ? allocationData : [],
             batchAllocations: Array.isArray(batchAllocationData) ? batchAllocationData : [],
             schedules: Array.isArray(scheduleData) ? scheduleData : [],
@@ -4628,10 +4612,8 @@ function DashboardHome() {
           Array.isArray(overviewData?.topBusyRooms) ? overviewData.topBusyRooms.length : 0,
         );
 
-        if (isActive) setLoading(false);
-
         const aiStartedAt = performance.now();
-        const aiInsightResponsePromise = fetchJson<{ insight?: string; source?: string } | null>(
+        const aiInsightResponse = await fetchJson<{ insight?: string; source?: string } | null>(
           '/api/ai/dashboard-insight',
           null,
           {
@@ -4643,12 +4625,12 @@ function DashboardHome() {
             }),
           }
         );
-        void aiInsightResponsePromise.then((aiInsightResponse) => {
-          if (!isActive) return;
-          const generatedInsight = aiInsightResponse?.insight?.toString().trim() || '';
-          setAiInsightMessage(generatedInsight || fallbackInsight);
-          void trackModuleLoadMetric('DashboardHome', 'ai-insight', performance.now() - aiStartedAt, safeSchoolReports.length);
-        });
+
+        if (!isActive) return;
+
+        const generatedInsight = aiInsightResponse?.insight?.toString().trim() || '';
+        setAiInsightMessage(generatedInsight || fallbackInsight);
+        void trackModuleLoadMetric('DashboardHome', 'ai-insight', performance.now() - aiStartedAt, safeSchoolReports.length);
       } catch (err) {
         console.error(err);
       } finally {

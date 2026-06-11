@@ -899,34 +899,6 @@ var getAvailabilityRoomLookupVariants = (room) => {
   });
   return variants;
 };
-var buildRoomLookupVariantMaps = (rooms) => {
-  const roomLookupVariantsById = /* @__PURE__ */ new Map();
-  const roomIdsByLookupVariant = /* @__PURE__ */ new Map();
-  (Array.isArray(rooms) ? rooms : []).forEach((room) => {
-    const roomKey = room?.id?.toString?.() || "";
-    if (!roomKey) return;
-    const variants = new Set(getAvailabilityRoomLookupVariants(room));
-    roomLookupVariantsById.set(roomKey, variants);
-    variants.forEach((variant) => {
-      if (!roomIdsByLookupVariant.has(variant)) {
-        roomIdsByLookupVariant.set(variant, /* @__PURE__ */ new Set());
-      }
-      roomIdsByLookupVariant.get(variant)?.add(roomKey);
-    });
-  });
-  return { roomLookupVariantsById, roomIdsByLookupVariant };
-};
-var getResolvedScheduleRoomIds = (schedule, roomIdsByLookupVariant) => {
-  const resolvedRoomIds = /* @__PURE__ */ new Set();
-  const directRoomId = schedule?.room_id?.toString?.() || "";
-  if (directRoomId) {
-    resolvedRoomIds.add(directRoomId);
-  }
-  getRoomLookupVariants(schedule?.room_label).forEach((variant) => {
-    roomIdsByLookupVariant.get(variant)?.forEach((roomId) => resolvedRoomIds.add(roomId));
-  });
-  return resolvedRoomIds;
-};
 var normalizeRoomPayload = (payload) => {
   const nextPayload = { ...payload };
   nextPayload.room_type = normalizeRoomTypeValue(nextPayload.room_type);
@@ -2947,54 +2919,6 @@ var compareServerSortValues = (left, right) => {
   const rightValue = right == null ? "" : right.toString();
   return leftValue.localeCompare(rightValue, void 0, { numeric: true, sensitivity: "base" });
 };
-var getAcademicCalendarEventRank = (eventType) => {
-  const normalized = normalizeImportMatchValue(eventType);
-  if (normalized.includes("semester")) return 0;
-  if (normalized.includes("class")) return 1;
-  if (normalized.includes("exam") || normalized.includes("ciat")) return 2;
-  if (normalized.includes("holiday")) return 3;
-  if (normalized.includes("vacation")) return 4;
-  if (normalized.includes("registration")) return 5;
-  if (normalized.includes("orientation")) return 6;
-  if (normalized.includes("project")) return 7;
-  if (normalized.includes("internship")) return 8;
-  return 99;
-};
-var compareAcademicCalendarItems = (left, right, departmentNamesById, sortKey, sortDir = "asc") => {
-  if (sortKey && sortKey !== "start_date") {
-    const comparison = compareServerSortValues(left?.[sortKey], right?.[sortKey]);
-    return sortDir === "desc" ? -comparison : comparison;
-  }
-  const departmentCompare = compareServerSortValues(
-    departmentNamesById.get(left?.department_id?.toString() || "") || "",
-    departmentNamesById.get(right?.department_id?.toString() || "") || ""
-  );
-  if (departmentCompare !== 0) {
-    return sortDir === "desc" ? -departmentCompare : departmentCompare;
-  }
-  const startCompare = compareServerSortValues(left?.start_date, right?.start_date);
-  if (startCompare !== 0) {
-    return sortDir === "desc" ? -startCompare : startCompare;
-  }
-  const specializationCompare = compareServerSortValues(left?.specialization, right?.specialization);
-  if (specializationCompare !== 0) {
-    return sortDir === "desc" ? -specializationCompare : specializationCompare;
-  }
-  const endCompare = compareServerSortValues(left?.end_date, right?.end_date);
-  if (endCompare !== 0) {
-    return sortDir === "desc" ? -endCompare : endCompare;
-  }
-  const eventCompare = getAcademicCalendarEventRank(left?.event_type) - getAcademicCalendarEventRank(right?.event_type);
-  if (eventCompare !== 0) {
-    return sortDir === "desc" ? -eventCompare : eventCompare;
-  }
-  const titleCompare = compareServerSortValues(left?.title, right?.title);
-  if (titleCompare !== 0) {
-    return sortDir === "desc" ? -titleCompare : titleCompare;
-  }
-  const idCompare = compareServerSortValues(left?.id, right?.id);
-  return sortDir === "desc" ? -idCompare : idCompare;
-};
 var scheduleDayOrder = /* @__PURE__ */ new Map([
   ["monday", 0],
   ["tuesday", 1],
@@ -3737,7 +3661,6 @@ var createCrudRoutes = (tableName, idField = "id") => {
             scheduleItems = await filterSchedulesByAcademicCalendar(scheduleItems, requestedDate);
           }
           const scheduleDepartmentId = req.query.department_id?.toString() || "";
-          const scheduleSchoolId = req.query.school_id?.toString() || "";
           const scheduleProgram = req.query.program?.toString().trim() || "";
           const scheduleYear = req.query.year?.toString().trim() || "";
           const scheduleSpecialization = req.query.specialization?.toString().trim() || "";
@@ -3747,32 +3670,24 @@ var createCrudRoutes = (tableName, idField = "id") => {
           const scheduleBuildingId = req.query.building_id?.toString() || "";
           const scheduleBlockId = req.query.block_id?.toString() || "";
           const scheduleFloorId = req.query.floor_id?.toString() || "";
-          if (scheduleDepartmentId || scheduleSchoolId || scheduleProgram || scheduleYear || scheduleSpecialization || scheduleRoomId || scheduleDay || scheduleCampusId || scheduleBuildingId || scheduleBlockId || scheduleFloorId) {
-            const departments = await db.prepare("SELECT id, school_id FROM departments").all();
-            const rooms = await db.prepare("SELECT id, floor_id, room_id, room_number, room_name, lab_name, room_section_name, room_aliases FROM rooms").all();
+          if (scheduleDepartmentId || scheduleProgram || scheduleYear || scheduleSpecialization || scheduleRoomId || scheduleDay || scheduleCampusId || scheduleBuildingId || scheduleBlockId || scheduleFloorId) {
+            const rooms = await db.prepare("SELECT id, floor_id FROM rooms").all();
             const floors = await db.prepare("SELECT id, block_id FROM floors").all();
             const blocks = await db.prepare("SELECT id, building_id FROM blocks").all();
             const buildings = await db.prepare("SELECT id, campus_id FROM buildings").all();
-            const departmentById = new Map(departments.map((department) => [department.id?.toString(), department]));
-            const { roomIdsByLookupVariant } = buildRoomLookupVariantMaps(rooms);
             const roomById = new Map(rooms.map((room) => [room.id?.toString(), room]));
             const floorById = new Map(floors.map((floor) => [floor.id?.toString(), floor]));
             const blockById = new Map(blocks.map((block) => [block.id?.toString(), block]));
             const buildingById = new Map(buildings.map((building) => [building.id?.toString(), building]));
             scheduleItems = scheduleItems.filter((schedule) => {
-              const resolvedRoomIds = scheduleRoomId ? getResolvedScheduleRoomIds(schedule, roomIdsByLookupVariant) : null;
               if (scheduleDepartmentId && !idsEqual(schedule?.department_id, scheduleDepartmentId)) return false;
-              if (scheduleSchoolId) {
-                const department = departmentById.get(schedule?.department_id?.toString());
-                if (!idsEqual(department?.school_id, scheduleSchoolId)) return false;
-              }
               if (scheduleProgram && normalizeScheduleProgramValue(schedule?.program) !== normalizeScheduleProgramValue(scheduleProgram)) return false;
               if (scheduleYear) {
                 const yearLabel = getYearDisplayLabel(schedule?.year_of_study, schedule?.semester);
                 if (yearLabel !== scheduleYear) return false;
               }
               if (scheduleSpecialization && normalizeImportMatchValue(schedule?.specialization) !== normalizeImportMatchValue(scheduleSpecialization)) return false;
-              if (scheduleRoomId && !resolvedRoomIds?.has(scheduleRoomId)) return false;
+              if (scheduleRoomId && !idsEqual(schedule?.room_id, scheduleRoomId)) return false;
               if (scheduleDay && normalizeImportMatchValue(schedule?.day_of_week) !== normalizeImportMatchValue(scheduleDay)) return false;
               if (scheduleCampusId || scheduleBuildingId || scheduleBlockId || scheduleFloorId) {
                 const room = roomById.get(schedule?.room_id?.toString());
@@ -3958,35 +3873,6 @@ var createCrudRoutes = (tableName, idField = "id") => {
             pageSize: requestedPageSize
           });
         }
-        if (tableName === "academic_calendars") {
-          let calendarItems = await db.prepare(`SELECT * FROM ${tableName}`).all();
-          if (requestedSearch && allowedSearchFields.length > 0) {
-            const normalizedSearch = requestedSearch.toLowerCase();
-            calendarItems = calendarItems.filter(
-              (item) => allowedSearchFields.some(
-                (field) => item?.[field] != null && item[field].toString().toLowerCase().includes(normalizedSearch)
-              )
-            );
-          }
-          const departments = await db.prepare("SELECT id, name FROM departments").all();
-          const departmentNamesById = new Map(
-            departments.map((department) => [department.id?.toString() || "", department.name?.toString() || ""])
-          );
-          calendarItems = calendarItems.slice().sort(
-            (left, right) => compareAcademicCalendarItems(left, right, departmentNamesById, sortKey, requestedSortDir)
-          );
-          if (!wantsPagination) {
-            return res.json(calendarItems);
-          }
-          const total2 = calendarItems.length;
-          const startIndex = (requestedPage - 1) * requestedPageSize;
-          return res.json({
-            items: calendarItems.slice(startIndex, startIndex + requestedPageSize),
-            total: total2,
-            page: requestedPage,
-            pageSize: requestedPageSize
-          });
-        }
         const whereClauses = [];
         const values = [];
         if (requestedSearch && allowedSearchFields.length > 0) {
@@ -4023,17 +3909,6 @@ var createCrudRoutes = (tableName, idField = "id") => {
           return res.json(await filterSchedulesByAcademicCalendar(deduplicatedItems, requestedDate));
         }
         return res.json(deduplicatedItems);
-      }
-      if (tableName === "academic_calendars") {
-        const departments = await db.prepare("SELECT id, name FROM departments").all();
-        const departmentNamesById = new Map(
-          departments.map((department) => [department.id?.toString() || "", department.name?.toString() || ""])
-        );
-        return res.json(
-          items.slice().sort(
-            (left, right) => compareAcademicCalendarItems(left, right, departmentNamesById, "start_date", "asc")
-          )
-        );
       }
       res.json(items);
     } catch (err) {
@@ -4632,30 +4507,6 @@ app.get(`/api/rooms/:roomId/schedule`, authenticate, async (req, res) => {
     const schedules = await getEffectiveSchedulesForDate(date, (schedule) => idsEqual(schedule.room_id, roomId));
     const bookings = await db.prepare(`SELECT * FROM bookings WHERE room_id = ? AND date = ? AND status = 'Approved'`).all(roomId, date);
     res.json({ schedules, bookings });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-app.get("/api/schedules/room-index", authenticate, async (req, res) => {
-  try {
-    const scopedRoomIds = await getScopedMappedRoomIdsForUser(req.user);
-    const [rooms, schedulesRaw] = await Promise.all([
-      db.prepare("SELECT id, room_id, room_number, room_name, lab_name, room_section_name, room_aliases FROM rooms").all(),
-      db.prepare("SELECT * FROM schedules").all()
-    ]);
-    const schedules = deduplicateSchedules(await backfillMissingScheduleCodes(schedulesRaw)).kept;
-    const { roomIdsByLookupVariant } = buildRoomLookupVariantMaps(rooms);
-    const scheduleCountByRoomId = /* @__PURE__ */ new Map();
-    (Array.isArray(schedules) ? schedules : []).forEach((schedule) => {
-      getResolvedScheduleRoomIds(schedule, roomIdsByLookupVariant).forEach((roomId) => {
-        if (scopedRoomIds && !scopedRoomIds.has(roomId)) return;
-        scheduleCountByRoomId.set(roomId, (scheduleCountByRoomId.get(roomId) || 0) + 1);
-      });
-    });
-    res.json(Array.from(scheduleCountByRoomId.entries()).map(([roomId, scheduleCount]) => ({
-      room_id: roomId,
-      schedule_count: scheduleCount
-    })));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
