@@ -3359,6 +3359,14 @@ const getMergedTimingProfileSlotsForSchedules = ({
     .sort((left, right) => (left.start_time || '').localeCompare(right.start_time || '') || (left.end_time || '').localeCompare(right.end_time || ''));
 };
 
+const mergeTimetableSlots = (...slotGroups: Array<Array<{ start_time: string; end_time: string }>>) =>
+  Array.from(new Map(
+    slotGroups
+      .flatMap((slots) => Array.isArray(slots) ? slots : [])
+      .filter((slot) => slot?.start_time && slot?.end_time)
+      .map((slot) => [getTimeSlotKey(slot), slot] as const),
+  ).values()).sort((left, right) => (left.start_time || '').localeCompare(right.start_time || '') || (left.end_time || '').localeCompare(right.end_time || ''));
+
 const getTimeSlotKey = (slot?: { start_time?: string; end_time?: string } | null) =>
   `${slot?.start_time || ''}-${slot?.end_time || ''}`;
 
@@ -19328,12 +19336,16 @@ function TimetableBuilder() {
   }), [academicCalendars, referenceDate, roomScopedSchedules, timingProfiles]);
 
   const roomTimeSlots = useMemo(() => {
-    if (activeTimingProfileSlots.length > 0 && (!requiresContextFilterForVacancy || hasContextFilter || distinctContextCount <= 1)) {
-      return activeTimingProfileSlots;
+    const shouldUseExactActiveProfile =
+      activeTimingProfileSlots.length > 0 &&
+      (!requiresContextFilterForVacancy || hasContextFilter || distinctContextCount <= 1);
+
+    if (shouldUseExactActiveProfile) {
+      return mergeTimetableSlots(activeTimingProfileSlots, DEFAULT_TIMETABLE_TIME_SLOTS);
     }
 
     if (mergedRoomTimingProfileSlots.length > 0) {
-      return mergedRoomTimingProfileSlots;
+      return mergeTimetableSlots(mergedRoomTimingProfileSlots, DEFAULT_TIMETABLE_TIME_SLOTS);
     }
 
     const intervals = contextSchedules
@@ -19348,7 +19360,7 @@ function TimetableBuilder() {
     const boundaryPoints = Array.from(new Set(intervals.flatMap(interval => [interval.start, interval.end])))
       .sort((a, b) => a - b);
 
-    const uniqueSlots = Array.from(new Map(
+    const inferredSlots = Array.from(new Map(
       boundaryPoints
         .slice(0, -1)
         .map((start, index) => ({ start, end: boundaryPoints[index + 1] }))
@@ -19366,7 +19378,9 @@ function TimetableBuilder() {
         }),
     ).values()).sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
 
-    return uniqueSlots.length > 0 ? uniqueSlots : DEFAULT_TIMETABLE_TIME_SLOTS;
+    return inferredSlots.length > 0
+      ? mergeTimetableSlots(DEFAULT_TIMETABLE_TIME_SLOTS, inferredSlots)
+      : DEFAULT_TIMETABLE_TIME_SLOTS;
   }, [activeTimingProfileSlots, contextSchedules, distinctContextCount, hasContextFilter, mergedRoomTimingProfileSlots, requiresContextFilterForVacancy]);
 
   const fetchData = async () => {
@@ -19555,18 +19569,6 @@ function TimetableBuilder() {
             />
           </div>
           <div className="flex items-center gap-3 bg-slate-50 px-4 py-2 rounded-xl border border-slate-200">
-            <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Active Room:</span>
-            <select 
-              value={selectedRoom}
-              onChange={(e) => setSelectedRoom(e.target.value)}
-              className="bg-transparent text-sm font-bold text-slate-700 focus:outline-none cursor-pointer"
-            >
-              {timetableRoomOptions.map(r => (
-                <option key={r.id} value={r.id}>Room {getRoomDisplayLabel(r, rooms)}</option>
-              ))}
-            </select>
-          </div>
-          <div className="flex items-center gap-3 bg-slate-50 px-4 py-2 rounded-xl border border-slate-200">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Schedule Status:</span>
             <select
               value={roomScheduleStatusFilter}
@@ -19576,6 +19578,18 @@ function TimetableBuilder() {
               <option value="All">All ({allRoomCount})</option>
               <option value="Scheduled">Scheduled ({scheduledRoomCount})</option>
               <option value="Unscheduled">Unscheduled ({unscheduledRoomCount})</option>
+            </select>
+          </div>
+          <div className="flex items-center gap-3 bg-slate-50 px-4 py-2 rounded-xl border border-slate-200">
+            <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Active Room:</span>
+            <select 
+              value={selectedRoom}
+              onChange={(e) => setSelectedRoom(e.target.value)}
+              className="bg-transparent text-sm font-bold text-slate-700 focus:outline-none cursor-pointer"
+            >
+              {timetableRoomOptions.map(r => (
+                <option key={r.id} value={r.id}>Room {getRoomDisplayLabel(r, rooms)}</option>
+              ))}
             </select>
           </div>
         </div>
