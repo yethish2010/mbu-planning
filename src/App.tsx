@@ -3310,34 +3310,57 @@ const buildScheduleTimingContext = (schedule: any) => ({
   section: schedule?.section?.toString().trim() || '',
 });
 
+const buildBatchAllocationTimingContext = (allocation: any) => ({
+  school_id: allocation?.school_id || '',
+  department_id: allocation?.department_id || '',
+  program: normalizeProgramValue(allocation?.program) || '',
+  academic_year: allocation?.academic_year || '',
+  year_of_study: normalizeYearOfStudyValue(allocation?.year_of_study, ''),
+  semester: normalizeExactSemesterValue(allocation?.semester, allocation?.year_of_study, ''),
+  specialization: allocation?.specialization?.toString().trim() || '',
+  section: allocation?.section?.toString().trim() || '',
+});
+
+const buildDepartmentAllocationTimingContext = (allocation: any) => ({
+  school_id: allocation?.school_id || '',
+  department_id: allocation?.department_id || '',
+  program: '',
+  academic_year: '',
+  year_of_study: '',
+  semester: normalizeExactSemesterValue(allocation?.semester, '', ''),
+  specialization: '',
+  section: '',
+});
+
+const getTimingContextKey = (context: any) => [
+  context?.school_id?.toString() || '',
+  context?.department_id?.toString() || '',
+  context?.program || '',
+  context?.academic_year || '',
+  context?.year_of_study || '',
+  context?.semester || '',
+  context?.specialization || '',
+  context?.section || '',
+].join('|');
+
 const getMergedTimingProfileSlotsForSchedules = ({
-  schedules,
+  contexts,
   timingProfiles,
   academicCalendars,
   activeDate,
 }: {
-  schedules: any[];
+  contexts: any[];
   timingProfiles: any[];
   academicCalendars: any[];
   activeDate: string;
 }) => {
-  if (!Array.isArray(schedules) || schedules.length === 0) return [];
+  if (!Array.isArray(contexts) || contexts.length === 0) return [];
 
   const slotMap = new Map<string, { start_time: string; end_time: string }>();
   const uniqueContexts = new Map<string, any>();
 
-  schedules.forEach((schedule: any) => {
-    const context = buildScheduleTimingContext(schedule);
-    const contextKey = [
-      context.school_id?.toString() || '',
-      context.department_id?.toString() || '',
-      context.program || '',
-      context.academic_year || '',
-      context.year_of_study || '',
-      context.semester || '',
-      context.specialization || '',
-      context.section || '',
-    ].join('|');
+  contexts.forEach((context: any) => {
+    const contextKey = getTimingContextKey(context);
     if (contextKey.replace(/\|/g, '') !== '') {
       uniqueContexts.set(contextKey, context);
     }
@@ -19203,76 +19226,117 @@ function TimetableBuilder() {
     return doesScheduleLinkToRoom(rooms, schedule, selectedRoom);
   }), [activeRoom, rooms, selectedRoom, visibleSchedules]);
 
+  const roomScheduleContexts = useMemo(
+    () => roomScopedSchedules.map((schedule: any) => buildScheduleTimingContext(schedule)),
+    [roomScopedSchedules],
+  );
+
+  const roomTimingContexts = useMemo(() => {
+    const roomId = activeRoom?.id ?? selectedRoom;
+    if (!roomId) return [] as any[];
+
+    const normalizedReferenceDate = normalizeComparableDateValue(referenceDate);
+    const contextMap = new Map<string, any>();
+    const addContext = (context: any) => {
+      const key = getTimingContextKey(context);
+      if (!key.replace(/\|/g, '')) return;
+      contextMap.set(key, context);
+    };
+
+    roomScopedSchedules.forEach((schedule: any) => addContext(buildScheduleTimingContext(schedule)));
+
+    batchRoomAllocations
+      .filter((allocation: any) => idsMatch(allocation?.room_id, roomId))
+      .filter((allocation: any) => {
+        const start = normalizeComparableDateValue(allocation?.start_date);
+        const end = normalizeComparableDateValue(allocation?.end_date);
+        if (!normalizedReferenceDate || !start || !end) return true;
+        return start <= normalizedReferenceDate && end >= normalizedReferenceDate;
+      })
+      .forEach((allocation: any) => addContext(buildBatchAllocationTimingContext(allocation)));
+
+    departmentAllocations
+      .filter((allocation: any) => idsMatch(allocation?.room_id, roomId))
+      .forEach((allocation: any) => addContext(buildDepartmentAllocationTimingContext(allocation)));
+
+    return Array.from(contextMap.values());
+  }, [activeRoom, batchRoomAllocations, departmentAllocations, referenceDate, roomScopedSchedules, selectedRoom]);
+
+  const roomContextRecords = useMemo(
+    () => roomTimingContexts.length > 0 ? roomTimingContexts : roomScheduleContexts,
+    [roomScheduleContexts, roomTimingContexts],
+  );
+
   const roomDepartmentOptions = useMemo(() => Array.from(new Map(
-    roomScopedSchedules
-      .filter(schedule => schedule.department_id != null)
-      .map(schedule => [
-        schedule.department_id?.toString(),
+    roomContextRecords
+      .filter(context => context.department_id != null)
+      .map(context => [
+        context.department_id?.toString(),
         {
-          value: schedule.department_id?.toString(),
-          label: departments.find(department => idsMatch(department.id, schedule.department_id))?.name || schedule.department || `Department ${schedule.department_id}`,
+          value: context.department_id?.toString(),
+          label: departments.find(department => idsMatch(department.id, context.department_id))?.name || `Department ${context.department_id}`,
         },
       ]),
-  ).values()).sort((a, b) => a.label.localeCompare(b.label)), [departments, roomScopedSchedules]);
+  ).values()).sort((a, b) => a.label.localeCompare(b.label)), [departments, roomContextRecords]);
 
   const roomProgramOptions = useMemo(() => Array.from(new Set(
-    roomScopedSchedules
-      .filter(schedule =>
-        (!timetableContext.department_id || idsMatch(schedule.department_id, timetableContext.department_id))
+    roomContextRecords
+      .filter(context =>
+        (!timetableContext.department_id || idsMatch(context.department_id, timetableContext.department_id))
       )
-      .map(schedule => normalizeProgramValue(schedule?.program))
+      .map(context => normalizeProgramValue(context?.program))
       .filter((program): program is string => Boolean(program)),
-  )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })), [roomScopedSchedules, timetableContext.department_id]);
+  )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })), [roomContextRecords, timetableContext.department_id]);
 
   const roomSemesterOptions = useMemo(() => Array.from(new Set(
-    roomScopedSchedules
-      .filter(schedule =>
-        (!timetableContext.department_id || idsMatch(schedule.department_id, timetableContext.department_id)) &&
-        (!timetableContext.program || normalizeProgramValue(schedule?.program) === normalizeProgramValue(timetableContext.program))
+    roomContextRecords
+      .filter(context =>
+        (!timetableContext.department_id || idsMatch(context.department_id, timetableContext.department_id)) &&
+        (!timetableContext.program || normalizeProgramValue(context?.program) === normalizeProgramValue(timetableContext.program))
       )
-      .map(schedule => normalizeExactSemesterValue(schedule.semester, schedule.year_of_study, ''))
+      .map(context => normalizeExactSemesterValue(context.semester, context.year_of_study, ''))
       .filter(Boolean),
   )).sort((a, b) => {
     const left = parseSemesterNumber(a) || 0;
     const right = parseSemesterNumber(b) || 0;
     return left - right || a.localeCompare(b);
-  }), [roomScopedSchedules, timetableContext.department_id, timetableContext.program]);
+  }), [roomContextRecords, timetableContext.department_id, timetableContext.program]);
 
   const roomYearOptions = useMemo(() => Array.from(new Set(
-    roomScopedSchedules
-      .filter(schedule =>
-        (!timetableContext.department_id || idsMatch(schedule.department_id, timetableContext.department_id)) &&
-        (!timetableContext.program || normalizeProgramValue(schedule?.program) === normalizeProgramValue(timetableContext.program)) &&
-        (!timetableContext.semester || normalizeExactSemesterValue(schedule.semester, schedule.year_of_study, '') === timetableContext.semester),
+    roomContextRecords
+      .filter(context =>
+        (!timetableContext.department_id || idsMatch(context.department_id, timetableContext.department_id)) &&
+        (!timetableContext.program || normalizeProgramValue(context?.program) === normalizeProgramValue(timetableContext.program)) &&
+        (!timetableContext.semester || normalizeExactSemesterValue(context.semester, context.year_of_study, '') === timetableContext.semester),
       )
-      .map(schedule => getYearDisplayLabel(schedule?.year_of_study, schedule?.semester))
+      .map(context => getYearDisplayLabel(context?.year_of_study, context?.semester))
       .filter(year => year && year !== '-'),
-  )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })), [roomScopedSchedules, timetableContext.department_id, timetableContext.program, timetableContext.semester]);
+  )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })), [roomContextRecords, timetableContext.department_id, timetableContext.program, timetableContext.semester]);
 
   const roomSpecializationOptions = useMemo(() => Array.from(new Set(
-    roomScopedSchedules
-      .filter(schedule =>
-        (!timetableContext.department_id || idsMatch(schedule.department_id, timetableContext.department_id)) &&
-        (!timetableContext.program || normalizeProgramValue(schedule?.program) === normalizeProgramValue(timetableContext.program)) &&
-        (!timetableContext.year || getYearDisplayLabel(schedule?.year_of_study, schedule?.semester) === timetableContext.year) &&
-        (!timetableContext.semester || normalizeExactSemesterValue(schedule.semester, schedule.year_of_study, '') === timetableContext.semester),
+    roomContextRecords
+      .filter(context =>
+        (!timetableContext.department_id || idsMatch(context.department_id, timetableContext.department_id)) &&
+        (!timetableContext.program || normalizeProgramValue(context?.program) === normalizeProgramValue(timetableContext.program)) &&
+        (!timetableContext.year || getYearDisplayLabel(context?.year_of_study, context?.semester) === timetableContext.year) &&
+        (!timetableContext.semester || normalizeExactSemesterValue(context.semester, context.year_of_study, '') === timetableContext.semester),
       )
-      .map(schedule => schedule.specialization?.toString().trim())
+      .map(context => context.specialization?.toString().trim())
       .filter((specialization): specialization is string => Boolean(specialization)),
-  )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })), [roomScopedSchedules, timetableContext.department_id, timetableContext.program, timetableContext.year, timetableContext.semester]);
+  )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })), [roomContextRecords, timetableContext.department_id, timetableContext.program, timetableContext.year, timetableContext.semester]);
 
   const roomSectionOptions = useMemo(() => Array.from(new Set(
-    roomScopedSchedules
-      .filter(schedule =>
-        (!timetableContext.department_id || idsMatch(schedule.department_id, timetableContext.department_id)) &&
-        (!timetableContext.program || normalizeProgramValue(schedule?.program) === normalizeProgramValue(timetableContext.program)) &&
-        (!timetableContext.year || getYearDisplayLabel(schedule?.year_of_study, schedule?.semester) === timetableContext.year) &&
-        (!timetableContext.semester || normalizeExactSemesterValue(schedule.semester, schedule.year_of_study, '') === timetableContext.semester) &&
-        (!timetableContext.specialization || normalizeLookupValue(schedule?.specialization) === normalizeLookupValue(timetableContext.specialization)),
+    roomContextRecords
+      .filter(context =>
+        (!timetableContext.department_id || idsMatch(context.department_id, timetableContext.department_id)) &&
+        (!timetableContext.program || normalizeProgramValue(context?.program) === normalizeProgramValue(timetableContext.program)) &&
+        (!timetableContext.year || getYearDisplayLabel(context?.year_of_study, context?.semester) === timetableContext.year) &&
+        (!timetableContext.semester || normalizeExactSemesterValue(context.semester, context.year_of_study, '') === timetableContext.semester) &&
+        (!timetableContext.specialization || normalizeLookupValue(context?.specialization) === normalizeLookupValue(timetableContext.specialization)),
       )
-      .map(schedule => schedule.section?.toString().trim())
+      .map(context => context.section?.toString().trim())
       .filter((section): section is string => Boolean(section)),
-  )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })), [roomScopedSchedules, timetableContext.department_id, timetableContext.program, timetableContext.year, timetableContext.semester, timetableContext.specialization]);
+  )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })), [roomContextRecords, timetableContext.department_id, timetableContext.program, timetableContext.year, timetableContext.semester, timetableContext.specialization]);
 
   useEffect(() => {
     setTimetableContext(current => ({
@@ -19288,15 +19352,15 @@ function TimetableBuilder() {
   const hasContextFilter = Boolean(timetableContext.department_id || timetableContext.program || timetableContext.year || timetableContext.semester || timetableContext.specialization || timetableContext.section);
 
   const distinctContextCount = useMemo(() => new Set(
-    roomScopedSchedules.map(schedule => [
-      schedule.department_id?.toString() || '',
-      normalizeProgramValue(schedule?.program),
-      getYearDisplayLabel(schedule?.year_of_study, schedule?.semester),
-      normalizeExactSemesterValue(schedule.semester, schedule.year_of_study, ''),
-      schedule.specialization?.toString().trim() || '',
-      schedule.section?.toString().trim() || '',
+    roomContextRecords.map(context => [
+      context.department_id?.toString() || '',
+      normalizeProgramValue(context?.program),
+      getYearDisplayLabel(context?.year_of_study, context?.semester),
+      normalizeExactSemesterValue(context.semester, context.year_of_study, ''),
+      context.specialization?.toString().trim() || '',
+      context.section?.toString().trim() || '',
     ].join('|')),
-  ).size, [roomScopedSchedules]);
+  ).size, [roomContextRecords]);
 
   const requiresContextFilterForVacancy = distinctContextCount > 1 && !hasContextFilter;
 
@@ -19311,13 +19375,18 @@ function TimetableBuilder() {
   }), [roomScopedSchedules, timetableContext.department_id, timetableContext.program, timetableContext.year, timetableContext.section, timetableContext.semester, timetableContext.specialization]);
 
   const resolvedTimingContext = useMemo(() => {
-    const candidateSchedules = contextSchedules.length > 0 ? contextSchedules : roomScopedSchedules;
-    const uniqueDepartmentIds = Array.from(new Set(candidateSchedules.map(schedule => schedule.department_id?.toString()).filter(Boolean)));
-    const uniquePrograms = Array.from(new Set(candidateSchedules.map(schedule => normalizeProgramValue(schedule?.program)).filter(Boolean)));
-    const uniqueYears = Array.from(new Set(candidateSchedules.map(schedule => normalizeYearOfStudyValue(schedule?.year_of_study, '')).filter(Boolean)));
-    const uniqueSemesters = Array.from(new Set(candidateSchedules.map(schedule => normalizeExactSemesterValue(schedule?.semester, schedule?.year_of_study, '')).filter(Boolean)));
-    const uniqueSpecializations = Array.from(new Set(candidateSchedules.map(schedule => schedule.specialization?.toString().trim()).filter(Boolean)));
-    const uniqueSections = Array.from(new Set(candidateSchedules.map(schedule => schedule.section?.toString().trim()).filter(Boolean)));
+    const candidateContexts = (() => {
+      const scheduleContexts = contextSchedules.map((schedule: any) => buildScheduleTimingContext(schedule));
+      if (scheduleContexts.length > 0) return scheduleContexts;
+      if (roomTimingContexts.length > 0) return roomTimingContexts;
+      return roomScopedSchedules.map((schedule: any) => buildScheduleTimingContext(schedule));
+    })();
+    const uniqueDepartmentIds = Array.from(new Set(candidateContexts.map(context => context.department_id?.toString()).filter(Boolean)));
+    const uniquePrograms = Array.from(new Set(candidateContexts.map(context => normalizeProgramValue(context?.program)).filter(Boolean)));
+    const uniqueYears = Array.from(new Set(candidateContexts.map(context => normalizeYearOfStudyValue(context?.year_of_study, '')).filter(Boolean)));
+    const uniqueSemesters = Array.from(new Set(candidateContexts.map(context => normalizeExactSemesterValue(context?.semester, context?.year_of_study, '')).filter(Boolean)));
+    const uniqueSpecializations = Array.from(new Set(candidateContexts.map(context => context.specialization?.toString().trim()).filter(Boolean)));
+    const uniqueSections = Array.from(new Set(candidateContexts.map(context => context.section?.toString().trim()).filter(Boolean)));
     const matchingCalendar = academicCalendars.find(calendar =>
       normalizeComparableDateValue(calendar?.start_date) <= normalizeComparableDateValue(referenceDate) &&
       normalizeComparableDateValue(calendar?.end_date) >= normalizeComparableDateValue(referenceDate) &&
@@ -19338,7 +19407,7 @@ function TimetableBuilder() {
       specialization: timetableContext.specialization || (uniqueSpecializations.length === 1 ? uniqueSpecializations[0] : ''),
       section: timetableContext.section || (uniqueSections.length === 1 ? uniqueSections[0] : ''),
     };
-  }, [academicCalendars, contextSchedules, referenceDate, roomScopedSchedules, timetableContext.department_id, timetableContext.program, timetableContext.section, timetableContext.semester, timetableContext.specialization, timetableContext.year]);
+  }, [academicCalendars, contextSchedules, referenceDate, roomScopedSchedules, roomTimingContexts, timetableContext.department_id, timetableContext.program, timetableContext.section, timetableContext.semester, timetableContext.specialization, timetableContext.year]);
 
   const activeTimingProfile = useMemo(() => resolveTimingProfileForContext({
     timingProfiles,
@@ -19353,11 +19422,11 @@ function TimetableBuilder() {
   );
 
   const mergedRoomTimingProfileSlots = useMemo(() => getMergedTimingProfileSlotsForSchedules({
-    schedules: roomScopedSchedules,
+    contexts: roomTimingContexts,
     timingProfiles,
     academicCalendars,
     activeDate: referenceDate,
-  }), [academicCalendars, referenceDate, roomScopedSchedules, timingProfiles]);
+  }), [academicCalendars, referenceDate, roomTimingContexts, timingProfiles]);
 
   const roomTimeSlots = useMemo(() => {
     const shouldUseExactActiveProfile =
