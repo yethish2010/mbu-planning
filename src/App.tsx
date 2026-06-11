@@ -19412,7 +19412,6 @@ function TimetableBuilder() {
 
   const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const timetableRoomOptions = visibleRooms
-    .filter(room => visibleScheduleRoomIds.has(room?.id?.toString?.() || '') || idsMatch(room.id, selectedRoom))
     .sort((a, b) => getRoomDisplayLabel(a, rooms).localeCompare(getRoomDisplayLabel(b, rooms), undefined, { numeric: true }));
 
   useEffect(() => {
