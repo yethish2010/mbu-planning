@@ -4820,9 +4820,8 @@ function DashboardHome() {
   const filteredTwinBuildings = useMemo(() => {
     return twinBuildings
       .filter((building: any) => selectedTwinBuilding === 'All' || building?.buildingId?.toString() === selectedTwinBuilding)
-      .map((building: any) => ({
-        ...building,
-        floors: (Array.isArray(building?.floors) ? building.floors : [])
+      .map((building: any) => {
+        const floors = (Array.isArray(building?.floors) ? building.floors : [])
           .map((floor: any) => ({
             ...floor,
             rooms: (Array.isArray(floor?.rooms) ? floor.rooms : []).filter((room: any) => {
@@ -4830,8 +4829,37 @@ function DashboardHome() {
               return selectedTwinStatus === 'All' || nextStatus === selectedTwinStatus;
             }),
           }))
-          .filter((floor: any) => floor.rooms.length > 0),
-      }))
+          .filter((floor: any) => floor.rooms.length > 0);
+
+        const normalizedFloorNameCounts = new Map<string, number>();
+        floors.forEach((floor: any) => {
+          const key = normalizeLookupValue(floor?.floorName);
+          normalizedFloorNameCounts.set(key, (normalizedFloorNameCounts.get(key) || 0) + 1);
+        });
+
+        const uniqueFloorCount = new Set(
+          floors
+            .map((floor: any) => normalizeLookupValue(floor?.floorName))
+            .filter(Boolean),
+        ).size;
+
+        return {
+          ...building,
+          uniqueFloorCount,
+          floorSectionCount: floors.length,
+          floors: floors.map((floor: any) => {
+            const blockName = floor?.rooms?.[0]?.blockName?.toString().trim() || '';
+            const shouldShowBlockName = (normalizedFloorNameCounts.get(normalizeLookupValue(floor?.floorName)) || 0) > 1;
+            return {
+              ...floor,
+              blockName,
+              displayName: shouldShowBlockName && blockName
+                ? `${blockName} • ${floor.floorName}`
+                : floor.floorName,
+            };
+          }),
+        };
+      })
       .filter((building: any) => building.floors.length > 0);
   }, [twinBuildings, selectedTwinBuilding, selectedTwinStatus]);
 
@@ -4840,7 +4868,9 @@ function DashboardHome() {
       building.floors.flatMap((floor: any) => floor.rooms.map((room: any) => ({
         ...room,
         buildingName: building.buildingName,
+        blockName: floor.blockName || room.blockName,
         floorName: floor.floorName,
+        floorDisplayName: floor.displayName || floor.floorName,
       }))),
     ),
     [filteredTwinBuildings],
@@ -5572,7 +5602,10 @@ function DashboardHome() {
                   <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 mb-4">
                     <div>
                       <h4 className="text-lg font-bold text-slate-900">{building.buildingName}</h4>
-                      <p className="text-sm text-slate-500">{building.floors.length} floor{building.floors.length === 1 ? '' : 's'} in view</p>
+                      <p className="text-sm text-slate-500">
+                        {building.uniqueFloorCount} unique floor level{building.uniqueFloorCount === 1 ? '' : 's'} in view
+                        {building.floorSectionCount > building.uniqueFloorCount ? ` across ${building.floorSectionCount} block sections` : ''}
+                      </p>
                     </div>
                     <button
                       type="button"
@@ -5587,7 +5620,7 @@ function DashboardHome() {
                       <div key={`${building.buildingId}-${floor.floorId}`} className="rounded-2xl border border-white bg-white p-4">
                         <div className="flex items-center justify-between gap-3 mb-3">
                           <div>
-                            <h5 className="text-sm font-bold text-slate-800">{floor.floorName}</h5>
+                            <h5 className="text-sm font-bold text-slate-800">{floor.displayName || floor.floorName}</h5>
                             <p className="text-[11px] text-slate-500">{floor.rooms.length} room{floor.rooms.length === 1 ? '' : 's'} matched</p>
                           </div>
                         </div>
@@ -5705,7 +5738,7 @@ function DashboardHome() {
                 <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
                   <p className="text-2xl font-black text-slate-900">{selectedTwinRoom.roomNumber}</p>
                   <p className="text-sm text-slate-500 mt-1">
-                    {[selectedTwinRoom.buildingName, selectedTwinRoom.floorName].filter(Boolean).join(' • ')}
+                    {[selectedTwinRoom.buildingName, selectedTwinRoom.blockName, selectedTwinRoom.floorDisplayName || selectedTwinRoom.floorName].filter(Boolean).join(' • ')}
                   </p>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
