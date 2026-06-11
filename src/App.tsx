@@ -1684,16 +1684,21 @@ const getScheduleAudienceLabel = (schedule: any, departments: any[] = []) => {
   return [departmentName, program].filter(Boolean).join(' • ') || 'Academic Group';
 };
 
+const normalizeCourseNameForCombined = (name: unknown) =>
+  normalizeLookupValue(name)
+    .replace(/\s+(lab|laboratory|practical|tutorial|lecture|seminar|clinic|workshop|session)\s*$/, '')
+    .trim();
+
 const isCombinedClassScheduleSet = (schedules: any[]) => {
   if (!Array.isArray(schedules) || schedules.length <= 1) return false;
   const [firstSchedule] = schedules;
-  const baseCourseName = normalizeLookupValue(firstSchedule?.course_name);
+  const baseCourseName = normalizeCourseNameForCombined(firstSchedule?.course_name);
   const baseFaculty = normalizeLookupValue(firstSchedule?.faculty);
   const baseCourseCode = normalizeLookupValue(firstSchedule?.course_code);
   if (!baseCourseName || !baseFaculty) return false;
 
   return schedules.every((schedule: any) => {
-    if (normalizeLookupValue(schedule?.course_name) !== baseCourseName) return false;
+    if (normalizeCourseNameForCombined(schedule?.course_name) !== baseCourseName) return false;
     if (normalizeLookupValue(schedule?.faculty) !== baseFaculty) return false;
     const scheduleCourseCode = normalizeLookupValue(schedule?.course_code);
     if (baseCourseCode && scheduleCourseCode && scheduleCourseCode !== baseCourseCode) return false;
