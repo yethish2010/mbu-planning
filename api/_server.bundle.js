@@ -899,6 +899,34 @@ var getAvailabilityRoomLookupVariants = (room) => {
   });
   return variants;
 };
+var buildRoomLookupVariantMaps = (rooms) => {
+  const roomLookupVariantsById = /* @__PURE__ */ new Map();
+  const roomIdsByLookupVariant = /* @__PURE__ */ new Map();
+  (Array.isArray(rooms) ? rooms : []).forEach((room) => {
+    const roomKey = room?.id?.toString?.() || "";
+    if (!roomKey) return;
+    const variants = new Set(getAvailabilityRoomLookupVariants(room));
+    roomLookupVariantsById.set(roomKey, variants);
+    variants.forEach((variant) => {
+      if (!roomIdsByLookupVariant.has(variant)) {
+        roomIdsByLookupVariant.set(variant, /* @__PURE__ */ new Set());
+      }
+      roomIdsByLookupVariant.get(variant)?.add(roomKey);
+    });
+  });
+  return { roomLookupVariantsById, roomIdsByLookupVariant };
+};
+var getResolvedScheduleRoomIds = (schedule, roomIdsByLookupVariant) => {
+  const resolvedRoomIds = /* @__PURE__ */ new Set();
+  const directRoomId = schedule?.room_id?.toString?.() || "";
+  if (directRoomId) {
+    resolvedRoomIds.add(directRoomId);
+  }
+  getRoomLookupVariants(schedule?.room_label).forEach((variant) => {
+    roomIdsByLookupVariant.get(variant)?.forEach((roomId) => resolvedRoomIds.add(roomId));
+  });
+  return resolvedRoomIds;
+};
 var normalizeRoomPayload = (payload) => {
   const nextPayload = { ...payload };
   nextPayload.room_type = normalizeRoomTypeValue(nextPayload.room_type);
@@ -3721,16 +3749,18 @@ var createCrudRoutes = (tableName, idField = "id") => {
           const scheduleFloorId = req.query.floor_id?.toString() || "";
           if (scheduleDepartmentId || scheduleSchoolId || scheduleProgram || scheduleYear || scheduleSpecialization || scheduleRoomId || scheduleDay || scheduleCampusId || scheduleBuildingId || scheduleBlockId || scheduleFloorId) {
             const departments = await db.prepare("SELECT id, school_id FROM departments").all();
-            const rooms = await db.prepare("SELECT id, floor_id FROM rooms").all();
+            const rooms = await db.prepare("SELECT id, floor_id, room_id, room_number, room_name, lab_name, room_section_name, room_aliases FROM rooms").all();
             const floors = await db.prepare("SELECT id, block_id FROM floors").all();
             const blocks = await db.prepare("SELECT id, building_id FROM blocks").all();
             const buildings = await db.prepare("SELECT id, campus_id FROM buildings").all();
             const departmentById = new Map(departments.map((department) => [department.id?.toString(), department]));
+            const { roomIdsByLookupVariant } = buildRoomLookupVariantMaps(rooms);
             const roomById = new Map(rooms.map((room) => [room.id?.toString(), room]));
             const floorById = new Map(floors.map((floor) => [floor.id?.toString(), floor]));
             const blockById = new Map(blocks.map((block) => [block.id?.toString(), block]));
             const buildingById = new Map(buildings.map((building) => [building.id?.toString(), building]));
             scheduleItems = scheduleItems.filter((schedule) => {
+              const resolvedRoomIds = scheduleRoomId ? getResolvedScheduleRoomIds(schedule, roomIdsByLookupVariant) : null;
               if (scheduleDepartmentId && !idsEqual(schedule?.department_id, scheduleDepartmentId)) return false;
               if (scheduleSchoolId) {
                 const department = departmentById.get(schedule?.department_id?.toString());
@@ -3742,7 +3772,7 @@ var createCrudRoutes = (tableName, idField = "id") => {
                 if (yearLabel !== scheduleYear) return false;
               }
               if (scheduleSpecialization && normalizeImportMatchValue(schedule?.specialization) !== normalizeImportMatchValue(scheduleSpecialization)) return false;
-              if (scheduleRoomId && !idsEqual(schedule?.room_id, scheduleRoomId)) return false;
+              if (scheduleRoomId && !resolvedRoomIds?.has(scheduleRoomId)) return false;
               if (scheduleDay && normalizeImportMatchValue(schedule?.day_of_week) !== normalizeImportMatchValue(scheduleDay)) return false;
               if (scheduleCampusId || scheduleBuildingId || scheduleBlockId || scheduleFloorId) {
                 const room = roomById.get(schedule?.room_id?.toString());
@@ -4609,16 +4639,22 @@ app.get(`/api/rooms/:roomId/schedule`, authenticate, async (req, res) => {
 app.get("/api/schedules/room-index", authenticate, async (req, res) => {
   try {
     const scopedRoomIds = await getScopedMappedRoomIdsForUser(req.user);
-    const rows = await db.prepare(`
-      SELECT room_id, COUNT(*) as schedule_count
-      FROM schedules
-      WHERE room_id IS NOT NULL
-      GROUP BY room_id
-    `).all();
-    const filteredRows = Array.isArray(rows) ? rows.filter((row) => !scopedRoomIds || scopedRoomIds.has(row?.room_id?.toString?.() || "")) : [];
-    res.json(filteredRows.map((row) => ({
-      room_id: row.room_id,
-      schedule_count: Number(row.schedule_count || 0)
+    const [rooms, schedulesRaw] = await Promise.all([
+      db.prepare("SELECT id, room_id, room_number, room_name, lab_name, room_section_name, room_aliases FROM rooms").all(),
+      db.prepare("SELECT * FROM schedules").all()
+    ]);
+    const schedules = deduplicateSchedules(await backfillMissingScheduleCodes(schedulesRaw)).kept;
+    const { roomIdsByLookupVariant } = buildRoomLookupVariantMaps(rooms);
+    const scheduleCountByRoomId = /* @__PURE__ */ new Map();
+    (Array.isArray(schedules) ? schedules : []).forEach((schedule) => {
+      getResolvedScheduleRoomIds(schedule, roomIdsByLookupVariant).forEach((roomId) => {
+        if (scopedRoomIds && !scopedRoomIds.has(roomId)) return;
+        scheduleCountByRoomId.set(roomId, (scheduleCountByRoomId.get(roomId) || 0) + 1);
+      });
+    });
+    res.json(Array.from(scheduleCountByRoomId.entries()).map(([roomId, scheduleCount]) => ({
+      room_id: roomId,
+      schedule_count: scheduleCount
     })));
   } catch (err) {
     res.status(500).json({ error: err.message });
