@@ -5207,6 +5207,36 @@ function DashboardHome() {
     { label: 'Buildings Live', value: stats?.totalBuildings || 0, detail: 'Buildings represented in the live twin' },
   ]), [stats]);
   const recentAlerts = useMemo(() => Array.isArray(stats?.recentAlerts) ? stats.recentAlerts : [], [stats]);
+  const executiveStatusChartData = useMemo(
+    () => DIGITAL_TWIN_STATUS_ORDER.map((status) => ({
+      name: status,
+      value: twinStatusCounts[status],
+      fill: status === 'Available'
+        ? '#10b981'
+        : status === 'Occupied'
+          ? '#f43f5e'
+          : status === 'Maintenance'
+            ? '#f59e0b'
+            : status === 'Event Booked'
+              ? '#0ea5e9'
+              : '#64748b',
+    })),
+    [twinStatusCounts],
+  );
+  const executiveRoomMixChartData = useMemo(
+    () => [
+      { name: 'Classrooms', value: dashboardRoomMix.classrooms, fill: '#0f766e' },
+      { name: 'Labs', value: dashboardRoomMix.labs, fill: '#2563eb' },
+    ].filter((item) => item.value > 0),
+    [dashboardRoomMix],
+  );
+  const executiveTopRoomChartData = useMemo(
+    () => topBusyRooms.map((room: any) => ({
+      name: room.room_number,
+      utilization: Number(room.utilization) || 0,
+    })),
+    [topBusyRooms],
+  );
   const executiveStatusSummaryRows = useMemo(() => ([
     { label: 'Available', count: twinStatusCounts['Available'], detail: formatStatusBreakdownLine(twinStatusBreakdowns['Available'], 'Ready to book now') },
     { label: 'Occupied', count: twinStatusCounts['Occupied'], detail: formatStatusBreakdownLine(twinStatusBreakdowns['Occupied'], 'Live classes or active sessions') },
@@ -5243,6 +5273,135 @@ function DashboardHome() {
               {mode}
             </button>
           ))}
+        </div>
+      </div>
+    </div>
+  ) : null;
+  const executiveVisualCharts = isExecutiveDashboard ? (
+    <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+      <div className="xl:col-span-3 rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.24em] font-bold text-slate-500">Status Distribution</p>
+            <h3 className="text-lg font-bold text-slate-900 mt-2">Live occupancy split</h3>
+            <p className="text-sm text-slate-500 mt-1">A compact chart showing how rooms are distributed right now.</p>
+          </div>
+          <PieChartIcon size={18} className="text-slate-400" />
+        </div>
+        <div className="h-64 mt-4">
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie data={executiveStatusChartData} dataKey="value" nameKey="name" innerRadius={54} outerRadius={82} paddingAngle={3}>
+                {executiveStatusChartData.map((entry) => (
+                  <Cell key={entry.name} fill={entry.fill} />
+                ))}
+              </Pie>
+              <Tooltip formatter={(value: any) => [`${value}`, 'Rooms']} />
+              <Legend verticalAlign="bottom" height={24} iconType="circle" />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div className="xl:col-span-5 rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.24em] font-bold text-slate-500">School Comparison</p>
+            <h3 className="text-lg font-bold text-slate-900 mt-2">Utilization by school</h3>
+            <p className="text-sm text-slate-500 mt-1">A Power BI-style comparison of current school-level utilization.</p>
+          </div>
+          <BarChart3 size={18} className="text-slate-400" />
+        </div>
+        <div className="h-64 mt-4">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={schoolUsageItems} margin={{ top: 8, right: 12, left: 0, bottom: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+              <XAxis dataKey="name" tick={{ fontSize: 11 }} interval={0} angle={-12} textAnchor="end" height={56} />
+              <YAxis tick={{ fontSize: 11 }} domain={[0, 100]} />
+              <Tooltip formatter={(value: any) => [`${value}%`, 'Utilization']} />
+              <Bar dataKey="value" radius={[10, 10, 0, 0]}>
+                {schoolUsageItems.map((entry) => (
+                  <Cell key={entry.name} fill={entry.color === 'bg-emerald-500' ? '#10b981' : entry.color === 'bg-blue-500' ? '#3b82f6' : entry.color === 'bg-amber-500' ? '#f59e0b' : entry.color === 'bg-rose-500' ? '#f43f5e' : '#6366f1'} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div className="xl:col-span-4 rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.24em] font-bold text-slate-500">Top Busy Rooms</p>
+            <h3 className="text-lg font-bold text-slate-900 mt-2">Highest utilization rooms</h3>
+            <p className="text-sm text-slate-500 mt-1">A ranked chart to highlight pressure points before drilling deeper.</p>
+          </div>
+          <TrendingUp size={18} className="text-slate-400" />
+        </div>
+        <div className="h-64 mt-4">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={executiveTopRoomChartData} layout="vertical" margin={{ top: 4, right: 16, left: 12, bottom: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" horizontal={false} />
+              <XAxis type="number" tick={{ fontSize: 11 }} domain={[0, 100]} />
+              <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} width={44} />
+              <Tooltip formatter={(value: any) => [`${value}%`, 'Utilization']} />
+              <Bar dataKey="utilization" fill="#111827" radius={[0, 10, 10, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div className="xl:col-span-7 rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.24em] font-bold text-slate-500">Utilization Curve</p>
+            <h3 className="text-lg font-bold text-slate-900 mt-2">Room intensity profile</h3>
+            <p className="text-sm text-slate-500 mt-1">A visual curve of the top-listed utilization values for quick pattern reading.</p>
+          </div>
+          <Activity size={18} className="text-slate-400" />
+        </div>
+        <div className="h-72 mt-4">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={utilizationTrend} margin={{ top: 8, right: 12, left: 0, bottom: 4 }}>
+              <defs>
+                <linearGradient id="executiveUtilizationArea" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#0f766e" stopOpacity={0.45} />
+                  <stop offset="100%" stopColor="#0f766e" stopOpacity={0.05} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+              <XAxis dataKey="name" tick={{ fontSize: 11 }} interval={0} angle={-12} textAnchor="end" height={52} />
+              <YAxis tick={{ fontSize: 11 }} domain={[0, 100]} />
+              <Tooltip formatter={(value: any) => [`${value}%`, 'Utilization']} />
+              <Area type="monotone" dataKey="utilization" stroke="#0f766e" strokeWidth={3} fill="url(#executiveUtilizationArea)" />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div className="xl:col-span-5 rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.24em] font-bold text-slate-500">Infrastructure Mix</p>
+            <h3 className="text-lg font-bold text-slate-900 mt-2">Classrooms vs labs</h3>
+            <p className="text-sm text-slate-500 mt-1">A simple composition chart to show the current academic estate mix.</p>
+          </div>
+          <LayoutGrid size={18} className="text-slate-400" />
+        </div>
+        <div className="h-72 mt-4">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={executiveRoomMixChartData} margin={{ top: 8, right: 12, left: 0, bottom: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+              <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+              <Tooltip formatter={(value: any) => [`${value}`, 'Rooms']} />
+              <Bar dataKey="value" radius={[12, 12, 0, 0]}>
+                {executiveRoomMixChartData.map((entry) => (
+                  <Cell key={entry.name} fill={entry.fill} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
         </div>
       </div>
     </div>
@@ -5773,6 +5932,7 @@ function DashboardHome() {
     <div className="space-y-8">
       {executiveModeToggle}
       {isExecutiveDashboard && selectedDashboardViewMode === 'Hybrid' && renderExecutiveTextSections({ compact: true })}
+      {executiveVisualCharts}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
         {statCards.map((stat) => (
           <button
