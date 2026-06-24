@@ -199,9 +199,33 @@ var allowedOrigins = new Set(
 );
 var moduleLoadTelemetry = [];
 var MAX_MODULE_LOAD_TELEMETRY = 250;
-var ADMIN_ROLE_VALUES = /* @__PURE__ */ new Set(["Administrator", "Admin", "Master Admin"]);
-var EXECUTIVE_VIEW_ROLE_VALUES = /* @__PURE__ */ new Set(["Vice Chancellor", "Pro-Chancellor"]);
-var GLOBAL_SCOPE_ROLE_VALUES = /* @__PURE__ */ new Set([
+var normalizeRoleKey = (value) => value?.toString().trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ") || "";
+var ROLE_CANONICAL_LABELS = /* @__PURE__ */ new Map([
+  ["administrator", "Administrator"],
+  ["admin", "Admin"],
+  ["master admin", "Master Admin"],
+  ["vice chancellor", "Vice Chancellor"],
+  ["pro chancellor", "Pro-Chancellor"],
+  ["dean", "Dean"],
+  ["dean (p&m)", "Dean (P&M)"],
+  ["dean (p & m)", "Dean (P&M)"],
+  ["deputy dean (p&m)", "Deputy Dean (P&M)"],
+  ["deputy dean (p & m)", "Deputy Dean (P&M)"],
+  ["hod", "HOD"],
+  ["event coordinator", "Event Coordinator"],
+  ["faculty", "Faculty"],
+  ["maintenance staff", "Maintenance Staff"],
+  ["infrastructure manager", "Infrastructure Manager"]
+]);
+var normalizeRoleLabel = (value) => {
+  const trimmed = value?.toString().trim() || "";
+  if (!trimmed) return "";
+  return ROLE_CANONICAL_LABELS.get(normalizeRoleKey(trimmed)) || trimmed;
+};
+var buildRoleSet = (roles) => new Set(roles.map((role) => normalizeRoleLabel(role)));
+var ADMIN_ROLE_VALUES = buildRoleSet(["Administrator", "Admin", "Master Admin"]);
+var EXECUTIVE_VIEW_ROLE_VALUES = buildRoleSet(["Vice Chancellor", "Pro-Chancellor"]);
+var GLOBAL_SCOPE_ROLE_VALUES = buildRoleSet([
   "Administrator",
   "Admin",
   "Master Admin",
@@ -210,10 +234,10 @@ var GLOBAL_SCOPE_ROLE_VALUES = /* @__PURE__ */ new Set([
   "Dean (P&M)",
   "Deputy Dean (P&M)"
 ]);
-var SCHOOL_SCOPE_ROLE_VALUES = /* @__PURE__ */ new Set(["Dean"]);
-var DEPARTMENT_SCOPE_ROLE_VALUES = /* @__PURE__ */ new Set(["HOD", "Faculty", "Event Coordinator"]);
-var isAdminRole = (role) => ADMIN_ROLE_VALUES.has(role?.toString().trim() || "");
-var isExecutiveViewRole = (role) => EXECUTIVE_VIEW_ROLE_VALUES.has(role?.toString().trim() || "");
+var SCHOOL_SCOPE_ROLE_VALUES = buildRoleSet(["Dean"]);
+var DEPARTMENT_SCOPE_ROLE_VALUES = buildRoleSet(["HOD", "Faculty", "Event Coordinator"]);
+var isAdminRole = (role) => ADMIN_ROLE_VALUES.has(normalizeRoleLabel(role));
+var isExecutiveViewRole = (role) => EXECUTIVE_VIEW_ROLE_VALUES.has(normalizeRoleLabel(role));
 var normalizeUserAccessTypeValue = (value) => {
   const normalized = value?.toString().trim().toLowerCase() || "";
   if (!normalized) return "";
@@ -1814,7 +1838,7 @@ var getDepartmentScopeByName = async (departmentName) => {
   };
 };
 var getScopedDepartmentIdsForUser = async (user) => {
-  const role = user?.role?.toString?.().trim() || "";
+  const role = normalizeRoleLabel(user?.role);
   if (!role || isAdminRole(role) || isExecutiveViewRole(role) || ["Dean (P&M)", "Deputy Dean (P&M)", "Infrastructure Manager", "Maintenance Staff"].includes(role)) {
     return null;
   }
@@ -1854,7 +1878,7 @@ var normalizeUserPayload = async (payload, existingItem) => {
   const nextPayload = { ...existingItem || {}, ...payload || {} };
   nextPayload.full_name = nextPayload.full_name?.toString().trim() || "";
   nextPayload.employee_id = nextPayload.employee_id?.toString().trim() || "";
-  nextPayload.role = nextPayload.role?.toString().trim() || "";
+  nextPayload.role = normalizeRoleLabel(nextPayload.role);
   nextPayload.email = nextPayload.email?.toString().trim().toLowerCase() || "";
   nextPayload.school = nextPayload.school?.toString().trim() || "";
   nextPayload.department = nextPayload.department?.toString().trim() || "";
@@ -1867,7 +1891,7 @@ var normalizeUserPayload = async (payload, existingItem) => {
   if (!nextPayload.employee_id) throw new Error("Employee ID is required.");
   if (!nextPayload.role) throw new Error("Role is required.");
   if (!nextPayload.email) throw new Error("Email address is required.");
-  const role = nextPayload.role;
+  const role = normalizeRoleLabel(nextPayload.role);
   const normalizedRequestedAccessType = normalizeUserAccessTypeValue(nextPayload.access_type);
   const requestedAccessScope = nextPayload.access_scope?.toString().trim() || "";
   const schoolRecord = nextPayload.school ? await getSchoolRecordByName(nextPayload.school) : null;
@@ -2262,7 +2286,7 @@ var mergeExtractedSchedulesWithHeaderRooms = (schedules, sectionRoomMaps) => {
 var getUserSessionPayload = (user) => ({
   id: user.id,
   email: user.email,
-  role: user.role,
+  role: normalizeRoleLabel(user.role),
   name: user.full_name,
   school: user.school,
   department: user.department,
@@ -4058,6 +4082,9 @@ var createCrudRoutes = (tableName, idField = "id") => {
       }
     }
     try {
+      if (tableName === "users") {
+        req.body = await normalizeUserPayload(req.body);
+      }
       if (tableName === "academic_calendars") {
         req.body = await normalizeAcademicCalendarPayload(req.body);
       }
@@ -4214,6 +4241,9 @@ var createCrudRoutes = (tableName, idField = "id") => {
       const existingItem = await db.prepare(`SELECT * FROM ${tableName} WHERE ${idField} = ?`).get(req.params.id);
       if (!existingItem) {
         return res.status(404).json({ error: `${tableName} record not found.` });
+      }
+      if (tableName === "users") {
+        req.body = await normalizeUserPayload(req.body, existingItem);
       }
       if (tableName === "academic_calendars") {
         req.body = await normalizeAcademicCalendarPayload({ ...existingItem, ...req.body });

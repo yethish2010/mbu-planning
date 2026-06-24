@@ -214,6 +214,33 @@ const sanitizeExtractedSchedule = (schedule: any) => {
 const normalizeLookupValue = (value: unknown) =>
   value?.toString().trim().toLowerCase().replace(/\s+/g, ' ') || '';
 
+const normalizeRoleValue = (value: unknown) =>
+  normalizeLookupValue(value).replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+
+const ROLE_CANONICAL_LABELS = new Map<string, string>([
+  ['administrator', 'Administrator'],
+  ['admin', 'Admin'],
+  ['master admin', 'Master Admin'],
+  ['vice chancellor', 'Vice Chancellor'],
+  ['pro chancellor', 'Pro-Chancellor'],
+  ['dean', 'Dean'],
+  ['dean (p&m)', 'Dean (P&M)'],
+  ['dean (p & m)', 'Dean (P&M)'],
+  ['deputy dean (p&m)', 'Deputy Dean (P&M)'],
+  ['deputy dean (p & m)', 'Deputy Dean (P&M)'],
+  ['hod', 'HOD'],
+  ['event coordinator', 'Event Coordinator'],
+  ['faculty', 'Faculty'],
+  ['maintenance staff', 'Maintenance Staff'],
+  ['infrastructure manager', 'Infrastructure Manager'],
+]);
+
+const canonicalizeRoleLabel = (value: unknown) => {
+  const trimmed = value?.toString().trim() || '';
+  if (!trimmed) return '';
+  return ROLE_CANONICAL_LABELS.get(normalizeRoleValue(trimmed)) || trimmed;
+};
+
 const ADMIN_ROLE_OPTIONS = ['Administrator', 'Admin', 'Master Admin'];
 const EXECUTIVE_ROLE_OPTIONS = ['Vice Chancellor', 'Pro-Chancellor'];
 const SCHOOL_SCOPED_ROLE_OPTIONS = ['Dean'];
@@ -230,14 +257,14 @@ const USER_ROLE_OPTIONS = [
   'Maintenance Staff',
   'Infrastructure Manager',
 ];
-const ADMIN_ROLE_SET = new Set(ADMIN_ROLE_OPTIONS.map(normalizeLookupValue));
-const EXECUTIVE_ROLE_SET = new Set(EXECUTIVE_ROLE_OPTIONS.map(normalizeLookupValue));
-const SCHOOL_SCOPED_ROLE_SET = new Set(SCHOOL_SCOPED_ROLE_OPTIONS.map(normalizeLookupValue));
-const DEPARTMENT_SCOPED_ROLE_SET = new Set(DEPARTMENT_SCOPED_ROLE_OPTIONS.map(normalizeLookupValue));
-const isAdminRole = (role: unknown) => ADMIN_ROLE_SET.has(normalizeLookupValue(role));
-const isExecutiveRole = (role: unknown) => EXECUTIVE_ROLE_SET.has(normalizeLookupValue(role));
-const isSchoolScopedRole = (role: unknown) => SCHOOL_SCOPED_ROLE_SET.has(normalizeLookupValue(role));
-const isDepartmentScopedRole = (role: unknown) => DEPARTMENT_SCOPED_ROLE_SET.has(normalizeLookupValue(role));
+const ADMIN_ROLE_SET = new Set(ADMIN_ROLE_OPTIONS.map(normalizeRoleValue));
+const EXECUTIVE_ROLE_SET = new Set(EXECUTIVE_ROLE_OPTIONS.map(normalizeRoleValue));
+const SCHOOL_SCOPED_ROLE_SET = new Set(SCHOOL_SCOPED_ROLE_OPTIONS.map(normalizeRoleValue));
+const DEPARTMENT_SCOPED_ROLE_SET = new Set(DEPARTMENT_SCOPED_ROLE_OPTIONS.map(normalizeRoleValue));
+const isAdminRole = (role: unknown) => ADMIN_ROLE_SET.has(normalizeRoleValue(role));
+const isExecutiveRole = (role: unknown) => EXECUTIVE_ROLE_SET.has(normalizeRoleValue(role));
+const isSchoolScopedRole = (role: unknown) => SCHOOL_SCOPED_ROLE_SET.has(normalizeRoleValue(role));
+const isDepartmentScopedRole = (role: unknown) => DEPARTMENT_SCOPED_ROLE_SET.has(normalizeRoleValue(role));
 
 const getScopedMappedRoomIds = ({
   role,
@@ -254,7 +281,7 @@ const getScopedMappedRoomIds = ({
   schools: any[];
   departmentAllocations: any[];
 }) => {
-  const normalizedRole = normalizeLookupValue(role);
+  const normalizedRole = normalizeRoleValue(role);
   if (!normalizedRole || isAdminRole(role) || isExecutiveRole(role) || ['dean (p&m)', 'deputy dean (p&m)', 'infrastructure manager', 'maintenance staff'].includes(normalizedRole)) {
     return null;
   }
@@ -4561,7 +4588,10 @@ function ProtectedRoute({ children, roles }: { children: React.ReactNode, roles?
   if (!user) return <Navigate to="/login" />;
   const customAccessPaths = user?.access_paths?.split(',').map((path: string) => path.trim()).filter(Boolean) || [];
   const allowedByCustomRole = customAccessPaths.includes(location.pathname);
-  if (roles && !roles.includes(user.role) && !allowedByCustomRole) return <Navigate to="/" />;
+  const allowedByRole = roles
+    ? roles.some((role) => normalizeRoleValue(role) === normalizeRoleValue(user.role))
+    : true;
+  if (roles && !allowedByRole && !allowedByCustomRole) return <Navigate to="/" />;
   return <>{children}</>;
 }
 
@@ -6691,7 +6721,8 @@ function UserManagement() {
   const prepareFormData = (item: any) => ({ ...item, password: '' });
   const prepareSubmitData = (data: any, editingItem: any) => {
     const payload = { ...data };
-    const normalizedRole = normalizeLookupValue(payload.role);
+    payload.role = canonicalizeRoleLabel(payload.role);
+    const normalizedRole = normalizeRoleValue(payload.role);
     if (!payload.school && payload.department) {
       const matchedDepartment = departments.find((department: any) => normalizeLookupValue(department?.name) === normalizeLookupValue(payload.department));
       const matchedSchool = schools.find((school: any) => idsMatch(school?.id, matchedDepartment?.school_id));
@@ -6719,7 +6750,7 @@ function UserManagement() {
       const payload = {
         full_name: row['Full Name'],
         employee_id: row['Employee ID']?.toString(),
-        role: row['Role'],
+        role: canonicalizeRoleLabel(row['Role']),
         email: row['Email Address'],
         school: row['School'],
         department: row['Department'],

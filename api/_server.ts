@@ -68,9 +68,35 @@ type ModuleLoadTelemetryRecord = {
 const moduleLoadTelemetry: ModuleLoadTelemetryRecord[] = [];
 const MAX_MODULE_LOAD_TELEMETRY = 250;
 
-const ADMIN_ROLE_VALUES = new Set(["Administrator", "Admin", "Master Admin"]);
-const EXECUTIVE_VIEW_ROLE_VALUES = new Set(["Vice Chancellor", "Pro-Chancellor"]);
-const GLOBAL_SCOPE_ROLE_VALUES = new Set([
+const normalizeRoleKey = (value: any) =>
+  value?.toString().trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ") || "";
+const ROLE_CANONICAL_LABELS = new Map<string, string>([
+  ["administrator", "Administrator"],
+  ["admin", "Admin"],
+  ["master admin", "Master Admin"],
+  ["vice chancellor", "Vice Chancellor"],
+  ["pro chancellor", "Pro-Chancellor"],
+  ["dean", "Dean"],
+  ["dean (p&m)", "Dean (P&M)"],
+  ["dean (p & m)", "Dean (P&M)"],
+  ["deputy dean (p&m)", "Deputy Dean (P&M)"],
+  ["deputy dean (p & m)", "Deputy Dean (P&M)"],
+  ["hod", "HOD"],
+  ["event coordinator", "Event Coordinator"],
+  ["faculty", "Faculty"],
+  ["maintenance staff", "Maintenance Staff"],
+  ["infrastructure manager", "Infrastructure Manager"],
+]);
+const normalizeRoleLabel = (value: any) => {
+  const trimmed = value?.toString().trim() || "";
+  if (!trimmed) return "";
+  return ROLE_CANONICAL_LABELS.get(normalizeRoleKey(trimmed)) || trimmed;
+};
+const buildRoleSet = (roles: string[]) => new Set(roles.map(role => normalizeRoleLabel(role)));
+
+const ADMIN_ROLE_VALUES = buildRoleSet(["Administrator", "Admin", "Master Admin"]);
+const EXECUTIVE_VIEW_ROLE_VALUES = buildRoleSet(["Vice Chancellor", "Pro-Chancellor"]);
+const GLOBAL_SCOPE_ROLE_VALUES = buildRoleSet([
   "Administrator",
   "Admin",
   "Master Admin",
@@ -79,11 +105,11 @@ const GLOBAL_SCOPE_ROLE_VALUES = new Set([
   "Dean (P&M)",
   "Deputy Dean (P&M)",
 ]);
-const SCHOOL_SCOPE_ROLE_VALUES = new Set(["Dean"]);
-const DEPARTMENT_SCOPE_ROLE_VALUES = new Set(["HOD", "Faculty", "Event Coordinator"]);
+const SCHOOL_SCOPE_ROLE_VALUES = buildRoleSet(["Dean"]);
+const DEPARTMENT_SCOPE_ROLE_VALUES = buildRoleSet(["HOD", "Faculty", "Event Coordinator"]);
 
-const isAdminRole = (role: any) => ADMIN_ROLE_VALUES.has(role?.toString().trim() || "");
-const isExecutiveViewRole = (role: any) => EXECUTIVE_VIEW_ROLE_VALUES.has(role?.toString().trim() || "");
+const isAdminRole = (role: any) => ADMIN_ROLE_VALUES.has(normalizeRoleLabel(role));
+const isExecutiveViewRole = (role: any) => EXECUTIVE_VIEW_ROLE_VALUES.has(normalizeRoleLabel(role));
 const normalizeUserAccessTypeValue = (value: any) => {
   const normalized = value?.toString().trim().toLowerCase() || "";
   if (!normalized) return "";
@@ -1971,7 +1997,7 @@ const getDepartmentScopeByName = async (departmentName?: string | null) => {
 };
 
 const getScopedDepartmentIdsForUser = async (user?: any) => {
-  const role = user?.role?.toString?.().trim() || "";
+  const role = normalizeRoleLabel(user?.role);
   if (!role || isAdminRole(role) || isExecutiveViewRole(role) || ["Dean (P&M)", "Deputy Dean (P&M)", "Infrastructure Manager", "Maintenance Staff"].includes(role)) {
     return null;
   }
@@ -2021,7 +2047,7 @@ const normalizeUserPayload = async (payload: any, existingItem?: any) => {
   const nextPayload = { ...(existingItem || {}), ...(payload || {}) };
   nextPayload.full_name = nextPayload.full_name?.toString().trim() || "";
   nextPayload.employee_id = nextPayload.employee_id?.toString().trim() || "";
-  nextPayload.role = nextPayload.role?.toString().trim() || "";
+  nextPayload.role = normalizeRoleLabel(nextPayload.role);
   nextPayload.email = nextPayload.email?.toString().trim().toLowerCase() || "";
   nextPayload.school = nextPayload.school?.toString().trim() || "";
   nextPayload.department = nextPayload.department?.toString().trim() || "";
@@ -2036,7 +2062,7 @@ const normalizeUserPayload = async (payload: any, existingItem?: any) => {
   if (!nextPayload.role) throw new Error("Role is required.");
   if (!nextPayload.email) throw new Error("Email address is required.");
 
-  const role = nextPayload.role;
+  const role = normalizeRoleLabel(nextPayload.role);
   const normalizedRequestedAccessType = normalizeUserAccessTypeValue(nextPayload.access_type);
   const requestedAccessScope = nextPayload.access_scope?.toString().trim() || "";
   const schoolRecord = nextPayload.school ? await getSchoolRecordByName(nextPayload.school) : null;
@@ -2535,7 +2561,7 @@ const mergeExtractedSchedulesWithHeaderRooms = (schedules: any[], sectionRoomMap
 const getUserSessionPayload = (user: any) => ({
   id: user.id,
   email: user.email,
-  role: user.role,
+  role: normalizeRoleLabel(user.role),
   name: user.full_name,
   school: user.school,
   department: user.department,
@@ -4665,6 +4691,9 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     }
 
     try {
+      if (tableName === "users") {
+        req.body = await normalizeUserPayload(req.body);
+      }
       if (tableName === "academic_calendars") {
         req.body = await normalizeAcademicCalendarPayload(req.body);
       }
@@ -4835,6 +4864,9 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       const existingItem = await db.prepare(`SELECT * FROM ${tableName} WHERE ${idField} = ?`).get(req.params.id) as any;
       if (!existingItem) {
         return res.status(404).json({ error: `${tableName} record not found.` });
+      }
+      if (tableName === "users") {
+        req.body = await normalizeUserPayload(req.body, existingItem);
       }
       if (tableName === "academic_calendars") {
         req.body = await normalizeAcademicCalendarPayload({ ...existingItem, ...req.body });

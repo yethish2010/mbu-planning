@@ -1,4 +1,17 @@
-export type Role = 'Administrator' | 'Faculty' | 'Department Coordinator' | 'Maintenance Staff' | 'Infrastructure Manager';
+export type Role =
+  | 'Administrator'
+  | 'Admin'
+  | 'Master Admin'
+  | 'Vice Chancellor'
+  | 'Pro-Chancellor'
+  | 'Dean'
+  | 'Dean (P&M)'
+  | 'Deputy Dean (P&M)'
+  | 'HOD'
+  | 'Event Coordinator'
+  | 'Faculty'
+  | 'Maintenance Staff'
+  | 'Infrastructure Manager';
 
 export interface User {
   id: number;
