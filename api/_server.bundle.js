@@ -238,6 +238,7 @@ var SCHOOL_SCOPE_ROLE_VALUES = buildRoleSet(["Dean"]);
 var DEPARTMENT_SCOPE_ROLE_VALUES = buildRoleSet(["HOD", "Faculty", "Event Coordinator"]);
 var isAdminRole = (role) => ADMIN_ROLE_VALUES.has(normalizeRoleLabel(role));
 var isExecutiveViewRole = (role) => EXECUTIVE_VIEW_ROLE_VALUES.has(normalizeRoleLabel(role));
+var DASHBOARD_VIEW_MODE_VALUES = /* @__PURE__ */ new Set(["Visual", "Text", "Hybrid"]);
 var normalizeUserAccessTypeValue = (value) => {
   const normalized = value?.toString().trim().toLowerCase() || "";
   if (!normalized) return "";
@@ -246,6 +247,14 @@ var normalizeUserAccessTypeValue = (value) => {
   if (normalized === "department") return "Department";
   if (normalized === "custom") return "Custom";
   return value?.toString().trim() || "";
+};
+var normalizeDashboardViewMode = (value) => {
+  const normalized = value?.toString().trim().toLowerCase() || "";
+  if (!normalized) return null;
+  if (normalized === "visual") return "Visual";
+  if (normalized === "text") return "Text";
+  if (normalized === "hybrid") return "Hybrid";
+  return null;
 };
 var getCampusDateTimeParts = (value = /* @__PURE__ */ new Date()) => {
   const parts = new Intl.DateTimeFormat("en-GB", {
@@ -283,6 +292,7 @@ var getPrimarySchemaSql = (dialect) => {
       access_type TEXT,
       access_scope TEXT,
       access_paths TEXT,
+      dashboard_view_mode TEXT,
       force_password_change INTEGER DEFAULT 0,
       created_at ${timestampType} DEFAULT CURRENT_TIMESTAMP
     );
@@ -633,6 +643,7 @@ await ensureColumn("users", "school", "TEXT");
 await ensureColumn("users", "access_type", "TEXT");
 await ensureColumn("users", "access_scope", "TEXT");
 await ensureColumn("users", "access_paths", "TEXT");
+await ensureColumn("users", "dashboard_view_mode", "TEXT");
 await ensureColumn("users", "force_password_change", "INTEGER DEFAULT 0");
 await ensureColumn("batch_room_allocations", "allocation_mode", "TEXT DEFAULT 'Shared'");
 await ensureColumn("batch_room_allocations", "allocation_pattern", "TEXT DEFAULT 'Single Room'");
@@ -1887,6 +1898,7 @@ var normalizeUserPayload = async (payload, existingItem) => {
   nextPayload.responsibilities = nextPayload.responsibilities?.toString().trim() || null;
   nextPayload.access_limits = nextPayload.access_limits?.toString().trim() || null;
   nextPayload.access_paths = nextPayload.access_paths?.toString().trim() || null;
+  nextPayload.dashboard_view_mode = normalizeDashboardViewMode(nextPayload.dashboard_view_mode);
   if (!nextPayload.full_name) throw new Error("Full name is required.");
   if (!nextPayload.employee_id) throw new Error("Employee ID is required.");
   if (!nextPayload.role) throw new Error("Role is required.");
@@ -1940,6 +1952,16 @@ var normalizeUserPayload = async (payload, existingItem) => {
   }
   nextPayload.access_type = derivedAccessType || null;
   nextPayload.access_scope = derivedAccessScope || null;
+  if (isExecutiveViewRole(role)) {
+    if (!nextPayload.dashboard_view_mode) {
+      nextPayload.dashboard_view_mode = "Visual";
+    }
+    if (nextPayload.dashboard_view_mode && !DASHBOARD_VIEW_MODE_VALUES.has(nextPayload.dashboard_view_mode)) {
+      nextPayload.dashboard_view_mode = "Visual";
+    }
+  } else {
+    nextPayload.dashboard_view_mode = null;
+  }
   return nextPayload;
 };
 var backfillNotificationsIfEmpty = async () => {
@@ -2296,6 +2318,7 @@ var getUserSessionPayload = (user) => ({
   access_type: user.access_type,
   access_scope: user.access_scope,
   access_paths: user.access_paths,
+  dashboard_view_mode: isExecutiveViewRole(user.role) ? normalizeDashboardViewMode(user.dashboard_view_mode) || "Visual" : null,
   force_password_change: !!user.force_password_change
 });
 app.post("/api/auth/login", async (req, res) => {
@@ -2325,6 +2348,26 @@ app.get("/api/auth/me", (req, res) => {
     res.json({ user: decoded });
   } catch (err) {
     res.status(401).json({ error: "Invalid token" });
+  }
+});
+app.put("/api/auth/preferences/dashboard-view", authenticate, async (req, res) => {
+  try {
+    const normalizedRole = normalizeRoleLabel(req.user?.role);
+    if (!isExecutiveViewRole(normalizedRole)) {
+      return res.status(403).json({ error: "Dashboard view preferences are only available for executive dashboards." });
+    }
+    const dashboardViewMode = normalizeDashboardViewMode(req.body?.dashboard_view_mode);
+    if (!dashboardViewMode) {
+      return res.status(400).json({ error: "A valid dashboard view mode is required." });
+    }
+    await db.prepare("UPDATE users SET dashboard_view_mode = ? WHERE id = ?").run(dashboardViewMode, req.user.id);
+    const updatedUser = await db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
+    const sessionUser = getUserSessionPayload(updatedUser);
+    const token = jwt.sign(sessionUser, JWT_SECRET, { expiresIn: "24h" });
+    res.cookie("token", token, getAuthCookieOptions());
+    res.json({ user: sessionUser });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 app.post("/api/ai/dashboard-insight", authenticate, async (req, res) => {

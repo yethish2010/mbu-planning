@@ -22,6 +22,7 @@ export interface User {
   role: Role;
   email: string;
   mobile_number?: string;
+  dashboard_view_mode?: 'Visual' | 'Text' | 'Hybrid' | null;
 }
 
 export interface Building {

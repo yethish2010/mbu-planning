@@ -257,6 +257,8 @@ const USER_ROLE_OPTIONS = [
   'Maintenance Staff',
   'Infrastructure Manager',
 ];
+const DASHBOARD_VIEW_MODE_OPTIONS = ['Visual', 'Text', 'Hybrid'] as const;
+type DashboardViewMode = typeof DASHBOARD_VIEW_MODE_OPTIONS[number];
 const ADMIN_ROLE_SET = new Set(ADMIN_ROLE_OPTIONS.map(normalizeRoleValue));
 const EXECUTIVE_ROLE_SET = new Set(EXECUTIVE_ROLE_OPTIONS.map(normalizeRoleValue));
 const SCHOOL_SCOPED_ROLE_SET = new Set(SCHOOL_SCOPED_ROLE_OPTIONS.map(normalizeRoleValue));
@@ -265,6 +267,12 @@ const isAdminRole = (role: unknown) => ADMIN_ROLE_SET.has(normalizeRoleValue(rol
 const isExecutiveRole = (role: unknown) => EXECUTIVE_ROLE_SET.has(normalizeRoleValue(role));
 const isSchoolScopedRole = (role: unknown) => SCHOOL_SCOPED_ROLE_SET.has(normalizeRoleValue(role));
 const isDepartmentScopedRole = (role: unknown) => DEPARTMENT_SCOPED_ROLE_SET.has(normalizeRoleValue(role));
+const normalizeDashboardViewMode = (value: unknown): DashboardViewMode => {
+  const normalized = normalizeLookupValue(value);
+  if (normalized === 'text') return 'Text';
+  if (normalized === 'hybrid') return 'Hybrid';
+  return 'Visual';
+};
 
 const getScopedMappedRoomIds = ({
   role,
@@ -3523,6 +3531,7 @@ interface AuthContextType {
   user: any;
   login: (userData: any) => void;
   logout: () => void;
+  updateUser: (userData: any) => void;
   loading: boolean;
   authServiceMessage: string;
   clearAuthServiceMessage: () => void;
@@ -3579,13 +3588,16 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(userData);
     setAuthServiceMessage('');
   };
+  const updateUser = (userData: any) => {
+    setUser(userData);
+  };
   const logout = () => {
     fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).then(() => setUser(null));
   };
   const clearAuthServiceMessage = () => setAuthServiceMessage('');
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, loading, authServiceMessage, clearAuthServiceMessage }}>
+    <AuthContext.Provider value={{ user, login, logout, updateUser, loading, authServiceMessage, clearAuthServiceMessage }}>
       {children}
     </AuthContext.Provider>
   );
@@ -4598,7 +4610,7 @@ function ProtectedRoute({ children, roles }: { children: React.ReactNode, roles?
 // --- DASHBOARD HOME ---
 
 function DashboardHome() {
-  const { user } = useAuth();
+  const { user, updateUser } = useAuth();
   const navigate = useNavigate();
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -4611,6 +4623,9 @@ function DashboardHome() {
   const [selectedTwinBuilding, setSelectedTwinBuilding] = useState('All');
   const [selectedTwinRoomId, setSelectedTwinRoomId] = useState('');
   const [isAnalysisPanelOpen, setIsAnalysisPanelOpen] = useState(false);
+  const [selectedDashboardViewMode, setSelectedDashboardViewMode] = useState<DashboardViewMode>(normalizeDashboardViewMode(user?.dashboard_view_mode));
+  const [isSavingDashboardViewMode, setIsSavingDashboardViewMode] = useState(false);
+  const [dashboardViewModeMessage, setDashboardViewModeMessage] = useState('');
   const [roleDashboardData, setRoleDashboardData] = useState<{
     bookings: any[];
     rooms: any[];
@@ -4628,6 +4643,12 @@ function DashboardHome() {
     batchAllocations: [],
     schedules: [],
   });
+  const isExecutiveDashboard = isExecutiveRole(user?.role);
+
+  useEffect(() => {
+    if (!isExecutiveDashboard) return;
+    setSelectedDashboardViewMode(normalizeDashboardViewMode(user?.dashboard_view_mode));
+  }, [isExecutiveDashboard, user?.dashboard_view_mode]);
 
   const composeInsightMessage = (statsPayload: any, schoolReportsPayload: any[]) => {
     const rankedSchools = (Array.isArray(schoolReportsPayload) ? schoolReportsPayload : [])
@@ -4975,6 +4996,31 @@ function DashboardHome() {
       detail: formatStatusBreakdownLine(twinStatusBreakdowns['Not Bookable'], 'Unavailable for booking'),
     },
   ];
+  const handleDashboardViewModeChange = async (mode: DashboardViewMode) => {
+    if (!isExecutiveDashboard || mode === selectedDashboardViewMode || isSavingDashboardViewMode) return;
+    const previousMode = selectedDashboardViewMode;
+    setSelectedDashboardViewMode(mode);
+    setDashboardViewModeMessage('');
+    setIsSavingDashboardViewMode(true);
+    try {
+      const response = await fetch('/api/auth/preferences/dashboard-view', {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dashboard_view_mode: mode }),
+      });
+      const data = await readJsonResponse(response);
+      if (!response.ok || !data?.user) {
+        throw new Error(data?.error || 'Unable to save dashboard preference.');
+      }
+      updateUser(data.user);
+    } catch (error: any) {
+      setSelectedDashboardViewMode(previousMode);
+      setDashboardViewModeMessage(error?.message || 'Unable to save dashboard preference.');
+    } finally {
+      setIsSavingDashboardViewMode(false);
+    }
+  };
   const dashboardLiveDate = dashboardOverview?.currentDate?.toString?.() || stats?.currentDate?.toString?.() || '';
   const dashboardLiveTime = dashboardOverview?.currentTime?.toString?.() || stats?.currentTime?.toString?.() || '';
   const isHodDashboard = user?.role === 'HOD';
@@ -5151,6 +5197,189 @@ function DashboardHome() {
       .filter((room: any) => !deanSchool || schoolDepartmentIds.has(roleDashboardData.departments.find((department: any) => normalizeLookupValue(department?.name) === normalizeLookupValue(room?.department))?.id?.toString?.() || ''))
       .slice(0, 8),
     [deanSchool, lowestUsageRooms, roleDashboardData.departments, schoolDepartmentIds],
+  );
+  const executiveKpiRows = useMemo(() => ([
+    { label: 'Available Now', value: stats?.availableNow || 0, detail: 'Rooms immediately available for reuse' },
+    { label: 'Occupied Now', value: stats?.occupiedNow || 0, detail: 'Live timetable occupancy' },
+    { label: 'Event Booked', value: stats?.eventBookedNow || 0, detail: 'Rooms reserved for events and special use' },
+    { label: 'Pending Approvals', value: stats?.pendingBookings || 0, detail: 'Requests still waiting for a decision' },
+    { label: 'Maintenance Issues', value: stats?.equipmentIssues || 0, detail: 'Open maintenance or equipment concerns' },
+    { label: 'Buildings Live', value: stats?.totalBuildings || 0, detail: 'Buildings represented in the live twin' },
+  ]), [stats]);
+  const recentAlerts = useMemo(() => Array.isArray(stats?.recentAlerts) ? stats.recentAlerts : [], [stats]);
+  const executiveStatusSummaryRows = useMemo(() => ([
+    { label: 'Available', count: twinStatusCounts['Available'], detail: formatStatusBreakdownLine(twinStatusBreakdowns['Available'], 'Ready to book now') },
+    { label: 'Occupied', count: twinStatusCounts['Occupied'], detail: formatStatusBreakdownLine(twinStatusBreakdowns['Occupied'], 'Live classes or active sessions') },
+    { label: 'Maintenance', count: twinStatusCounts['Maintenance'], detail: formatStatusBreakdownLine(twinStatusBreakdowns['Maintenance'], 'Temporarily unavailable inventory') },
+    { label: 'Event Booked', count: twinStatusCounts['Event Booked'], detail: formatStatusBreakdownLine(twinStatusBreakdowns['Event Booked'], 'Special-use rooms in progress') },
+    { label: 'Not Bookable', count: twinStatusCounts['Not Bookable'], detail: formatStatusBreakdownLine(twinStatusBreakdowns['Not Bookable'], 'Rooms excluded from booking flow') },
+  ]), [twinStatusBreakdowns, twinStatusCounts]);
+  const executiveModeToggle = isExecutiveDashboard ? (
+    <div className="rounded-[28px] border border-slate-200 bg-white/90 p-5 shadow-sm backdrop-blur">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.24em] font-bold text-slate-500">Executive View Mode</p>
+          <h3 className="text-lg font-bold text-slate-900 mt-1">Choose how this dashboard explains the same live data.</h3>
+          <p className="text-sm text-slate-500 mt-1">Visual keeps the current Power BI-style cards and charts, Text provides a narrative summary, and Hybrid combines both.</p>
+          {dashboardViewModeMessage && (
+            <p className="text-xs font-semibold text-rose-600 mt-2">{dashboardViewModeMessage}</p>
+          )}
+        </div>
+        <div className="inline-flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-1">
+          {DASHBOARD_VIEW_MODE_OPTIONS.map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              disabled={isSavingDashboardViewMode}
+              onClick={() => void handleDashboardViewModeChange(mode)}
+              className={cn(
+                'rounded-xl px-4 py-2 text-sm font-bold transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-60',
+                selectedDashboardViewMode === mode
+                  ? 'bg-slate-900 text-white shadow-sm'
+                  : 'bg-transparent text-slate-600 hover:bg-white hover:text-slate-900'
+              )}
+              aria-pressed={selectedDashboardViewMode === mode}
+            >
+              {mode}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  const renderExecutiveTextSections = ({ compact = false }: { compact?: boolean } = {}) => (
+    <div className={compact ? 'space-y-6' : 'space-y-8'}>
+      <div className="rounded-[32px] border border-slate-200 bg-white p-7 shadow-sm">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.24em] font-bold text-slate-500">Executive Summary</p>
+            <h3 className="text-2xl font-black text-slate-900 mt-2">Campus utilization narrative</h3>
+            <p className="text-sm text-slate-500 mt-2">
+              {aiInsightMessage || 'Live operational insight is unavailable right now.'}
+            </p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600">
+            Live as of {formatDisplayDate(currentOperationalDate)} at {currentOperationalTime}
+          </div>
+        </div>
+      </div>
+
+      <div className={compact ? 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4' : 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5'}>
+        {executiveKpiRows.map((item) => (
+          <div key={item.label} className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-[11px] uppercase tracking-widest font-bold text-slate-500">{item.label}</p>
+            <p className="text-3xl font-black text-slate-900 mt-3">{item.value}</p>
+            <p className="text-sm text-slate-500 mt-2">{item.detail}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+          <h4 className="text-lg font-bold text-slate-900">Operational Status Summary</h4>
+          <p className="text-sm text-slate-500 mt-1">The same live digital twin data, rendered as text for quick executive reading.</p>
+          <div className="mt-5 overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 text-left text-slate-500">
+                  <th className="py-2 pr-4 font-semibold">Status</th>
+                  <th className="py-2 pr-4 font-semibold">Count</th>
+                  <th className="py-2 font-semibold">Summary</th>
+                </tr>
+              </thead>
+              <tbody>
+                {executiveStatusSummaryRows.map((row) => (
+                  <tr key={row.label} className="border-b border-slate-100 align-top">
+                    <td className="py-3 pr-4 font-semibold text-slate-800">{row.label}</td>
+                    <td className="py-3 pr-4 text-slate-900">{row.count}</td>
+                    <td className="py-3 text-slate-500">{row.detail}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+          <h4 className="text-lg font-bold text-slate-900">Utilization Highlights</h4>
+          <p className="text-sm text-slate-500 mt-1">School, room-mix, and intensity signals derived from the current executive payload.</p>
+          <div className="space-y-4 mt-5">
+            <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+              <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Top Performing School</p>
+              <p className="text-base font-bold text-slate-900 mt-2">{schoolUsageItems[0]?.name || 'No school data available'}</p>
+              <p className="text-sm text-slate-500 mt-1">
+                {schoolUsageItems[0]
+                  ? `${schoolUsageItems[0].value}% utilization across ${schoolUsageItems[0].deptCount} departments.`
+                  : 'Add school allocations and usage data to populate this summary.'}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+              <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Room Mix</p>
+              <p className="text-sm text-slate-700 mt-2">Classrooms: <span className="font-bold text-slate-900">{dashboardRoomMix.classrooms}</span></p>
+              <p className="text-sm text-slate-700 mt-1">Labs: <span className="font-bold text-slate-900">{dashboardRoomMix.labs}</span></p>
+              <p className="text-sm text-slate-700 mt-1">Peak listed utilization: <span className="font-bold text-slate-900">{peakUtilization}%</span></p>
+            </div>
+            <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+              <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Decision Signals</p>
+              <p className="text-sm text-slate-700 mt-2">Top busy rooms: <span className="font-bold text-slate-900">{topBusyRooms.length}</span></p>
+              <p className="text-sm text-slate-700 mt-1">Underutilized rooms tracked: <span className="font-bold text-slate-900">{lowestUsageRooms.length}</span></p>
+              <p className="text-sm text-slate-700 mt-1">Open alerts: <span className="font-bold text-slate-900">{recentAlerts.length}</span></p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h4 className="text-lg font-bold text-slate-900">Most Utilized Rooms</h4>
+              <p className="text-sm text-slate-500 mt-1">Text-first ranking of the busiest rooms from the same utilization feed.</p>
+            </div>
+            <button type="button" onClick={() => navigate('/reports')} className="text-xs font-bold text-emerald-700 hover:text-emerald-800">Open Reports</button>
+          </div>
+          <div className="space-y-3 mt-5">
+            {topBusyRooms.map((room: any) => (
+              <div key={`busy-${room.room_id}`} className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-bold text-slate-800">Room {room.room_number}</p>
+                    <p className="text-xs text-slate-500">{[room.building, room.block].filter(Boolean).join(' • ') || 'No building context'}</p>
+                  </div>
+                  <span className="text-sm font-black text-slate-900">{Math.round(Number(room.utilization) || 0)}%</span>
+                </div>
+              </div>
+            ))}
+            {topBusyRooms.length === 0 && (
+              <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-center text-sm text-slate-400">No high-utilization rooms are available yet.</div>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h4 className="text-lg font-bold text-slate-900">Critical Alerts And Follow-Up</h4>
+              <p className="text-sm text-slate-500 mt-1">Maintenance and operational exceptions requiring executive attention.</p>
+            </div>
+            <button type="button" onClick={() => navigate('/performance-insights')} className="text-xs font-bold text-emerald-700 hover:text-emerald-800">Open Insights</button>
+          </div>
+          <div className="space-y-3 mt-5">
+            {recentAlerts.map((alert: any) => (
+              <div key={`alert-${alert.id || alert.room_number}`} className="rounded-2xl border border-amber-100 bg-amber-50/70 px-4 py-3">
+                <p className="text-sm font-bold text-slate-800">{alert.room_number || 'Room not set'}{alert.building_name ? ` • ${alert.building_name}` : ''}</p>
+                <p className="text-sm text-amber-900 mt-1">{alert.issue_description || alert.equipment_name || 'Maintenance issue reported'}</p>
+                <p className="text-[11px] text-slate-500 mt-2">{alert.reported_date || 'Reported date unavailable'} • {alert.status || 'Pending'}</p>
+              </div>
+            ))}
+            {recentAlerts.length === 0 && (
+              <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-center text-sm text-slate-400">No open alert items are currently blocking operations.</div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 
   const renderHodDashboard = () => {
@@ -5531,8 +5760,19 @@ function DashboardHome() {
     return renderDeanDashboard();
   }
 
+  if (isExecutiveDashboard && selectedDashboardViewMode === 'Text') {
+    return (
+      <div className="space-y-8">
+        {executiveModeToggle}
+        {renderExecutiveTextSections()}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-8">
+      {executiveModeToggle}
+      {isExecutiveDashboard && selectedDashboardViewMode === 'Hybrid' && renderExecutiveTextSections({ compact: true })}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
         {statCards.map((stat) => (
           <button
