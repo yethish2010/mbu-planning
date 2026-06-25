@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, Building2, Layers, DoorOpen, 
   Wrench, Calendar, Clock, BookOpen, BrainCircuit, 
   BarChart3, FileText, Bell, LogOut, Menu, X,
-  ChevronRight, Search, Plus, Edit2, Trash2, Check, AlertTriangle,
+  ChevronRight, ChevronDown, Search, Plus, Edit2, Trash2, Check, AlertTriangle,
   Globe, Map as MapIcon, Activity, Zap, TrendingUp, TrendingDown, Sparkles, FileSpreadsheet,
   PieChart as PieChartIcon, AlertCircle, CheckCircle2, Info, LayoutGrid
 } from 'lucide-react';
@@ -6631,12 +6631,25 @@ function GenericCRUD({
   const [isImporting, setIsImporting] = useState(false);
   const [lastImportAudit, setLastImportAudit] = useState<ImportAuditResult | null>(null);
   const [visiblePasswordFields, setVisiblePasswordFields] = useState<Record<string, boolean>>({});
+  const [openMultiSelectKey, setOpenMultiSelectKey] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const multiSelectRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setSearchTerm(initialSearchTerm || '');
   }, [initialSearchTerm]);
+
+  useEffect(() => {
+    if (!openMultiSelectKey) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (multiSelectRef.current && !multiSelectRef.current.contains(event.target as Node)) {
+        setOpenMultiSelectKey(null);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [openMultiSelectKey]);
 
   const fetchData = async () => {
     const loadStartedAt = performance.now();
@@ -6712,13 +6725,16 @@ function GenericCRUD({
   const getOptionLabel = (option: any) =>
     typeof option === 'object' ? option.label : option;
 
+  const getMultiSelectValues = (value: any) =>
+    value?.toString().split(',').map((part: string) => part.trim()).filter(Boolean) || [];
+
   const getFieldDisplayValue = (field: any, item: any) => {
     if (field.render) return field.render(item);
     const value = item[field.key];
 
     if (field.type === 'select') {
       if (field.multiple) {
-        const selectedValues = value?.toString().split(',').map((part: string) => part.trim()).filter(Boolean) || [];
+        const selectedValues = getMultiSelectValues(value);
         const labels = selectedValues.map((selectedValue: string) => {
           const option = getFieldOptions(field, item).find((opt: any) => getOptionValue(opt)?.toString() === selectedValue);
           return option ? getOptionLabel(option) : selectedValue;
@@ -7199,28 +7215,74 @@ function GenericCRUD({
                   <div key={f.key} className={cn("space-y-1", f.fullWidth && "col-span-2")}>
                     <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{getFormFieldLabel(f)}</label>
                     {f.type === 'select' ? (
-                      <select
-                        multiple={!!f.multiple}
-                        required={f.required !== false}
-                        value={f.multiple ? (formData[f.key]?.toString().split(',').filter(Boolean) || []) : (formData[f.key] || '')}
-                        onChange={e => {
-                          const value = f.multiple
-                            ? Array.from(e.target.selectedOptions).map(option => option.value).filter(Boolean).join(',')
-                            : e.target.value;
-                          applyFieldValueChange(f, value);
-                        }}
-                        className={cn(
-                          "w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500",
-                          f.multiple && "min-h-28"
-                        )}
-                      >
-                        {!f.multiple && <option value="">Select {getFormFieldLabel(f)}</option>}
-                        {getFieldOptions(f, formData).map((opt: any) => {
-                          const value = getOptionValue(opt);
-                          const label = getOptionLabel(opt);
-                          return <option key={value} value={value}>{label}</option>;
-                        })}
-                      </select>
+                      f.multiple ? (
+                        <div className="relative" ref={openMultiSelectKey === f.key ? multiSelectRef : null}>
+                          <input
+                            tabIndex={-1}
+                            className="sr-only"
+                            value={formData[f.key] || ''}
+                            readOnly
+                            required={f.required !== false}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setOpenMultiSelectKey(current => current === f.key ? null : f.key)}
+                            className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-left text-sm text-slate-700 focus:outline-none focus:border-emerald-500"
+                          >
+                            <span className={cn(
+                              "truncate",
+                              getFieldDisplayValue(f, formData) ? "text-slate-700" : "text-slate-400"
+                            )}>
+                              {getFieldDisplayValue(f, formData) || `Select ${getFormFieldLabel(f)}`}
+                            </span>
+                            <ChevronDown size={16} className={cn("shrink-0 text-slate-400 transition-transform", openMultiSelectKey === f.key && "rotate-180")} />
+                          </button>
+                          {openMultiSelectKey === f.key && (
+                            <div className="absolute z-20 mt-2 max-h-64 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white p-2 shadow-xl">
+                              {getFieldOptions(f, formData).length === 0 ? (
+                                <p className="px-2 py-2 text-sm text-slate-400">No options available.</p>
+                              ) : (
+                                getFieldOptions(f, formData).map((opt: any) => {
+                                  const optionValue = getOptionValue(opt)?.toString() || '';
+                                  const optionLabel = getOptionLabel(opt);
+                                  const selectedValues = getMultiSelectValues(formData[f.key]);
+                                  const isSelected = selectedValues.includes(optionValue);
+                                  return (
+                                    <label key={optionValue} className="flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-slate-50">
+                                      <input
+                                        type="checkbox"
+                                        checked={isSelected}
+                                        onChange={() => {
+                                          const nextValues = isSelected
+                                            ? selectedValues.filter((item: string) => item !== optionValue)
+                                            : [...selectedValues, optionValue];
+                                          applyFieldValueChange(f, nextValues.join(','));
+                                        }}
+                                        className="h-4 w-4 rounded border-slate-300 text-emerald-500 focus:ring-emerald-500"
+                                      />
+                                      <span>{optionLabel}</span>
+                                    </label>
+                                  );
+                                })
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <select
+                          required={f.required !== false}
+                          value={formData[f.key] || ''}
+                          onChange={e => applyFieldValueChange(f, e.target.value)}
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+                        >
+                          <option value="">Select {getFormFieldLabel(f)}</option>
+                          {getFieldOptions(f, formData).map((opt: any) => {
+                            const value = getOptionValue(opt);
+                            const label = getOptionLabel(opt);
+                            return <option key={value} value={value}>{label}</option>;
+                          })}
+                        </select>
+                      )
                     ) : f.type === 'password' ? (
                       <div className="space-y-2">
                         <div className="relative">
