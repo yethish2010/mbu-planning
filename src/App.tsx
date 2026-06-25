@@ -987,6 +987,26 @@ const EVENT_ROOM_TYPE_OPTIONS = [
   'Tutorial Room',
   'Workshop',
 ];
+const BOOKING_REPORT_STATUS_OPTIONS = [
+  'Pending',
+  'HOD Recommended',
+  'Awaiting Alternative Response',
+  'Clarification Required',
+  'Waitlisted',
+  'No Room Available',
+  'Approved',
+  'Postponed',
+  'Rejected',
+];
+const BOOKING_OPEN_WORKFLOW_STATUSES = [
+  'Pending',
+  'HOD Recommended',
+  'Awaiting Alternative Response',
+  'Clarification Required',
+  'Waitlisted',
+];
+const BOOKING_CANCELLATION_STATUSES = ['Rejected', 'Postponed'];
+const BOOKING_NO_ROOM_OUTCOME_STATUSES = ['No Room Available', 'Waitlisted'];
 const RESTROOM_TYPE_OPTIONS = ['Male', 'Female'];
 const ROOM_LAYOUT_OPTIONS = ['Normal', 'Shared Room', 'Split Parent', 'Split Child', 'Inside Parent', 'Inside Child'];
 const HIERARCHY_PARENT_ROOM_LAYOUTS = ['Split Parent', 'Inside Parent'];
@@ -3532,6 +3552,8 @@ interface AuthContextType {
   login: (userData: any) => void;
   logout: () => void;
   updateUser: (userData: any) => void;
+  selectedHodDepartmentId: string;
+  setSelectedHodDepartmentId: (departmentId: string) => void;
   loading: boolean;
   authServiceMessage: string;
   clearAuthServiceMessage: () => void;
@@ -3558,8 +3580,14 @@ const readJsonResponse = async (res: Response) => {
   }
 };
 
+const getAssignedDepartmentIdsFromUser = (user: any) =>
+  (Array.isArray(user?.assigned_department_ids) ? user.assigned_department_ids : [])
+    .map((departmentId: any) => departmentId?.toString?.() || '')
+    .filter(Boolean);
+
 function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<any>(null);
+  const [selectedHodDepartmentId, setSelectedHodDepartmentId] = useState('');
   const [loading, setLoading] = useState(true);
   const [authServiceMessage, setAuthServiceMessage] = useState('');
 
@@ -3596,8 +3624,26 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
   };
   const clearAuthServiceMessage = () => setAuthServiceMessage('');
 
+  useEffect(() => {
+    if (normalizeRoleValue(user?.role) !== 'hod') {
+      if (selectedHodDepartmentId) setSelectedHodDepartmentId('');
+      return;
+    }
+
+    const assignedDepartmentIds = getAssignedDepartmentIdsFromUser(user);
+    const preferredDepartmentId = user?.primary_department_id?.toString?.() || assignedDepartmentIds[0] || '';
+    if (!preferredDepartmentId) {
+      if (selectedHodDepartmentId) setSelectedHodDepartmentId('');
+      return;
+    }
+
+    if (!selectedHodDepartmentId || !assignedDepartmentIds.includes(selectedHodDepartmentId)) {
+      setSelectedHodDepartmentId(preferredDepartmentId);
+    }
+  }, [selectedHodDepartmentId, user]);
+
   return (
-    <AuthContext.Provider value={{ user, login, logout, updateUser, loading, authServiceMessage, clearAuthServiceMessage }}>
+    <AuthContext.Provider value={{ user, login, logout, updateUser, selectedHodDepartmentId, setSelectedHodDepartmentId, loading, authServiceMessage, clearAuthServiceMessage }}>
       {children}
     </AuthContext.Provider>
   );
@@ -4610,7 +4656,7 @@ function ProtectedRoute({ children, roles }: { children: React.ReactNode, roles?
 // --- DASHBOARD HOME ---
 
 function DashboardHome() {
-  const { user, updateUser } = useAuth();
+  const { user, updateUser, selectedHodDepartmentId, setSelectedHodDepartmentId } = useAuth();
   const navigate = useNavigate();
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -5052,6 +5098,10 @@ function DashboardHome() {
     status === 'Approved' ? 'bg-emerald-100 text-emerald-700' :
     status === 'HOD Recommended' ? 'bg-indigo-100 text-indigo-700' :
     status === 'Pending' ? 'bg-amber-100 text-amber-700' :
+    status === 'Awaiting Alternative Response' ? 'bg-fuchsia-100 text-fuchsia-700' :
+    status === 'No Room Available' ? 'bg-rose-100 text-rose-700' :
+    status === 'Waitlisted' ? 'bg-yellow-100 text-yellow-800' :
+    status === 'Clarification Required' ? 'bg-cyan-100 text-cyan-800' :
     status === 'Rejected' ? 'bg-rose-100 text-rose-700' :
     status === 'Postponed' ? 'bg-slate-200 text-slate-700' :
     'bg-slate-100 text-slate-700'
@@ -5061,8 +5111,24 @@ function DashboardHome() {
     return ['Classroom', 'Smart Classroom', 'Lecture Hall', 'Tutorial Room', 'Multipurpose Classroom', 'Multipurpose Lecture Hall'].includes(normalized);
   };
   const userDepartment = useMemo(
-    () => (roleDashboardData.departments || []).find((department: any) => normalizeLookupValue(department?.name) === normalizeLookupValue(user?.department)),
-    [roleDashboardData.departments, user?.department],
+    () => {
+      if (isHodDashboard && selectedHodDepartmentId) {
+        return (roleDashboardData.departments || []).find((department: any) => idsMatch(department?.id, selectedHodDepartmentId)) || null;
+      }
+      return (roleDashboardData.departments || []).find((department: any) => normalizeLookupValue(department?.name) === normalizeLookupValue(user?.department)) || null;
+    },
+    [isHodDashboard, roleDashboardData.departments, selectedHodDepartmentId, user?.department],
+  );
+  const hodDepartmentOptions = useMemo(
+    () => (Array.isArray(user?.department_assignments) ? user.department_assignments : [])
+      .map((assignment: any) => {
+        const department = roleDepartmentsById.get(assignment?.department_id?.toString?.() || '');
+        return department
+          ? { value: department.id?.toString?.() || '', label: department.name }
+          : { value: assignment?.department_id?.toString?.() || '', label: assignment?.department_name || 'Department' };
+      })
+      .filter((option: any) => option.value && option.label),
+    [roleDepartmentsById, user?.department_assignments],
   );
   const userSchool = useMemo(
     () => (roleDashboardData.schools || []).find((school: any) => normalizeLookupValue(school?.name) === normalizeLookupValue(user?.school)),
@@ -5140,6 +5206,18 @@ function DashboardHome() {
       .slice(0, 8),
     [deanBookings],
   );
+  const hodWorkflowCounts = useMemo(() => ({
+    awaitingRecommendation: hodBookings.filter((booking: any) => booking?.status === 'Pending').length,
+    additionalRoomRequests: hodBookings.filter((booking: any) => booking?.request_type === 'Additional Room').length,
+    waitingAllocation: hodBookings.filter((booking: any) => booking?.request_type === 'Additional Room' && ['Pending', 'HOD Recommended'].includes(booking?.status) && !booking?.room_id).length,
+    assignedAwaitingDecision: hodBookings.filter((booking: any) => booking?.request_type === 'Additional Room' && ['Pending', 'HOD Recommended'].includes(booking?.status) && !!booking?.room_id).length,
+  }), [hodBookings]);
+  const deanWorkflowCounts = useMemo(() => ({
+    waitingHodRecommendation: deanBookings.filter((booking: any) => booking?.status === 'Pending').length,
+    waitingAllocation: deanBookings.filter((booking: any) => booking?.request_type === 'Additional Room' && ['Pending', 'HOD Recommended'].includes(booking?.status) && !booking?.room_id).length,
+    readyForDecision: deanBookings.filter((booking: any) => ['HOD Recommended'].includes(booking?.status) || (booking?.request_type === 'Additional Room' && ['Pending', 'HOD Recommended'].includes(booking?.status) && !!booking?.room_id)).length,
+    additionalRoomRequests: deanBookings.filter((booking: any) => booking?.request_type === 'Additional Room').length,
+  }), [deanBookings]);
   const hodBatchAllocations = useMemo(
     () => (roleDashboardData.batchAllocations || [])
       .filter((allocation: any) => idsMatch(allocation?.department_id, userDepartment?.id))
@@ -5567,8 +5645,24 @@ function DashboardHome() {
               <h3 className="text-3xl font-black text-slate-900 mt-2">{userDepartment.name}</h3>
               <p className="text-sm text-slate-500 mt-2">Track department rooms, faculty sessions, batch allocations, and request flow from one place.</p>
             </div>
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600">
-              Live as of {formatDisplayDate(currentOperationalDate)} at {currentOperationalTime}
+            <div className="flex flex-col sm:flex-row gap-3 sm:items-end">
+              {hodDepartmentOptions.length > 1 && (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Selected Department</p>
+                  <select
+                    value={selectedHodDepartmentId}
+                    onChange={event => setSelectedHodDepartmentId(event.target.value)}
+                    className="min-w-64 bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold text-slate-700"
+                  >
+                    {hodDepartmentOptions.map((option: any) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600">
+                Live as of {formatDisplayDate(currentOperationalDate)} at {currentOperationalTime}
+              </div>
             </div>
           </div>
         </div>
@@ -5589,6 +5683,46 @@ function DashboardHome() {
           ))}
         </div>
 
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
+          {[
+            {
+              label: 'Awaiting HOD Review',
+              value: hodWorkflowCounts.awaitingRecommendation,
+              hint: 'Pending requests still with department',
+              path: `/bookings?status=Pending${selectedHodDepartmentId ? `&departmentId=${selectedHodDepartmentId}` : ''}`,
+            },
+            {
+              label: 'Additional Room Requests',
+              value: hodWorkflowCounts.additionalRoomRequests,
+              hint: 'Extra-capacity requests raised by department',
+              path: `/bookings?requestType=Additional%20Room${selectedHodDepartmentId ? `&departmentId=${selectedHodDepartmentId}` : ''}`,
+            },
+            {
+              label: 'Waiting Allocation',
+              value: hodWorkflowCounts.waitingAllocation,
+              hint: 'Additional-room requests with no room assigned yet',
+              path: `/bookings?status=Pending&requestType=Additional%20Room&assignment=unassigned${selectedHodDepartmentId ? `&departmentId=${selectedHodDepartmentId}` : ''}`,
+            },
+            {
+              label: 'Assigned Awaiting Decision',
+              value: hodWorkflowCounts.assignedAwaitingDecision,
+              hint: 'Additional-room requests assigned and waiting on dean decision',
+              path: `/bookings?requestType=Additional%20Room&assignment=assigned&decision=ready${selectedHodDepartmentId ? `&departmentId=${selectedHodDepartmentId}` : ''}`,
+            },
+          ].map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              onClick={() => navigate(item.path)}
+              className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm text-left transition-colors hover:border-emerald-300 hover:bg-emerald-50/30"
+            >
+              <p className="text-[11px] uppercase tracking-widest font-bold text-slate-500">{item.label}</p>
+              <p className="text-3xl font-black text-slate-900 mt-3">{item.value}</p>
+              <p className="text-xs font-medium text-slate-400 mt-2">{item.hint}</p>
+            </button>
+          ))}
+        </div>
+
         <div className="grid grid-cols-1 xl:grid-cols-5 gap-8">
           <div className="xl:col-span-3 rounded-[32px] border border-slate-200 bg-white p-7 shadow-sm">
             <div className="flex items-center justify-between gap-4 mb-5">
@@ -5596,7 +5730,7 @@ function DashboardHome() {
                 <h4 className="text-lg font-bold text-slate-900">Faculty Timetable</h4>
                 <p className="text-sm text-slate-500">Today&apos;s department sessions, sorted by time slot.</p>
               </div>
-              <button type="button" onClick={() => navigate('/timetable')} className="text-xs font-bold text-emerald-700 hover:text-emerald-800">Open Timetable</button>
+              <button type="button" onClick={() => navigate(`/timetable${selectedHodDepartmentId ? `?departmentId=${selectedHodDepartmentId}` : ''}`)} className="text-xs font-bold text-emerald-700 hover:text-emerald-800">Open Timetable</button>
             </div>
             <div className="space-y-3">
               {hodTodaySchedules.slice(0, 8).map((schedule: any, index: number) => (
@@ -5625,7 +5759,7 @@ function DashboardHome() {
                 <h4 className="text-lg font-bold text-slate-900">Department Booking Requests</h4>
                 <p className="text-sm text-slate-500">Requests waiting on review or already in progress.</p>
               </div>
-              <button type="button" onClick={() => navigate('/bookings?status=Pending')} className="text-xs font-bold text-emerald-700 hover:text-emerald-800">Open Requests</button>
+              <button type="button" onClick={() => navigate(`/bookings?status=Pending${selectedHodDepartmentId ? `&departmentId=${selectedHodDepartmentId}` : ''}`)} className="text-xs font-bold text-emerald-700 hover:text-emerald-800">Open Requests</button>
             </div>
             <div className="space-y-3">
               {hodBookings.slice(0, 8).map((booking: any) => (
@@ -5777,6 +5911,46 @@ function DashboardHome() {
               <p className="text-3xl font-black text-slate-900 mt-3">{item.value}</p>
               <p className="text-xs font-medium text-slate-400 mt-2">{item.hint}</p>
             </div>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
+          {[
+            {
+              label: 'Waiting HOD Recommendation',
+              value: deanWorkflowCounts.waitingHodRecommendation,
+              hint: 'Requests still pending with department review',
+              path: '/bookings?status=Pending',
+            },
+            {
+              label: 'Waiting Allocation',
+              value: deanWorkflowCounts.waitingAllocation,
+              hint: 'Additional-room requests still missing an assigned room',
+              path: '/bookings?status=Pending&requestType=Additional%20Room&assignment=unassigned',
+            },
+            {
+              label: 'Ready For Decision',
+              value: deanWorkflowCounts.readyForDecision,
+              hint: 'Requests you can act on now',
+              path: '/bookings?decision=ready',
+            },
+            {
+              label: 'Additional Room Requests',
+              value: deanWorkflowCounts.additionalRoomRequests,
+              hint: 'School-wide extra-capacity demand',
+              path: '/bookings?requestType=Additional%20Room',
+            },
+          ].map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              onClick={() => navigate(item.path)}
+              className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm text-left transition-colors hover:border-emerald-300 hover:bg-emerald-50/30"
+            >
+              <p className="text-[11px] uppercase tracking-widest font-bold text-slate-500">{item.label}</p>
+              <p className="text-3xl font-black text-slate-900 mt-3">{item.value}</p>
+              <p className="text-xs font-medium text-slate-400 mt-2">{item.hint}</p>
+            </button>
           ))}
         </div>
 
@@ -7105,31 +7279,71 @@ function UserManagement() {
     return departments.filter((department: any) => idsMatch(department?.school_id, matchedSchool?.id));
   };
 
+  const resolvePrimaryDepartmentOptions = (formState: any) => {
+    const selectedIds = formState?.assigned_department_ids?.toString().split(',').map((value: string) => value.trim()).filter(Boolean) || [];
+    if (selectedIds.length === 0) return [];
+    return departments
+      .filter((department: any) => selectedIds.some((departmentId: string) => idsMatch(department?.id, departmentId)))
+      .map((department: any) => ({ value: department.id, label: department.name }));
+  };
+
   const fields = [
     { key: 'full_name', label: 'Full Name' },
     { key: 'employee_id', label: 'Employee ID' },
     { key: 'role', label: 'Role', type: 'select', options: USER_ROLE_OPTIONS },
     { key: 'email', label: 'Email Address' },
     { key: 'school', label: 'School', type: 'select', required: false, options: schools.map((school: any) => school.name) },
-    { key: 'department', label: 'Department', type: 'select', required: false, options: (formState: any) => resolveDepartmentOptions(formState).map((department: any) => department.name) },
+    {
+      key: 'assigned_department_ids',
+      label: 'Assigned Departments',
+      type: 'select',
+      required: false,
+      multiple: true,
+      options: (formState: any) => resolveDepartmentOptions(formState).map((department: any) => ({ value: department.id, label: department.name })),
+    },
+    {
+      key: 'primary_department_id',
+      label: 'Primary Department',
+      type: 'select',
+      required: false,
+      options: (formState: any) => resolvePrimaryDepartmentOptions(formState),
+    },
+    { key: 'assigned_departments', label: 'Assigned Departments', tableOnly: true },
+    { key: 'primary_department', label: 'Primary Department', tableOnly: true },
+    { key: 'department', label: 'Legacy Department', tableOnly: true },
     { key: 'access_type', label: 'Access Type', type: 'select', required: false, options: ['Global', 'School', 'Department'] },
     { key: 'access_scope', label: 'Access Scope', required: false },
     { key: 'password_status', label: 'Password', tableOnly: true, render: (item: any) => item.force_password_change ? 'Temporary - change required' : 'Hidden - reset in edit' },
     { key: 'password', label: 'Password / Admin Reset', type: 'password', formOnly: true, required: false },
   ];
 
-  const prepareFormData = (item: any) => ({ ...item, password: '' });
+  const prepareFormData = (item: any) => ({
+    ...item,
+    assigned_department_ids: Array.isArray(item?.assigned_department_ids)
+      ? item.assigned_department_ids.join(',')
+      : (item?.assigned_department_ids || ''),
+    password: '',
+  });
   const prepareSubmitData = (data: any, editingItem: any) => {
     const payload = { ...data };
     payload.role = canonicalizeRoleLabel(payload.role);
     const normalizedRole = normalizeRoleValue(payload.role);
-    if (!payload.school && payload.department) {
-      const matchedDepartment = departments.find((department: any) => normalizeLookupValue(department?.name) === normalizeLookupValue(payload.department));
-      const matchedSchool = schools.find((school: any) => idsMatch(school?.id, matchedDepartment?.school_id));
+    const assignedDepartmentIds = payload.assigned_department_ids?.toString().split(',').map((value: string) => value.trim()).filter(Boolean) || [];
+    const assignedDepartments = departments.filter((department: any) =>
+      assignedDepartmentIds.some((departmentId: string) => idsMatch(department?.id, departmentId))
+    );
+    const primaryDepartment = departments.find((department: any) => idsMatch(department?.id, payload.primary_department_id))
+      || assignedDepartments[0]
+      || null;
+
+    if (!payload.school && primaryDepartment) {
+      const matchedSchool = schools.find((school: any) => idsMatch(school?.id, primaryDepartment?.school_id));
       if (matchedSchool?.name) {
         payload.school = matchedSchool.name;
       }
     }
+    payload.department = primaryDepartment?.name || payload.department || '';
+    payload.assigned_departments = assignedDepartments.map((department: any) => department.name).join(', ');
     if (isAdminRole(normalizedRole) || isExecutiveRole(normalizedRole) || ['dean (p&m)', 'deputy dean (p&m)'].includes(normalizedRole)) {
       payload.access_type = 'Global';
       payload.access_scope = 'All';
@@ -7138,7 +7352,7 @@ function UserManagement() {
       payload.access_scope = payload.school || payload.access_scope || '';
     } else if (isDepartmentScopedRole(normalizedRole)) {
       payload.access_type = 'Department';
-      payload.access_scope = payload.department || payload.access_scope || '';
+      payload.access_scope = payload.assigned_departments || payload.department || payload.access_scope || '';
     }
     if (editingItem && !payload.password) delete payload.password;
     if (!editingItem && !payload.password) payload.password = 'Welcome123';
@@ -7147,13 +7361,17 @@ function UserManagement() {
 
   const handleImport = async (data: any[]) => {
     const entries = data.map((row) => {
+      const assignedDepartmentNames = getImportValue(row, ['Departments', 'Department', 'Assigned Departments'])?.toString() || row['Department'];
+      const primaryDepartmentName = getImportValue(row, ['Primary Department'])?.toString() || '';
       const payload = {
         full_name: row['Full Name'],
         employee_id: row['Employee ID']?.toString(),
         role: canonicalizeRoleLabel(row['Role']),
         email: row['Email Address'],
         school: row['School'],
-        department: row['Department'],
+        department: primaryDepartmentName || assignedDepartmentNames,
+        assigned_departments: assignedDepartmentNames,
+        primary_department: primaryDepartmentName,
         access_type: row['Access Type'],
         access_scope: row['Access Scope'],
         password: getImportValue(row, ['Password', 'Password / Admin Reset'])?.toString() || 'Welcome123'
@@ -11432,7 +11650,8 @@ function SchedulingManagement() {
 }
 
 function BookingManagement() {
-  const { user } = useAuth();
+  const { user, selectedHodDepartmentId, setSelectedHodDepartmentId } = useAuth();
+  const navigate = useNavigate();
   const location = useLocation();
   const initialBookingSearchRef = useRef(false);
   const getToday = () => {
@@ -11488,7 +11707,10 @@ function BookingManagement() {
     eventName: '',
     purpose: '',
     purposeType: 'Non-Academic',
+    requestType: 'Department Room' as 'Department Room' | 'Additional Room',
     departmentId: '',
+    requiredCapacity: '',
+    preferredBuilding: '',
     equipmentRequired: '',
     notes: '',
     recurring: false,
@@ -11497,14 +11719,62 @@ function BookingManagement() {
   const [selectedBookingSlotWindowKey, setSelectedBookingSlotWindowKey] = useState('');
   const [statusTab, setStatusTab] = useState('Active');
   const [bookingSearch, setBookingSearch] = useState('');
+  const [bookingRoomAssignments, setBookingRoomAssignments] = useState<Record<string, string>>({});
+  const [bookingRoomCandidates, setBookingRoomCandidates] = useState<Record<string, any[]>>({});
+  const [bookingRoomCandidateLoading, setBookingRoomCandidateLoading] = useState<Record<string, boolean>>({});
+  const [bookingStatusModal, setBookingStatusModal] = useState<{ booking: any; status: string; remark: string } | null>(null);
+  const [bookingAllocationModal, setBookingAllocationModal] = useState<{ booking: any; room: any; note: string } | null>(null);
+  const [bookingAlternativeModal, setBookingAlternativeModal] = useState<{
+    booking: any;
+    suggestedDate: string;
+    suggestedStartTime: string;
+    suggestedEndTime: string;
+    suggestedCapacity: string;
+    suggestedRoomType: string;
+    suggestedBuilding: string;
+    suggestedRoomCount: string;
+    suggestionNote: string;
+  } | null>(null);
+  const [bookingRevisionModal, setBookingRevisionModal] = useState<{
+    booking: any;
+    date: string;
+    startTime: string;
+    endTime: string;
+    requiredCapacity: string;
+    roomType: string;
+    preferredBuilding: string;
+    notes: string;
+    revisionNote: string;
+  } | null>(null);
+  const [selectedBookingDetails, setSelectedBookingDetails] = useState<any>(null);
+  const [selectedBookingActivity, setSelectedBookingActivity] = useState<any[]>([]);
+  const [selectedBookingActivityLoading, setSelectedBookingActivityLoading] = useState(false);
+  const [selectedBookingAlternatives, setSelectedBookingAlternatives] = useState<any[]>([]);
+  const [selectedBookingAlternativesLoading, setSelectedBookingAlternativesLoading] = useState(false);
+  const [selectedBookingTemporaryAllocations, setSelectedBookingTemporaryAllocations] = useState<any[]>([]);
+  const [selectedBookingTemporaryAllocationsLoading, setSelectedBookingTemporaryAllocationsLoading] = useState(false);
   const [selectedRoomForSchedule, setSelectedRoomForSchedule] = useState<any>(null);
   const [roomSchedule, setRoomSchedule] = useState<any>(null);
   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
+  const bookingStatusTabs = ['Active', 'Pending', 'HOD Recommended', 'Awaiting Alternative Response', 'No Room Available', 'Waitlisted', 'Clarification Required', 'Approved', 'Postponed', 'Rejected', 'Past'];
 
   const isSchoolDean = user?.role === 'Dean';
+  const isHodUser = normalizeRoleValue(user?.role) === 'hod';
+  const hodDepartmentIds = useMemo(
+    () => getAssignedDepartmentIdsFromUser(user),
+    [user],
+  );
 
   const fetchMyBookings = async () => {
-    const res = await fetch('/api/bookings', { credentials: 'include' });
+    const params = new URLSearchParams(location.search);
+    const allowedForwardParams = ['status', 'departmentId', 'requestType', 'assignment', 'decision'];
+    const filteredParams = new URLSearchParams();
+    allowedForwardParams.forEach(key => {
+      const value = params.get(key);
+      if (value) filteredParams.set(key, value);
+    });
+    const query = filteredParams.toString();
+    const res = await fetch(`/api/bookings${query ? `?${query}` : ''}`, { credentials: 'include' });
     const data = await res.json();
     setMyBookings(data.filter((b: any) => b.faculty_name === user?.name || canApproveBookings || canRecommendBookings || isSchoolDean));
   };
@@ -11512,9 +11782,33 @@ function BookingManagement() {
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const requestedStatus = params.get('status');
-    const allowedStatuses = ['Active', 'Pending', 'HOD Recommended', 'Approved', 'Postponed', 'Rejected', 'Past'];
+    const allowedStatuses = bookingStatusTabs;
     setStatusTab(requestedStatus && allowedStatuses.includes(requestedStatus) ? requestedStatus : 'Active');
   }, [location.search]);
+
+  const bookingWorkflowFilters = useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    return {
+      requestType: params.get('requestType') || '',
+      assignment: params.get('assignment') || '',
+      decision: params.get('decision') || '',
+    };
+  }, [location.search]);
+  const activeBookingWorkflowFilterChips = useMemo(() => {
+    const chips: Array<{ key: 'requestType' | 'assignment' | 'decision'; label: string }> = [];
+    if (bookingWorkflowFilters.requestType) {
+      chips.push({ key: 'requestType', label: `Request Type: ${bookingWorkflowFilters.requestType}` });
+    }
+    if (bookingWorkflowFilters.assignment === 'unassigned') {
+      chips.push({ key: 'assignment', label: 'Assignment: Unassigned Only' });
+    } else if (bookingWorkflowFilters.assignment === 'assigned') {
+      chips.push({ key: 'assignment', label: 'Assignment: Assigned Only' });
+    }
+    if (bookingWorkflowFilters.decision === 'ready') {
+      chips.push({ key: 'decision', label: 'Decision: Ready Now' });
+    }
+    return chips;
+  }, [bookingWorkflowFilters]);
 
   useEffect(() => {
     fetchMyBookings();
@@ -11585,15 +11879,25 @@ function BookingManagement() {
   const canRecommendBookings = user?.role === 'HOD';
   const canApproveBookings = canDirectDecideBookings || canDeputyDecideBookings;
   const canChooseAnyRequestDepartment = canApproveBookings || isAdminRole(user?.role) || isSchoolDean;
-  const userDepartmentId = departments.find(dept => normalizeLookupValue(dept.name) === normalizeLookupValue(user?.department))?.id?.toString() || '';
+  const userDepartmentId = selectedHodDepartmentId
+    || departments.find(dept => normalizeLookupValue(dept.name) === normalizeLookupValue(user?.department))?.id?.toString()
+    || '';
   const userSchoolId = schools.find((school: any) => normalizeLookupValue(school?.name) === normalizeLookupValue(user?.school))?.id?.toString() || '';
   const bookingDepartmentOptions = canChooseAnyRequestDepartment
     ? departments
     : normalizeLookupValue(user?.role) === 'dean' && userSchoolId
       ? departments.filter((dept: any) => idsMatch(dept?.school_id, userSchoolId))
-      : !user?.department
-        ? departments
-        : departments.filter(dept => normalizeLookupValue(dept.name) === normalizeLookupValue(user.department));
+      : isHodUser && hodDepartmentIds.length > 0
+        ? departments.filter((dept: any) => hodDepartmentIds.some((departmentId: string) => idsMatch(dept?.id, departmentId)))
+        : !user?.department
+          ? departments
+          : departments.filter(dept => normalizeLookupValue(dept.name) === normalizeLookupValue(user.department));
+  const hodDepartmentOptions = useMemo(
+    () => bookingDepartmentOptions
+      .map((department: any) => ({ value: department.id?.toString?.() || '', label: department.name }))
+      .filter((option: any) => option.value),
+    [bookingDepartmentOptions],
+  );
   const selectedAcademicContextLabel = [
     departments.find(dept => idsMatch(dept.id, searchCriteria.departmentId))?.name,
     searchCriteria.semester,
@@ -11687,6 +11991,96 @@ function BookingManagement() {
   }, [user?.name, user?.role, user?.department]);
 
   useEffect(() => {
+    if (!selectedBookingDetails?.id) {
+      setSelectedBookingActivity([]);
+      setSelectedBookingActivityLoading(false);
+      return;
+    }
+    let isActive = true;
+    setSelectedBookingActivityLoading(true);
+    fetch(`/api/bookings/${selectedBookingDetails.id}/activity`, { credentials: 'include' })
+      .then(async res => {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to load booking activity.');
+        if (isActive) setSelectedBookingActivity(Array.isArray(data) ? data : []);
+      })
+      .catch(error => {
+        if (isActive) {
+          console.error(error);
+          setSelectedBookingActivity([]);
+        }
+      })
+      .finally(() => {
+        if (isActive) setSelectedBookingActivityLoading(false);
+      });
+    return () => {
+      isActive = false;
+    };
+  }, [selectedBookingDetails?.id]);
+
+  useEffect(() => {
+    if (!selectedBookingDetails?.id) {
+      setSelectedBookingAlternatives([]);
+      setSelectedBookingAlternativesLoading(false);
+      return;
+    }
+    let isActive = true;
+    setSelectedBookingAlternativesLoading(true);
+    fetch(`/api/bookings/${selectedBookingDetails.id}/alternatives`, { credentials: 'include' })
+      .then(async res => {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to load booking alternatives.');
+        if (isActive) setSelectedBookingAlternatives(Array.isArray(data) ? data : []);
+      })
+      .catch(error => {
+        if (isActive) {
+          console.error(error);
+          setSelectedBookingAlternatives([]);
+        }
+      })
+      .finally(() => {
+        if (isActive) setSelectedBookingAlternativesLoading(false);
+      });
+    return () => {
+      isActive = false;
+    };
+  }, [selectedBookingDetails?.id]);
+
+  useEffect(() => {
+    if (!selectedBookingDetails?.id) {
+      setSelectedBookingTemporaryAllocations([]);
+      setSelectedBookingTemporaryAllocationsLoading(false);
+      return;
+    }
+    let isActive = true;
+    setSelectedBookingTemporaryAllocationsLoading(true);
+    fetch(`/api/temporary-room-allocations?bookingId=${selectedBookingDetails.id}`, { credentials: 'include' })
+      .then(async res => {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to load temporary room allocation details.');
+        if (isActive) setSelectedBookingTemporaryAllocations(Array.isArray(data) ? data : []);
+      })
+      .catch(error => {
+        if (isActive) {
+          console.error(error);
+          setSelectedBookingTemporaryAllocations([]);
+        }
+      })
+      .finally(() => {
+        if (isActive) setSelectedBookingTemporaryAllocationsLoading(false);
+      });
+    return () => {
+      isActive = false;
+    };
+  }, [selectedBookingDetails?.id]);
+
+  useEffect(() => {
+    if (!isHodUser || !userDepartmentId) return;
+    setSearchCriteria(prev => prev.departmentId === userDepartmentId ? prev : { ...prev, departmentId: userDepartmentId });
+    setBookingForm(prev => prev.departmentId === userDepartmentId ? prev : { ...prev, departmentId: userDepartmentId });
+  }, [isHodUser, userDepartmentId]);
+
+  useEffect(() => {
     if (initialBookingSearchRef.current) return;
     if (rooms.length === 0 || floors.length === 0 || blocks.length === 0 || buildings.length === 0) return;
     initialBookingSearchRef.current = true;
@@ -11720,10 +12114,13 @@ function BookingManagement() {
     return `${count} ${unit}${count === 1 ? '' : 's'} (${searchCriteria.time} - ${bookingEndTime} each day)`;
   };
   const getBookingItems = (booking: any) => booking.bookingItems || [booking];
+  const bookingRequestTypeOptions: Array<'Department Room' | 'Additional Room'> = ['Department Room', 'Additional Room'];
   function getBookingRoomNumber(booking: any) {
     if (booking.room_numbers?.length) return booking.room_numbers.join(', ');
     const room = rooms.find(item => item.id == booking.room_id);
-    return room ? getRoomDisplayLabel(room, rooms) : booking.room_number || 'Not selected';
+    if (room) return getRoomDisplayLabel(room, rooms);
+    if (booking.request_type === 'Additional Room') return booking.room_number || 'Allocation Pending';
+    return booking.room_number || 'Not selected';
   }
   const groupedBookings = useMemo(() => {
     const groups = new Map<string, any[]>();
@@ -11782,6 +12179,169 @@ function BookingManagement() {
   const getBookingTimeLabel = (booking: any) => `${booking.start_time} - ${booking.end_time}`;
   const getBookingPolicyLabel = (booking: any) => booking.purpose_type || 'Non-Academic';
   const isTemporaryOverrideBookingRecord = (booking: any) => Number(booking.timing_override || 0) === 1;
+  const getBookingAssignmentKey = (booking: any) => booking.request_group_id || booking.id?.toString?.() || '';
+  const canRequesterManageBooking = (booking: any) => booking.faculty_name === user?.name && !canApproveBookings;
+  const getLatestPendingAlternative = (alternatives: any[]) =>
+    (Array.isArray(alternatives) ? alternatives : []).find((item: any) => item?.status === 'Pending Response') || null;
+  const formatAlternativeSummary = (alternative: any) => {
+    const parts = [
+      alternative?.suggested_date || '',
+      alternative?.suggested_start_time && alternative?.suggested_end_time ? `${alternative.suggested_start_time} - ${alternative.suggested_end_time}` : '',
+      alternative?.suggested_capacity ? `Cap ${alternative.suggested_capacity}` : '',
+      alternative?.suggested_room_type || '',
+      alternative?.suggested_building || '',
+      alternative?.suggested_room_count ? `${alternative.suggested_room_count} room${alternative.suggested_room_count === 1 ? '' : 's'}` : '',
+    ].filter(Boolean);
+    return parts.length > 0 ? parts.join(' • ') : 'Alternative arrangement shared.';
+  };
+  const getBookingWorkflowSteps = (booking: any) => {
+    const steps = [
+      {
+        label: 'Request Submitted',
+        detail: `${booking.faculty_name || 'Requester'} submitted ${booking.request_type === 'Additional Room' ? 'an additional-room request' : 'a room request'}.`,
+        complete: true,
+      },
+      {
+        label: 'HOD Review',
+        detail: booking.recommended_by
+          ? `Recommended by ${booking.recommended_by}.`
+          : booking.status === 'Pending'
+            ? 'Waiting for HOD recommendation when required.'
+            : 'No HOD recommendation recorded.',
+        complete: booking.status === 'HOD Recommended' || booking.status === 'Approved' || !!booking.recommended_by,
+      },
+      {
+        label: 'Room Allocation',
+        detail: booking.room_id
+          ? `Assigned to Room ${getBookingRoomNumber(booking)}.`
+          : booking.request_type === 'Additional Room'
+            ? 'Room not assigned yet.'
+            : `Requested room: ${getBookingRoomNumber(booking)}.`,
+        complete: booking.request_type !== 'Additional Room' || !!booking.room_id,
+      },
+      {
+        label: 'Final Decision',
+        detail: booking.status === 'Approved'
+          ? `Approved${booking.decided_by ? ` by ${booking.decided_by}` : ''}.`
+          : booking.status === 'Rejected'
+            ? `Rejected${booking.decided_by ? ` by ${booking.decided_by}` : ''}.`
+            : booking.status === 'Postponed'
+              ? `Postponed${booking.decided_by ? ` by ${booking.decided_by}` : ''}.`
+              : booking.status === 'No Room Available'
+                ? `Marked as no suitable room available${booking.decided_by ? ` by ${booking.decided_by}` : ''}.`
+                : booking.status === 'Waitlisted'
+                  ? `Placed on the waitlist${booking.decided_by ? ` by ${booking.decided_by}` : ''}.`
+                  : booking.status === 'Clarification Required'
+                    ? `Returned for clarification${booking.decided_by ? ` by ${booking.decided_by}` : ''}.`
+                    : booking.status === 'Awaiting Alternative Response'
+                      ? 'Waiting for the requester to respond to the proposed alternative.'
+              : 'Awaiting final decision.',
+        complete: ['Approved', 'Rejected', 'Postponed', 'No Room Available', 'Waitlisted', 'Clarification Required'].includes(booking.status),
+      },
+    ];
+    return steps;
+  };
+  const formatBookingActivityTimestamp = (value: any) => {
+    const raw = value?.toString?.().trim?.() || '';
+    if (!raw) return 'Time not recorded';
+    const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+    const parsed = new Date(normalized);
+    if (Number.isNaN(parsed.getTime())) return raw;
+    return parsed.toLocaleString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  };
+  const getBookingActivityTone = (item: any) => {
+    switch (item?.action_type) {
+      case 'created':
+        return {
+          card: 'border-emerald-200 bg-emerald-50',
+          badge: 'bg-emerald-100 text-emerald-700',
+          label: 'Submitted',
+        };
+      case 'room_assigned':
+        return {
+          card: 'border-blue-200 bg-blue-50',
+          badge: 'bg-blue-100 text-blue-700',
+          label: item?.room_id_to != null ? 'Allocated' : 'Allocation Updated',
+        };
+      case 'status_changed':
+        return {
+          card: 'border-amber-200 bg-amber-50',
+          badge: 'bg-amber-100 text-amber-700',
+          label: 'Decision',
+        };
+      case 'alternative_suggested':
+        return {
+          card: 'border-fuchsia-200 bg-fuchsia-50',
+          badge: 'bg-fuchsia-100 text-fuchsia-700',
+          label: 'Alternative',
+        };
+      case 'alternative_accepted':
+      case 'alternative_declined':
+      case 'request_revised':
+        return {
+          card: 'border-cyan-200 bg-cyan-50',
+          badge: 'bg-cyan-100 text-cyan-700',
+          label: 'Requester Response',
+        };
+      case 'deleted':
+        return {
+          card: 'border-rose-200 bg-rose-50',
+          badge: 'bg-rose-100 text-rose-700',
+          label: 'Deleted',
+        };
+      default:
+        return {
+          card: 'border-slate-200 bg-slate-50',
+          badge: 'bg-slate-200 text-slate-700',
+          label: 'Update',
+        };
+    }
+  };
+  const getBookingActivitySummary = (item: any, timelineRoom: any) => {
+    const actorName = item?.actor_name || 'System';
+    switch (item?.action_type) {
+      case 'created':
+        return `${actorName} submitted this request.`;
+      case 'room_assigned':
+        return timelineRoom
+          ? `${actorName} assigned Room ${getRoomDisplayLabel(timelineRoom, rooms)}.`
+          : `${actorName} updated the room allocation.`;
+      case 'status_changed':
+        if (item?.status_from && item?.status_to) {
+          return `${actorName} changed the request from ${item.status_from} to ${item.status_to}.`;
+        }
+        return `${actorName} updated the request status.`;
+      case 'status_note_updated':
+        return `${actorName} updated the decision note.`;
+      case 'allocation_note_updated':
+        return `${actorName} updated the allocation note.`;
+      case 'alternative_suggested':
+        return `${actorName} shared an alternative arrangement for requester review.`;
+      case 'alternative_accepted':
+        return `${actorName} accepted the proposed alternative.`;
+      case 'alternative_declined':
+        return `${actorName} declined the proposed alternative.`;
+      case 'request_revised':
+        return `${actorName} revised the room requirements and resubmitted the request.`;
+      case 'deleted':
+        return `${actorName} deleted this request.`;
+      default:
+        return item?.message || `${actorName} updated this request.`;
+    }
+  };
+  const getBookingActivityMetaBadges = (item: any, timelineRoom: any) => {
+    const badges: string[] = [];
+    if (item?.status_from) badges.push(`From: ${item.status_from}`);
+    if (item?.status_to) badges.push(`To: ${item.status_to}`);
+    if (timelineRoom) badges.push(`Room: ${getRoomDisplayLabel(timelineRoom, rooms)}`);
+    return badges;
+  };
   const selectedBuilding = buildings.find(b => b.id == searchCriteria.buildingId);
   const selectedBuildingBlocks = blocks.filter(block => block.building_id == searchCriteria.buildingId);
   const visibleBlocks = selectedBuilding ? selectedBuildingBlocks.filter(block => !isImplicitBuildingBlock(block, selectedBuilding)) : [];
@@ -11851,11 +12411,18 @@ function BookingManagement() {
   const filteredBookings = groupedBookings.filter(booking => {
     const displayStatus = getDisplayStatus(booking);
     if (user?.role === 'HOD') {
-      const bookingDepartmentName = booking.department_name || departments.find(department => department.id === booking.department_id)?.name;
-      if (user.department && booking.faculty_name !== user?.name && bookingDepartmentName !== user.department) return false;
+      if (userDepartmentId && booking.department_id != null && !idsMatch(booking.department_id, userDepartmentId)) return false;
     }
     if (statusTab === 'Active' && displayStatus === 'Past') return false;
     if (statusTab !== 'Active' && displayStatus !== statusTab) return false;
+    if (bookingWorkflowFilters.requestType && booking.request_type !== bookingWorkflowFilters.requestType) return false;
+    if (bookingWorkflowFilters.assignment === 'unassigned' && booking.room_id) return false;
+    if (bookingWorkflowFilters.assignment === 'assigned' && !booking.room_id) return false;
+    if (bookingWorkflowFilters.decision === 'ready') {
+      const isReadyForDecision = displayStatus === 'HOD Recommended'
+        || (booking.request_type === 'Additional Room' && ['Pending', 'HOD Recommended'].includes(displayStatus) && !!booking.room_id);
+      if (!isReadyForDecision) return false;
+    }
     const query = bookingSearch.toLowerCase();
     return !query || [booking.event_name, getBookingRoomNumber(booking), booking.faculty_name, getBookingDateLabel(booking), displayStatus]
       .some(value => value?.toString().toLowerCase().includes(query));
@@ -11938,13 +12505,58 @@ function BookingManagement() {
       eventName: '',
       purpose: '',
       purposeType: searchCriteria.departmentId ? 'Academic Regular' : 'Non-Academic',
+      requestType: 'Department Room',
       departmentId: searchCriteria.departmentId || userDepartmentId,
+      requiredCapacity: searchCriteria.members,
+      preferredBuilding: buildings.find(building => idsMatch(building.id, searchCriteria.buildingId))?.name || '',
       equipmentRequired: searchCriteria.equipment,
       notes: '',
       recurring: false,
       recurringWeeks: '2'
     });
     setBookingModal({ rooms: bookingRooms, combined });
+  };
+  const getAssignableRoomsForBooking = (booking: any, candidateRooms: any[] = rooms) => {
+    const requiredCapacity = parseInt(booking.required_capacity || booking.student_count || '0', 10) || 0;
+    const preferredBuilding = normalizeLookupValue(booking.preferred_building);
+    const requestedRoomType = normalizeRoomTypeValue(booking.room_type);
+    return candidateRooms
+      .filter(room => {
+        if (!isRoomReservable(room)) return false;
+        if (requiredCapacity > 0 && (parseInt(room.capacity, 10) || 0) < requiredCapacity) return false;
+        if (requestedRoomType && requestedRoomType !== 'additional room requirement' && normalizeRoomTypeValue(room.room_type) !== requestedRoomType) return false;
+        return true;
+      })
+      .sort((left, right) => {
+        const leftDetails = getRoomDetails(left);
+        const rightDetails = getRoomDetails(right);
+        const leftPreferred = preferredBuilding && normalizeLookupValue(leftDetails.building?.name) === preferredBuilding ? 1 : 0;
+        const rightPreferred = preferredBuilding && normalizeLookupValue(rightDetails.building?.name) === preferredBuilding ? 1 : 0;
+        if (leftPreferred !== rightPreferred) return rightPreferred - leftPreferred;
+        const leftCapacityDiff = requiredCapacity > 0 ? Math.abs((parseInt(left.capacity, 10) || 0) - requiredCapacity) : 0;
+        const rightCapacityDiff = requiredCapacity > 0 ? Math.abs((parseInt(right.capacity, 10) || 0) - requiredCapacity) : 0;
+        if (leftCapacityDiff !== rightCapacityDiff) return leftCapacityDiff - rightCapacityDiff;
+        return compareRoomsByNaturalOrder(left, right, rooms);
+      });
+  };
+
+  const openAdditionalRoomRequestModal = () => {
+    setBookingMessage(null);
+    setSelectedBookingSlotWindowKey('');
+    setBookingForm({
+      eventName: '',
+      purpose: '',
+      purposeType: searchCriteria.departmentId ? 'Academic Regular' : 'Non-Academic',
+      requestType: 'Additional Room',
+      departmentId: searchCriteria.departmentId || userDepartmentId,
+      requiredCapacity: searchCriteria.members,
+      preferredBuilding: buildings.find(building => idsMatch(building.id, searchCriteria.buildingId))?.name || '',
+      equipmentRequired: searchCriteria.equipment,
+      notes: '',
+      recurring: false,
+      recurringWeeks: '2'
+    });
+    setBookingModal({ rooms: [], combined: false });
   };
 
   const handleBook = async () => {
@@ -11962,7 +12574,13 @@ function BookingManagement() {
       setBookingMessage({ type: 'error', text: 'Please select a department so the request can go to the respective HOD.' });
       return;
     }
-    const status = canDirectDecideBookings ? 'Approved' : 'Pending';
+    if (bookingForm.requestType === 'Additional Room' && !(parseInt(bookingForm.requiredCapacity, 10) > 0 || parseInt(searchCriteria.members, 10) > 0)) {
+      setBookingMessage({ type: 'error', text: 'Required capacity is needed for an additional room request.' });
+      return;
+    }
+    const status = bookingForm.requestType === 'Additional Room'
+      ? 'Pending'
+      : canDirectDecideBookings ? 'Approved' : 'Pending';
     const bookingDates = searchCriteria.durationUnit === 'hours' && bookingForm.recurring
       ? Array.from({ length: Math.max(1, parseInt(bookingForm.recurringWeeks, 10) || 1) }, (_, week) => {
         const bookingDate = new Date(`${searchCriteria.date}T00:00:00`);
@@ -11974,10 +12592,13 @@ function BookingManagement() {
       ? `REQ-GROUP-${Date.now()}`
       : null;
     const errors: string[] = [];
+    const roomsToSubmit = bookingForm.requestType === 'Additional Room'
+      ? [{ id: null, room_type: searchCriteria.roomType || 'Additional Room Requirement', room_number: 'Allocation Pending' }]
+      : bookingModal.rooms;
 
     for (let dateIndex = 0; dateIndex < bookingDates.length; dateIndex += 1) {
       const date = bookingDates[dateIndex];
-      for (const room of bookingModal.rooms) {
+      for (const room of roomsToSubmit) {
         const payload = {
           request_id: `REQ-${Date.now()}-${dateIndex}-${room.id}`,
           request_group_id: requestGroupId,
@@ -11986,8 +12607,11 @@ function BookingManagement() {
           event_name: bookingForm.eventName.trim(),
           purpose: bookingForm.purpose.trim(),
           purpose_type: bookingForm.purposeType,
+          request_type: bookingForm.requestType,
           notes: bookingForm.notes.trim(),
           student_count: parseInt(searchCriteria.members, 10) || null,
+          required_capacity: parseInt(bookingForm.requiredCapacity, 10) || parseInt(searchCriteria.members, 10) || null,
+          preferred_building: bookingForm.preferredBuilding.trim(),
           room_type: room.room_type,
           room_id: room.id,
           equipment_required: bookingForm.equipmentRequired.trim(),
@@ -12005,7 +12629,7 @@ function BookingManagement() {
         });
         if (!res.ok) {
           const err = await res.json();
-          errors.push(`Room ${getRoomDisplayLabel(room, rooms)}: ${err.error || 'Operation failed'}`);
+          errors.push(`${bookingForm.requestType === 'Additional Room' ? 'Additional room request' : `Room ${getRoomDisplayLabel(room, rooms)}`}: ${err.error || 'Operation failed'}`);
         }
       }
     }
@@ -12013,26 +12637,34 @@ function BookingManagement() {
     await fetchMyBookings();
     await handleSearch({ preventDefault: () => {} } as any);
     setBookingMessage(errors.length
-      ? { type: 'error', text: errors.join(' ') }
-      : {
+        ? { type: 'error', text: errors.join(' ') }
+        : {
           type: 'success',
           text: status === 'Approved'
-            ? `Room booking saved successfully${isTimingOverrideBooking ? ' as a temporary override.' : '.'}`
+            ? `${bookingForm.requestType === 'Additional Room' ? 'Additional room request saved and assigned successfully' : 'Room booking saved successfully'}${isTimingOverrideBooking ? ' as a temporary override.' : '.'}`
             : requestGroupId
-              ? `Booking request submitted as a single grouped request${isTimingOverrideBooking ? ' with a temporary override.' : '.'}`
-              : `Booking request submitted for approval${isTimingOverrideBooking ? ' with a temporary override.' : '.'}`
+              ? `${bookingForm.requestType === 'Additional Room' ? 'Additional room requirement submitted as a grouped request' : 'Booking request submitted as a single grouped request'}${isTimingOverrideBooking ? ' with a temporary override.' : '.'}`
+              : `${bookingForm.requestType === 'Additional Room' ? 'Additional room requirement submitted for dean allocation review' : 'Booking request submitted for approval'}${isTimingOverrideBooking ? ' with a temporary override.' : '.'}`
         });
   };
 
   const updateBookingStatus = async (booking: any, status: string) => {
+    const existingRemark = typeof booking?.status_remark === 'string' ? booking.status_remark : '';
+    setBookingStatusModal({ booking, status, remark: existingRemark });
+  };
+
+  const submitBookingStatusUpdate = async () => {
+    if (!bookingStatusModal) return;
+    const { booking, status, remark } = bookingStatusModal;
     const bookingItems = getBookingItems(booking);
     const errors: string[] = [];
+    const statusRemark = remark.trim();
 
     for (const item of bookingItems) {
       const res = await fetch(`/api/bookings/${item.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status }),
+        body: JSON.stringify({ status, status_remark: statusRemark || null }),
         credentials: 'include'
       });
       if (!res.ok) {
@@ -12044,15 +12676,301 @@ function BookingManagement() {
       setBookingMessage({ type: 'error', text: errors.join(' ') });
       return;
     }
+    setBookingStatusModal(null);
     setBookingMessage({
       type: 'success',
       text: status === 'Rejected'
         ? (booking.faculty_name === user?.name ? 'Request cancelled.' : 'Request rejected.')
         : status === 'Postponed'
           ? 'Postpone request sent to the requester.'
+          : status === 'No Room Available'
+            ? 'Request marked as no suitable room available.'
+            : status === 'Waitlisted'
+              ? 'Request moved to the waitlist.'
+              : status === 'Clarification Required'
+                ? 'Request returned for clarification.'
           : `Booking marked as ${status}.`
     });
     await fetchMyBookings();
+  };
+
+  const assignRoomToBooking = async (booking: any) => {
+    const assignmentKey = getBookingAssignmentKey(booking);
+    const selectedRoomId = bookingRoomAssignments[assignmentKey];
+    if (!selectedRoomId) {
+      setBookingMessage({ type: 'error', text: 'Please choose a room before assigning it to this request.' });
+      return;
+    }
+    const selectedRoom = rooms.find(room => idsMatch(room.id, selectedRoomId));
+    if (!selectedRoom) {
+      setBookingMessage({ type: 'error', text: 'The selected room could not be found.' });
+      return;
+    }
+    setBookingAllocationModal({
+      booking,
+      room: selectedRoom,
+      note: (booking.allocation_note || booking.status_remark || '').toString(),
+    });
+  };
+
+  const submitRoomAssignment = async () => {
+    if (!bookingAllocationModal) return;
+    const { booking, room: selectedRoom, note } = bookingAllocationModal;
+    const allocationNote = note.trim();
+    const bookingItems = getBookingItems(booking);
+    const errors: string[] = [];
+
+    for (const item of bookingItems) {
+      const res = await fetch(`/api/bookings/${item.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          room_id: selectedRoom.id,
+          room_type: selectedRoom.room_type,
+          allocation_note: allocationNote || null,
+        }),
+        credentials: 'include'
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        errors.push(err.error || `Failed to assign ${getRoomDisplayLabel(selectedRoom, rooms)} to ${item.event_name || 'this request'}.`);
+      }
+    }
+
+    if (errors.length) {
+      setBookingMessage({ type: 'error', text: errors.join(' ') });
+      return;
+    }
+
+    setBookingAllocationModal(null);
+    setBookingRoomAssignments(prev => {
+      const next = { ...prev };
+      delete next[getBookingAssignmentKey(booking)];
+      return next;
+    });
+    setBookingMessage({ type: 'success', text: `Assigned Room ${getRoomDisplayLabel(selectedRoom, rooms)} to the request.` });
+    await fetchMyBookings();
+  };
+
+  const openAlternativeSuggestionModal = (booking: any) => {
+    setBookingAlternativeModal({
+      booking,
+      suggestedDate: booking.date || '',
+      suggestedStartTime: booking.start_time || '',
+      suggestedEndTime: booking.end_time || '',
+      suggestedCapacity: booking.required_capacity?.toString?.() || booking.student_count?.toString?.() || '',
+      suggestedRoomType: booking.room_type || '',
+      suggestedBuilding: booking.preferred_building || '',
+      suggestedRoomCount: '',
+      suggestionNote: booking.status_remark || '',
+    });
+  };
+
+  const submitAlternativeSuggestion = async () => {
+    if (!bookingAlternativeModal) return;
+    const payload = {
+      suggested_date: bookingAlternativeModal.suggestedDate || null,
+      suggested_start_time: bookingAlternativeModal.suggestedStartTime || null,
+      suggested_end_time: bookingAlternativeModal.suggestedEndTime || null,
+      suggested_capacity: bookingAlternativeModal.suggestedCapacity || null,
+      suggested_room_type: bookingAlternativeModal.suggestedRoomType || null,
+      suggested_building: bookingAlternativeModal.suggestedBuilding || null,
+      suggested_room_count: bookingAlternativeModal.suggestedRoomCount || null,
+      suggestion_note: bookingAlternativeModal.suggestionNote || null,
+    };
+    const res = await fetch(`/api/bookings/${bookingAlternativeModal.booking.id}/alternatives`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      credentials: 'include',
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setBookingMessage({ type: 'error', text: data.error || 'Failed to send the alternative proposal.' });
+      return;
+    }
+    setBookingAlternativeModal(null);
+    setBookingMessage({ type: 'success', text: 'Alternative proposal shared with the requester.' });
+    await fetchMyBookings();
+    if (selectedBookingDetails?.id && selectedBookingDetails.id === bookingAlternativeModal.booking.id) {
+      setSelectedBookingDetails({ ...selectedBookingDetails, status: 'Awaiting Alternative Response' });
+    }
+  };
+
+  const respondToAlternative = async (booking: any, alternative: any, response: 'accept' | 'decline') => {
+    const res = await fetch(`/api/bookings/${booking.id}/alternatives/${alternative.id}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ response, response_note: null }),
+      credentials: 'include',
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setBookingMessage({ type: 'error', text: data.error || 'Failed to record the alternative response.' });
+      return;
+    }
+    setBookingMessage({
+      type: 'success',
+      text: response === 'accept'
+        ? 'Alternative accepted and the request is back under review.'
+        : 'Alternative declined. The request remains open for further planning action.',
+    });
+    await fetchMyBookings();
+    if (selectedBookingDetails?.id === booking.id) {
+      setSelectedBookingDetails(null);
+    }
+  };
+
+  const openRevisionModal = (booking: any) => {
+    setBookingRevisionModal({
+      booking,
+      date: booking.date || '',
+      startTime: booking.start_time || '',
+      endTime: booking.end_time || '',
+      requiredCapacity: booking.required_capacity?.toString?.() || booking.student_count?.toString?.() || '',
+      roomType: booking.room_type || '',
+      preferredBuilding: booking.preferred_building || '',
+      notes: booking.notes || '',
+      revisionNote: booking.status_remark || '',
+    });
+  };
+
+  const submitBookingRevision = async () => {
+    if (!bookingRevisionModal) return;
+    const res = await fetch(`/api/bookings/${bookingRevisionModal.booking.id}/revise`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        date: bookingRevisionModal.date || null,
+        start_time: bookingRevisionModal.startTime || null,
+        end_time: bookingRevisionModal.endTime || null,
+        required_capacity: bookingRevisionModal.requiredCapacity || null,
+        room_type: bookingRevisionModal.roomType || null,
+        preferred_building: bookingRevisionModal.preferredBuilding || null,
+        notes: bookingRevisionModal.notes || null,
+        revision_note: bookingRevisionModal.revisionNote || null,
+      }),
+      credentials: 'include',
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setBookingMessage({ type: 'error', text: data.error || 'Failed to submit the revised request.' });
+      return;
+    }
+    setBookingRevisionModal(null);
+    setBookingMessage({ type: 'success', text: 'Request revised and sent back for review.' });
+    await fetchMyBookings();
+    if (selectedBookingDetails?.id === bookingRevisionModal.booking.id) {
+      setSelectedBookingDetails(null);
+    }
+  };
+
+  const getBookingStatusActionMeta = (booking: any, status: string) => {
+    const actionLabel = status === 'Approved'
+      ? 'Approve Booking'
+      : status === 'Rejected'
+        ? (booking?.faculty_name === user?.name && !canApproveBookings ? 'Cancel Request' : 'Reject Request')
+        : status === 'Postponed'
+          ? 'Request Postpone'
+          : status === 'HOD Recommended'
+            ? 'Recommend to Dean'
+            : status === 'No Room Available'
+              ? 'Mark No Room Available'
+              : status === 'Waitlisted'
+                ? 'Place on Waitlist'
+                : status === 'Clarification Required'
+                  ? 'Return for Clarification'
+            : status === 'Pending'
+              ? 'Reopen Request'
+              : 'Update Status';
+    const noteLabel = status === 'Approved'
+      ? 'Approval note'
+      : status === 'Rejected'
+        ? (booking?.faculty_name === user?.name && !canApproveBookings ? 'Cancellation note' : 'Rejection note')
+      : status === 'Postponed'
+        ? 'Postponement note'
+        : status === 'HOD Recommended'
+          ? 'Recommendation note'
+          : status === 'No Room Available'
+            ? 'No-room note'
+            : status === 'Waitlisted'
+              ? 'Waitlist note'
+              : status === 'Clarification Required'
+                ? 'Clarification note'
+            : status === 'Pending'
+              ? 'Reopen note'
+              : 'Status note';
+    const helperText = status === 'Approved'
+      ? 'Record any final approval context before the status changes.'
+      : status === 'Rejected'
+        ? 'This note will be saved in the workflow timeline for future reference.'
+      : status === 'Postponed'
+        ? 'Use this to explain what should change before the request is reconsidered.'
+        : status === 'HOD Recommended'
+          ? 'Add any recommendation context that will help the dean decide quickly.'
+          : status === 'No Room Available'
+            ? 'Record why no suitable room could be assigned for the requested requirements.'
+            : status === 'Waitlisted'
+              ? 'Explain what will trigger the request to be reviewed again.'
+              : status === 'Clarification Required'
+                ? 'Tell the requester exactly what needs to be clarified or revised.'
+            : status === 'Pending'
+              ? 'Optionally explain why the request is being reopened.'
+              : 'Add any context you want captured with this workflow update.';
+    return { actionLabel, noteLabel, helperText };
+  };
+
+  const clearBookingWorkflowFilter = (filterKey?: 'requestType' | 'assignment' | 'decision') => {
+    const params = new URLSearchParams(location.search);
+    if (filterKey) {
+      params.delete(filterKey);
+    } else {
+      params.delete('requestType');
+      params.delete('assignment');
+      params.delete('decision');
+    }
+    const nextSearch = params.toString();
+    navigate(`/bookings${nextSearch ? `?${nextSearch}` : ''}`);
+  };
+
+  const loadAssignableRoomsForBooking = async (booking: any) => {
+    const assignmentKey = getBookingAssignmentKey(booking);
+    setBookingRoomCandidateLoading(prev => ({ ...prev, [assignmentKey]: true }));
+    try {
+      const bookingItems = getBookingItems(booking);
+      const candidateLists = await Promise.all(bookingItems.map(async (item: any) => {
+        const params = new URLSearchParams({
+          date: item.date,
+          time: item.start_time,
+          duration: String(getSlotDurationMinutes(item.start_time, item.end_time) / 60),
+        });
+        const memberCount = parseInt(item.required_capacity || item.student_count || '0', 10) || 0;
+        if (memberCount > 0) params.set('members', memberCount.toString());
+        const res = await fetch(`/api/rooms/vacant?${params.toString()}`, { credentials: 'include' });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || `Failed to load vacant rooms for ${item.date}.`);
+        }
+        return Array.isArray(data) ? data : [];
+      }));
+      const commonRoomIds = candidateLists.reduce((common: Set<string> | null, roomList: any[]) => {
+        const ids = new Set(roomList.map((room: any) => room?.id?.toString?.()).filter(Boolean));
+        if (!common) return ids;
+        return new Set([...common].filter(id => ids.has(id)));
+      }, null);
+      const intersectedRooms = commonRoomIds
+        ? rooms.filter(room => commonRoomIds.has(room.id?.toString?.()))
+        : [];
+      const filteredRooms = getAssignableRoomsForBooking(booking, intersectedRooms);
+      setBookingRoomCandidates(prev => ({ ...prev, [assignmentKey]: filteredRooms }));
+      if (filteredRooms.length === 0) {
+        setBookingMessage({ type: 'error', text: 'No vacant rooms currently match this additional-room request across the selected booking window.' });
+      }
+    } catch (error: any) {
+      setBookingMessage({ type: 'error', text: error?.message || 'Failed to load vacant rooms for this request.' });
+    } finally {
+      setBookingRoomCandidateLoading(prev => ({ ...prev, [assignmentKey]: false }));
+    }
   };
 
   const deleteBookingRequest = async (booking: any) => {
@@ -12079,16 +12997,21 @@ function BookingManagement() {
   };
 
   const exportBookings = async () => {
-    const headers = ['Event', 'Faculty', 'Room', 'Date', 'Time', 'Status', 'Purpose', 'Purpose Type', 'Timing Override', 'Notes'];
+    const headers = ['Event', 'Faculty', 'Request Type', 'Room', 'Date', 'Time', 'Status', 'Status Remark', 'Allocation Note', 'Purpose', 'Purpose Type', 'Required Capacity', 'Preferred Building', 'Timing Override', 'Notes'];
     const rows = filteredBookings.map(booking => ([
       booking.event_name,
       booking.faculty_name,
+      booking.request_type || 'Department Room',
       getBookingRoomNumber(booking),
       getBookingDateLabel(booking),
       getBookingTimeLabel(booking),
       getDisplayStatus(booking),
+      booking.status_remark || '',
+      booking.allocation_note || '',
       booking.purpose || '',
       getBookingPolicyLabel(booking),
+      booking.required_capacity || booking.student_count || '',
+      booking.preferred_building || '',
       isTemporaryOverrideBookingRecord(booking) ? 'Yes' : 'No',
       booking.notes || '',
     ]));
@@ -12112,6 +13035,25 @@ function BookingManagement() {
 
   return (
     <div className="space-y-8">
+      {isHodUser && hodDepartmentOptions.length > 1 && (
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">HOD Department Context</p>
+              <p className="text-sm text-slate-600 mt-1">Vacancy checks and booking actions follow the selected department.</p>
+            </div>
+            <select
+              value={selectedHodDepartmentId}
+              onChange={event => setSelectedHodDepartmentId(event.target.value)}
+              className="sm:min-w-72 px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50"
+            >
+              {hodDepartmentOptions.map((option: any) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
       {/* Search Section */}
       <div className="bg-white p-8 rounded-2xl border border-slate-200 shadow-sm">
         <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center gap-2">
@@ -12280,11 +13222,15 @@ function BookingManagement() {
             <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Academic Department</label>
             <select
               value={searchCriteria.departmentId}
-              onChange={e => setSearchCriteria({ ...searchCriteria, departmentId: e.target.value })}
+              onChange={e => {
+                const departmentId = e.target.value;
+                if (isHodUser) setSelectedHodDepartmentId(departmentId);
+                setSearchCriteria({ ...searchCriteria, departmentId: departmentId });
+              }}
               className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
             >
-              <option value="">Any Department</option>
-              {departments
+              <option value="">{isHodUser ? 'Select Department' : 'Any Department'}</option>
+              {(isHodUser ? bookingDepartmentOptions : departments)
                 .slice()
                 .sort((a, b) => a.name?.localeCompare(b.name || '') || 0)
                 .map(department => <option key={department.id} value={department.id}>{department.name}</option>)}
@@ -12389,6 +13335,13 @@ function BookingManagement() {
               </button>
               <button
                 type="button"
+                onClick={openAdditionalRoomRequestModal}
+                className="sm:w-auto px-5 py-3 bg-amber-50 text-amber-800 font-bold rounded-xl border border-amber-200 hover:bg-amber-100 transition-all"
+              >
+                Request Additional Room
+              </button>
+              <button
+                type="button"
                 onClick={() => setSearchCriteria(prev => ({
                   ...prev,
                   members: '',
@@ -12468,6 +13421,12 @@ function BookingManagement() {
             <div className="text-center py-12 text-slate-400">
               <DoorOpen size={48} className="mx-auto mb-4 opacity-20" />
               <p>No vacant rooms found for the selected criteria.</p>
+              <button
+                onClick={openAdditionalRoomRequestModal}
+                className="mt-4 inline-flex items-center justify-center rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-bold text-amber-800 hover:bg-amber-100"
+              >
+                Submit Additional Room Requirement
+              </button>
             </div>
           )}
           {combinedOptions.length > 0 && (
@@ -12507,7 +13466,7 @@ function BookingManagement() {
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            {['Active', 'Pending', 'HOD Recommended', 'Approved', 'Postponed', 'Rejected', 'Past'].map(tab => (
+            {bookingStatusTabs.map(tab => (
               <button
                 key={tab}
                 onClick={() => setStatusTab(tab)}
@@ -12536,6 +13495,35 @@ function BookingManagement() {
             Export
           </button>
         </div>
+        {activeBookingWorkflowFilterChips.length > 0 && (
+          <div className="mb-4 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-700">Active Workflow Filters</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {activeBookingWorkflowFilterChips.map(chip => (
+                    <button
+                      key={chip.key}
+                      type="button"
+                      onClick={() => clearBookingWorkflowFilter(chip.key)}
+                      className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-white px-3 py-1 text-xs font-bold text-emerald-800"
+                    >
+                      <span>{chip.label}</span>
+                      <X size={12} />
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => clearBookingWorkflowFilter()}
+                className="self-start md:self-auto px-3 py-2 rounded-lg border border-emerald-200 bg-white text-xs font-bold text-emerald-800"
+              >
+                Clear All Workflow Filters
+              </button>
+            </div>
+          </div>
+        )}
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
@@ -12550,12 +13538,22 @@ function BookingManagement() {
             <tbody>
               {filteredBookings.map(booking => {
                 const displayStatus = getDisplayStatus(booking);
+                const assignmentKey = getBookingAssignmentKey(booking);
+                const assignableRooms = booking.request_type === 'Additional Room' && canApproveBookings
+                  ? (bookingRoomCandidates[assignmentKey] || [])
+                  : [];
                 return (
                 <tr key={booking.request_group_id || booking.id} className="border-b border-slate-50 hover:bg-slate-50 transition-all">
                   <td className="py-4 px-4">
                     <p className="font-bold text-slate-800">{booking.event_name}</p>
                     <p className="text-xs text-slate-500">{booking.faculty_name}</p>
+                    <p className="text-xs font-bold text-slate-500">{booking.request_type || 'Department Room'}</p>
                     {booking.purpose && <p className="text-xs text-slate-400">{booking.purpose}</p>}
+                    {booking.request_type === 'Additional Room' && (
+                      <p className="text-xs text-amber-700">Required capacity: {booking.required_capacity || booking.student_count || 'Not set'}{booking.preferred_building ? ` • Preferred building: ${booking.preferred_building}` : ''}</p>
+                    )}
+                    {booking.allocation_note && <p className="text-xs text-blue-700">Allocation note: {booking.allocation_note}</p>}
+                    {booking.status_remark && <p className="text-xs text-slate-500">Decision note: {booking.status_remark}</p>}
                     <p className="text-xs text-slate-400">{getBookingPolicyLabel(booking)}</p>
                     {isTemporaryOverrideBookingRecord(booking) && (
                       <p className="text-xs font-bold text-amber-600">Temporary Override</p>
@@ -12575,6 +13573,10 @@ function BookingManagement() {
                       displayStatus === 'Approved' ? "bg-emerald-100 text-emerald-700" :
                       displayStatus === 'Rejected' ? "bg-rose-100 text-rose-700" :
                       displayStatus === 'HOD Recommended' ? "bg-indigo-100 text-indigo-700" :
+                      displayStatus === 'Awaiting Alternative Response' ? "bg-fuchsia-100 text-fuchsia-700" :
+                      displayStatus === 'No Room Available' ? "bg-rose-100 text-rose-700" :
+                      displayStatus === 'Waitlisted' ? "bg-yellow-100 text-yellow-800" :
+                      displayStatus === 'Clarification Required' ? "bg-cyan-100 text-cyan-800" :
                       displayStatus === 'Postponed' ? "bg-blue-100 text-blue-700" :
                       displayStatus === 'Past' ? "bg-slate-100 text-slate-500" : "bg-orange-100 text-orange-700"
                     )}>
@@ -12583,19 +13585,67 @@ function BookingManagement() {
                   </td>
                   <td className="py-4 px-4">
                     <div className="flex flex-wrap gap-2">
+                      {booking.request_type === 'Additional Room' && canApproveBookings && ['Pending', 'HOD Recommended'].includes(displayStatus) && !booking.room_id && (
+                        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-2 py-2">
+                          <button
+                            onClick={() => loadAssignableRoomsForBooking(booking)}
+                            className="px-2 py-1 bg-white text-amber-800 rounded text-xs font-bold border border-amber-200"
+                          >
+                            {bookingRoomCandidateLoading[assignmentKey] ? 'Checking...' : 'Find Vacant Rooms'}
+                          </button>
+                          <select
+                            value={bookingRoomAssignments[assignmentKey] || ''}
+                            onChange={event => setBookingRoomAssignments(prev => ({ ...prev, [assignmentKey]: event.target.value }))}
+                            className="min-w-52 px-2 py-1.5 rounded-md border border-amber-200 bg-white text-xs text-slate-700"
+                            disabled={bookingRoomCandidateLoading[assignmentKey] || assignableRooms.length === 0}
+                          >
+                            <option value="">{bookingRoomCandidateLoading[assignmentKey] ? 'Loading vacant rooms...' : assignableRooms.length > 0 ? 'Select room to assign' : 'Load vacant rooms first'}</option>
+                            {assignableRooms.map((room: any) => {
+                              const roomDetails = getRoomDetails(room);
+                              return (
+                                <option key={room.id} value={room.id}>
+                                  {getRoomDisplayLabel(room, rooms)} - {room.room_type} - Cap {room.capacity}{roomDetails.building?.name ? ` - ${roomDetails.building.name}` : ''}
+                                </option>
+                              );
+                            })}
+                          </select>
+                          <button
+                            onClick={() => assignRoomToBooking(booking)}
+                            disabled={!bookingRoomAssignments[assignmentKey]}
+                            className="px-2 py-1 bg-amber-100 text-amber-800 rounded text-xs font-bold"
+                          >
+                            Assign Room
+                          </button>
+                          <button onClick={() => openAlternativeSuggestionModal(booking)} className="px-2 py-1 bg-fuchsia-100 text-fuchsia-700 rounded text-xs font-bold">Suggest Alternative</button>
+                          <button onClick={() => updateBookingStatus(booking, 'No Room Available')} className="px-2 py-1 bg-rose-100 text-rose-700 rounded text-xs font-bold">No Room</button>
+                          <button onClick={() => updateBookingStatus(booking, 'Waitlisted')} className="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs font-bold">Waitlist</button>
+                          <button onClick={() => updateBookingStatus(booking, 'Clarification Required')} className="px-2 py-1 bg-cyan-100 text-cyan-800 rounded text-xs font-bold">Need Clarification</button>
+                        </div>
+                      )}
+                      {booking.request_type === 'Additional Room' && canApproveBookings && ['No Room Available', 'Waitlisted', 'Clarification Required', 'Awaiting Alternative Response'].includes(displayStatus) && (
+                        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2 py-2">
+                          <button onClick={() => openAlternativeSuggestionModal(booking)} className="px-2 py-1 bg-fuchsia-100 text-fuchsia-700 rounded text-xs font-bold">Suggest Alternative</button>
+                          <button onClick={() => updateBookingStatus(booking, 'Waitlisted')} className="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs font-bold">Waitlist</button>
+                          <button onClick={() => updateBookingStatus(booking, 'Clarification Required')} className="px-2 py-1 bg-cyan-100 text-cyan-800 rounded text-xs font-bold">Need Clarification</button>
+                        </div>
+                      )}
                       {canRecommendBookings && displayStatus === 'Pending' && (
                         <button onClick={() => updateBookingStatus(booking, 'HOD Recommended')} className="px-2 py-1 bg-indigo-50 text-indigo-700 rounded text-xs font-bold">Recommend</button>
                       )}
                       {canDirectDecideBookings && ['Pending', 'HOD Recommended'].includes(displayStatus) && (
                         <>
-                          <button onClick={() => updateBookingStatus(booking, 'Approved')} className="px-2 py-1 bg-emerald-50 text-emerald-700 rounded text-xs font-bold">Approve</button>
+                          {(booking.request_type !== 'Additional Room' || booking.room_id) && (
+                            <button onClick={() => updateBookingStatus(booking, 'Approved')} className="px-2 py-1 bg-emerald-50 text-emerald-700 rounded text-xs font-bold">Approve</button>
+                          )}
                           <button onClick={() => updateBookingStatus(booking, 'Postponed')} className="px-2 py-1 bg-blue-50 text-blue-700 rounded text-xs font-bold">Request Postpone</button>
                           <button onClick={() => updateBookingStatus(booking, 'Rejected')} className="px-2 py-1 bg-rose-50 text-rose-700 rounded text-xs font-bold">Reject</button>
                         </>
                       )}
                       {canDeputyDecideBookings && displayStatus === 'HOD Recommended' && (
                         <>
-                          <button onClick={() => updateBookingStatus(booking, 'Approved')} className="px-2 py-1 bg-emerald-50 text-emerald-700 rounded text-xs font-bold">Approve</button>
+                          {(booking.request_type !== 'Additional Room' || booking.room_id) && (
+                            <button onClick={() => updateBookingStatus(booking, 'Approved')} className="px-2 py-1 bg-emerald-50 text-emerald-700 rounded text-xs font-bold">Approve</button>
+                          )}
                           <button onClick={() => updateBookingStatus(booking, 'Postponed')} className="px-2 py-1 bg-blue-50 text-blue-700 rounded text-xs font-bold">Request Postpone</button>
                           <button onClick={() => updateBookingStatus(booking, 'Rejected')} className="px-2 py-1 bg-rose-50 text-rose-700 rounded text-xs font-bold">Reject</button>
                         </>
@@ -12606,9 +13656,13 @@ function BookingManagement() {
                       {['Rejected', 'Postponed'].includes(displayStatus) && booking.faculty_name === user?.name && (
                         <button onClick={() => updateBookingStatus(booking, 'Pending')} className="px-2 py-1 bg-orange-50 text-orange-700 rounded text-xs font-bold">Reopen Request</button>
                       )}
+                      {canRequesterManageBooking(booking) && ['No Room Available', 'Waitlisted', 'Clarification Required', 'Awaiting Alternative Response'].includes(displayStatus) && (
+                        <button onClick={() => openRevisionModal(booking)} className="px-2 py-1 bg-cyan-50 text-cyan-800 rounded text-xs font-bold">Revise Requirements</button>
+                      )}
                       {displayStatus === 'Past' && (
                         <button onClick={() => openBookingModal(getBookingItems(booking).map((item: any) => ({ id: item.room_id, room_number: getBookingRoomNumber(item), room_type: item.room_type })), booking.grouped_room_count > 1)} className="px-2 py-1 bg-emerald-50 text-emerald-700 rounded text-xs font-bold">Book Again</button>
                       )}
+                      <button onClick={() => setSelectedBookingDetails(booking)} className="px-2 py-1 bg-slate-100 text-slate-700 rounded text-xs font-bold">View Details</button>
                       <button onClick={() => deleteBookingRequest(booking)} className="px-2 py-1 bg-rose-50 text-rose-700 rounded text-xs font-bold">Delete</button>
                     </div>
                   </td>
@@ -12630,9 +13684,11 @@ function BookingManagement() {
           <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
             <div className="p-6 border-b border-slate-100 flex justify-between items-center">
               <div>
-                <h3 className="text-lg font-bold text-slate-800">Book Room</h3>
+                <h3 className="text-lg font-bold text-slate-800">{bookingForm.requestType === 'Additional Room' ? 'Request Additional Room' : 'Book Room'}</h3>
                 <p className="text-xs text-slate-500">
-                  {bookingModal.rooms.map(room => `Room ${getRoomDisplayLabel(room, rooms)}`).join(', ')} - {getDurationLabel()}
+                  {bookingForm.requestType === 'Additional Room'
+                    ? `Submit requirements for dean-managed room allocation - ${getDurationLabel()}`
+                    : `${bookingModal.rooms.map(room => `Room ${getRoomDisplayLabel(room, rooms)}`).join(', ')} - ${getDurationLabel()}`}
                 </p>
                 {selectedAcademicContextLabel && (
                   <p className="mt-1 text-[11px] font-bold text-blue-700">Academic Context: {selectedAcademicContextLabel}</p>
@@ -12655,6 +13711,16 @@ function BookingManagement() {
                 <input value={bookingForm.purpose} onChange={e => setBookingForm({ ...bookingForm, purpose: e.target.value })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500" />
               </div>
               <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Request Type</label>
+                <select
+                  value={bookingForm.requestType}
+                  onChange={e => setBookingForm(prev => ({ ...prev, requestType: e.target.value as 'Department Room' | 'Additional Room' }))}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+                >
+                  {bookingRequestTypeOptions.map(option => <option key={option} value={option}>{option}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1">
                 <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Booking Purpose Type</label>
                 <select value={bookingForm.purposeType} onChange={e => setBookingForm({ ...bookingForm, purposeType: e.target.value as typeof BOOKING_PURPOSE_TYPE_OPTIONS[number] })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500">
                   {BOOKING_PURPOSE_TYPE_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
@@ -12662,11 +13728,43 @@ function BookingManagement() {
               </div>
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Department</label>
-                <select required value={bookingForm.departmentId} onChange={e => setBookingForm({ ...bookingForm, departmentId: e.target.value })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500">
+                <select
+                  required
+                  value={bookingForm.departmentId}
+                  onChange={e => {
+                    const departmentId = e.target.value;
+                    if (isHodUser) setSelectedHodDepartmentId(departmentId);
+                    setBookingForm({ ...bookingForm, departmentId });
+                  }}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+                >
                   <option value="">Select Department</option>
                   {bookingDepartmentOptions.map(dept => <option key={dept.id} value={dept.id}>{dept.name}</option>)}
                 </select>
               </div>
+              {bookingForm.requestType === 'Additional Room' && (
+                <>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Required Capacity</label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={bookingForm.requiredCapacity}
+                      onChange={e => setBookingForm(prev => ({ ...prev, requiredCapacity: e.target.value }))}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Preferred Building</label>
+                    <input
+                      value={bookingForm.preferredBuilding}
+                      onChange={e => setBookingForm(prev => ({ ...prev, preferredBuilding: e.target.value }))}
+                      placeholder="Optional building preference"
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                </>
+              )}
               {selectedBookingTimingProfile && (
                 <div className={cn(
                   "md:col-span-2 rounded-xl px-3 py-2 text-xs",
@@ -12732,12 +13830,441 @@ function BookingManagement() {
                 ) : (
                   <p className="text-sm font-bold text-slate-700">This creates one grouped request that covers every selected date.</p>
                 )}
-                <p className="text-xs text-slate-500">{canApproveBookings ? 'This booking will be approved immediately.' : 'This booking will be submitted as pending.'}</p>
+                <p className="text-xs text-slate-500">
+                  {bookingForm.requestType === 'Additional Room'
+                    ? 'This request will be routed for room allocation before it can be approved.'
+                    : canApproveBookings
+                      ? 'This booking will be approved immediately.'
+                      : 'This booking will be submitted as pending.'}
+                </p>
               </div>
             </div>
             <div className="p-6 border-t border-slate-100 flex gap-3">
               <button onClick={() => setBookingModal(null)} className="flex-1 py-3 bg-white border border-slate-200 text-slate-600 font-bold rounded-xl">Cancel</button>
-              <button onClick={handleBook} className="flex-1 py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800">Submit Booking</button>
+              <button onClick={handleBook} className="flex-1 py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800">{bookingForm.requestType === 'Additional Room' ? 'Submit Request' : 'Submit Booking'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {bookingStatusModal && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[105] flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-6 border-b border-slate-100 flex justify-between items-center">
+              <div>
+                <h3 className="text-lg font-bold text-slate-800">{getBookingStatusActionMeta(bookingStatusModal.booking, bookingStatusModal.status).actionLabel}</h3>
+                <p className="text-xs text-slate-500 mt-1">
+                  {bookingStatusModal.booking.event_name || 'Room request'} • {getBookingDateLabel(bookingStatusModal.booking)} • {getBookingTimeLabel(bookingStatusModal.booking)}
+                </p>
+              </div>
+              <button onClick={() => setBookingStatusModal(null)} className="text-slate-400 hover:text-slate-600"><X size={20} /></button>
+            </div>
+            <div className="p-6 space-y-5">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Workflow Context</p>
+                <p className="text-sm text-slate-700"><span className="font-bold">Current status:</span> {getDisplayStatus(bookingStatusModal.booking)}</p>
+                <p className="text-sm text-slate-700"><span className="font-bold">Room:</span> {getBookingRoomNumber(bookingStatusModal.booking)}</p>
+                <p className="text-sm text-slate-700">{getBookingStatusActionMeta(bookingStatusModal.booking, bookingStatusModal.status).helperText}</p>
+              </div>
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                  {getBookingStatusActionMeta(bookingStatusModal.booking, bookingStatusModal.status).noteLabel}
+                </label>
+                <textarea
+                  value={bookingStatusModal.remark}
+                  onChange={event => setBookingStatusModal(prev => prev ? { ...prev, remark: event.target.value } : prev)}
+                  rows={5}
+                  placeholder="Optional note"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400"
+                />
+              </div>
+            </div>
+            <div className="p-6 border-t border-slate-100 flex gap-3">
+              <button onClick={() => setBookingStatusModal(null)} className="flex-1 py-3 bg-white border border-slate-200 text-slate-600 font-bold rounded-xl">Cancel</button>
+              <button onClick={submitBookingStatusUpdate} className="flex-1 py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800">
+                {getBookingStatusActionMeta(bookingStatusModal.booking, bookingStatusModal.status).actionLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {bookingAllocationModal && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[106] flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-6 border-b border-slate-100 flex justify-between items-center">
+              <div>
+                <h3 className="text-lg font-bold text-slate-800">Assign Room to Request</h3>
+                <p className="text-xs text-slate-500 mt-1">
+                  {bookingAllocationModal.booking.event_name || 'Additional room request'} • {getBookingDateLabel(bookingAllocationModal.booking)} • {getBookingTimeLabel(bookingAllocationModal.booking)}
+                </p>
+              </div>
+              <button onClick={() => setBookingAllocationModal(null)} className="text-slate-400 hover:text-slate-600"><X size={20} /></button>
+            </div>
+            <div className="p-6 space-y-5">
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 space-y-2">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-amber-700">Assignment Summary</p>
+                <p className="text-sm text-slate-700"><span className="font-bold">Selected room:</span> {getRoomDisplayLabel(bookingAllocationModal.room, rooms)}</p>
+                <p className="text-sm text-slate-700"><span className="font-bold">Room type:</span> {bookingAllocationModal.room.room_type || '-'}</p>
+                <p className="text-sm text-slate-700"><span className="font-bold">Capacity:</span> {bookingAllocationModal.room.capacity || '-'}</p>
+                <p className="text-sm text-slate-700"><span className="font-bold">Required capacity:</span> {bookingAllocationModal.booking.required_capacity || bookingAllocationModal.booking.student_count || '-'}</p>
+              </div>
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Allocation note</label>
+                <textarea
+                  value={bookingAllocationModal.note}
+                  onChange={event => setBookingAllocationModal(prev => prev ? { ...prev, note: event.target.value } : prev)}
+                  rows={5}
+                  placeholder="Optional note for the requester and audit trail"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400"
+                />
+              </div>
+            </div>
+            <div className="p-6 border-t border-slate-100 flex gap-3">
+              <button onClick={() => setBookingAllocationModal(null)} className="flex-1 py-3 bg-white border border-slate-200 text-slate-600 font-bold rounded-xl">Cancel</button>
+              <button onClick={submitRoomAssignment} className="flex-1 py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800">Confirm Assignment</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {bookingAlternativeModal && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[107] flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-3xl rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-6 border-b border-slate-100 flex justify-between items-center">
+              <div>
+                <h3 className="text-lg font-bold text-slate-800">Suggest Alternative Arrangement</h3>
+                <p className="text-xs text-slate-500 mt-1">{bookingAlternativeModal.booking.event_name || 'Additional room request'} • {getBookingDateLabel(bookingAlternativeModal.booking)}</p>
+              </div>
+              <button onClick={() => setBookingAlternativeModal(null)} className="text-slate-400 hover:text-slate-600"><X size={20} /></button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Suggested Date</label>
+                  <input type="date" value={bookingAlternativeModal.suggestedDate} onChange={event => setBookingAlternativeModal(prev => prev ? { ...prev, suggestedDate: event.target.value } : prev)} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Suggested Capacity</label>
+                  <input type="number" min="1" value={bookingAlternativeModal.suggestedCapacity} onChange={event => setBookingAlternativeModal(prev => prev ? { ...prev, suggestedCapacity: event.target.value } : prev)} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Start Time</label>
+                  <input type="time" value={bookingAlternativeModal.suggestedStartTime} onChange={event => setBookingAlternativeModal(prev => prev ? { ...prev, suggestedStartTime: event.target.value } : prev)} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">End Time</label>
+                  <input type="time" value={bookingAlternativeModal.suggestedEndTime} onChange={event => setBookingAlternativeModal(prev => prev ? { ...prev, suggestedEndTime: event.target.value } : prev)} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Suggested Room Type</label>
+                  <input value={bookingAlternativeModal.suggestedRoomType} onChange={event => setBookingAlternativeModal(prev => prev ? { ...prev, suggestedRoomType: event.target.value } : prev)} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Suggested Building</label>
+                  <input value={bookingAlternativeModal.suggestedBuilding} onChange={event => setBookingAlternativeModal(prev => prev ? { ...prev, suggestedBuilding: event.target.value } : prev)} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm" />
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Suggested Room Count</label>
+                  <input type="number" min="1" value={bookingAlternativeModal.suggestedRoomCount} onChange={event => setBookingAlternativeModal(prev => prev ? { ...prev, suggestedRoomCount: event.target.value } : prev)} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm" />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Suggestion Note</label>
+                <textarea rows={5} value={bookingAlternativeModal.suggestionNote} onChange={event => setBookingAlternativeModal(prev => prev ? { ...prev, suggestionNote: event.target.value } : prev)} placeholder="Explain the proposed alternative clearly for the requester." className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm" />
+              </div>
+            </div>
+            <div className="p-6 border-t border-slate-100 flex gap-3">
+              <button onClick={() => setBookingAlternativeModal(null)} className="flex-1 py-3 bg-white border border-slate-200 text-slate-600 font-bold rounded-xl">Cancel</button>
+              <button onClick={submitAlternativeSuggestion} className="flex-1 py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800">Send Alternative</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {bookingRevisionModal && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[108] flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-3xl rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-6 border-b border-slate-100 flex justify-between items-center">
+              <div>
+                <h3 className="text-lg font-bold text-slate-800">Revise Room Requirements</h3>
+                <p className="text-xs text-slate-500 mt-1">{bookingRevisionModal.booking.event_name || 'Room request'} • {bookingRevisionModal.booking.status}</p>
+              </div>
+              <button onClick={() => setBookingRevisionModal(null)} className="text-slate-400 hover:text-slate-600"><X size={20} /></button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Date</label>
+                  <input type="date" value={bookingRevisionModal.date} onChange={event => setBookingRevisionModal(prev => prev ? { ...prev, date: event.target.value } : prev)} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Required Capacity</label>
+                  <input type="number" min="1" value={bookingRevisionModal.requiredCapacity} onChange={event => setBookingRevisionModal(prev => prev ? { ...prev, requiredCapacity: event.target.value } : prev)} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Start Time</label>
+                  <input type="time" value={bookingRevisionModal.startTime} onChange={event => setBookingRevisionModal(prev => prev ? { ...prev, startTime: event.target.value } : prev)} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">End Time</label>
+                  <input type="time" value={bookingRevisionModal.endTime} onChange={event => setBookingRevisionModal(prev => prev ? { ...prev, endTime: event.target.value } : prev)} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Room Type</label>
+                  <input value={bookingRevisionModal.roomType} onChange={event => setBookingRevisionModal(prev => prev ? { ...prev, roomType: event.target.value } : prev)} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Preferred Building</label>
+                  <input value={bookingRevisionModal.preferredBuilding} onChange={event => setBookingRevisionModal(prev => prev ? { ...prev, preferredBuilding: event.target.value } : prev)} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm" />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Requester Notes</label>
+                <textarea rows={4} value={bookingRevisionModal.notes} onChange={event => setBookingRevisionModal(prev => prev ? { ...prev, notes: event.target.value } : prev)} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm" />
+              </div>
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Revision Note</label>
+                <textarea rows={4} value={bookingRevisionModal.revisionNote} onChange={event => setBookingRevisionModal(prev => prev ? { ...prev, revisionNote: event.target.value } : prev)} placeholder="Explain what changed in this revision." className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm" />
+              </div>
+            </div>
+            <div className="p-6 border-t border-slate-100 flex gap-3">
+              <button onClick={() => setBookingRevisionModal(null)} className="flex-1 py-3 bg-white border border-slate-200 text-slate-600 font-bold rounded-xl">Cancel</button>
+              <button onClick={submitBookingRevision} className="flex-1 py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800">Submit Revision</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedBookingDetails && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[110] flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-3xl rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-6 border-b border-slate-100 flex justify-between items-center">
+              <div>
+                <h3 className="text-lg font-bold text-slate-800">Booking Workflow Details</h3>
+                <p className="text-xs text-slate-500 mt-1">{selectedBookingDetails.event_name || 'Room request'} • {selectedBookingDetails.request_type || 'Department Room'}</p>
+              </div>
+              <button onClick={() => setSelectedBookingDetails(null)} className="text-slate-400 hover:text-slate-600"><X size={20} /></button>
+            </div>
+            <div className="p-6 max-h-[75vh] overflow-y-auto space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Request Summary</p>
+                  <p className="text-sm text-slate-700"><span className="font-bold">Faculty:</span> {selectedBookingDetails.faculty_name || '-'}</p>
+                  <p className="text-sm text-slate-700"><span className="font-bold">Room:</span> {getBookingRoomNumber(selectedBookingDetails)}</p>
+                  <p className="text-sm text-slate-700"><span className="font-bold">Date:</span> {getBookingDateLabel(selectedBookingDetails)}</p>
+                  <p className="text-sm text-slate-700"><span className="font-bold">Time:</span> {getBookingTimeLabel(selectedBookingDetails)}</p>
+                  <p className="text-sm text-slate-700"><span className="font-bold">Status:</span> {getDisplayStatus(selectedBookingDetails)}</p>
+                  <p className="text-sm text-slate-700"><span className="font-bold">Policy:</span> {getBookingPolicyLabel(selectedBookingDetails)}</p>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Requirements</p>
+                  <p className="text-sm text-slate-700"><span className="font-bold">Purpose:</span> {selectedBookingDetails.purpose || '-'}</p>
+                  <p className="text-sm text-slate-700"><span className="font-bold">Equipment:</span> {selectedBookingDetails.equipment_required || '-'}</p>
+                  <p className="text-sm text-slate-700"><span className="font-bold">Required capacity:</span> {selectedBookingDetails.required_capacity || selectedBookingDetails.student_count || '-'}</p>
+                  <p className="text-sm text-slate-700"><span className="font-bold">Preferred building:</span> {selectedBookingDetails.preferred_building || '-'}</p>
+                  <p className="text-sm text-slate-700"><span className="font-bold">Temporary override:</span> {isTemporaryOverrideBookingRecord(selectedBookingDetails) ? 'Yes' : 'No'}</p>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white p-4">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-4">Workflow Snapshot</p>
+                <div className="space-y-3">
+                  {getBookingWorkflowSteps(selectedBookingDetails).map((step, index) => (
+                    <div key={step.label} className={cn(
+                      "rounded-xl border px-4 py-3",
+                      step.complete ? "border-emerald-200 bg-emerald-50" : "border-slate-200 bg-slate-50"
+                    )}>
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm font-bold text-slate-800">{index + 1}. {step.label}</p>
+                        <span className={cn(
+                          "px-2 py-1 rounded text-[10px] font-bold uppercase",
+                          step.complete ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-600"
+                        )}>
+                          {step.complete ? 'Done' : 'Pending'}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-sm text-slate-600">{step.detail}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 space-y-2">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-blue-700">Allocation Note</p>
+                  <p className="text-sm text-blue-900">{selectedBookingDetails.allocation_note || 'No allocation note recorded.'}</p>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Decision Note</p>
+                  <p className="text-sm text-slate-700">{selectedBookingDetails.status_remark || 'No decision remark recorded.'}</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Decision Ownership</p>
+                  <p className="text-sm text-slate-700"><span className="font-bold">Recommended by:</span> {selectedBookingDetails.recommended_by || '-'}</p>
+                  <p className="text-sm text-slate-700"><span className="font-bold">Decided by:</span> {selectedBookingDetails.decided_by || '-'}</p>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Requester Notes</p>
+                  <p className="text-sm text-slate-700">{selectedBookingDetails.notes || 'No requester note recorded.'}</p>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-amber-700 mb-3">Temporary Allocation Lifecycle</p>
+                {selectedBookingTemporaryAllocationsLoading ? (
+                  <div className="py-4 text-sm text-amber-800">Loading temporary allocation details...</div>
+                ) : selectedBookingTemporaryAllocations.length === 0 ? (
+                  <div className="py-4 text-sm text-amber-800">No temporary allocation has been activated for this request yet.</div>
+                ) : (
+                  <div className="space-y-3">
+                    {selectedBookingTemporaryAllocations.map((allocation: any) => (
+                      <div key={allocation.id} className="rounded-xl border border-amber-200 bg-white px-4 py-3">
+                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                          <p className="text-sm font-bold text-slate-800">
+                            {allocation.approved_date} • {allocation.start_time} - {allocation.end_time}
+                          </p>
+                          <span className={cn(
+                            "px-2 py-1 rounded text-[10px] font-bold uppercase",
+                            allocation.status === 'Active'
+                              ? "bg-emerald-100 text-emerald-700"
+                              : allocation.status === 'Upcoming'
+                                ? "bg-amber-100 text-amber-700"
+                                : allocation.status === 'Completed'
+                                  ? "bg-slate-200 text-slate-700"
+                                  : "bg-rose-100 text-rose-700"
+                          )}>
+                            {allocation.status}
+                          </span>
+                        </div>
+                        <p className="mt-2 text-sm text-slate-700"><span className="font-bold">Assigned by:</span> {allocation.assigned_by || '-'}</p>
+                        <p className="text-sm text-slate-700"><span className="font-bold">Original department ID:</span> {allocation.original_department_id || '-'}</p>
+                        {allocation.allocation_note && (
+                          <p className="mt-2 text-sm text-slate-700">{allocation.allocation_note}</p>
+                        )}
+                        {allocation.released_at && (
+                          <p className="mt-2 text-xs text-slate-500">Released at: {formatBookingActivityTimestamp(allocation.released_at)}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white p-4">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Alternative Proposals</p>
+                    <p className="text-xs text-slate-500 mt-1">Requester-visible alternatives stay separate from internal room-search results.</p>
+                  </div>
+                  {canApproveBookings && selectedBookingDetails.request_type === 'Additional Room' && (
+                    <button onClick={() => openAlternativeSuggestionModal(selectedBookingDetails)} className="px-3 py-2 rounded-xl bg-fuchsia-100 text-fuchsia-700 text-xs font-bold">
+                      Suggest Alternative
+                    </button>
+                  )}
+                </div>
+                {selectedBookingAlternativesLoading ? (
+                  <div className="py-6 text-center text-sm text-slate-500">Loading alternatives...</div>
+                ) : selectedBookingAlternatives.length === 0 ? (
+                  <div className="py-6 text-center text-sm text-slate-400">No alternative proposals have been recorded for this request yet.</div>
+                ) : (
+                  <div className="space-y-3">
+                    {selectedBookingAlternatives.map((alternative: any) => (
+                      <div key={alternative.id} className="rounded-xl border border-fuchsia-200 bg-fuchsia-50 px-4 py-3">
+                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                          <div>
+                            <p className="text-sm font-bold text-slate-800">{formatAlternativeSummary(alternative)}</p>
+                            <p className="text-xs text-slate-500">
+                              Proposed by {alternative.created_by || 'Planning team'}{alternative.created_role ? ` • ${alternative.created_role}` : ''}
+                            </p>
+                          </div>
+                          <span className={cn(
+                            "px-2 py-1 rounded text-[10px] font-bold uppercase",
+                            alternative.status === 'Accepted'
+                              ? "bg-emerald-100 text-emerald-700"
+                              : alternative.status === 'Declined'
+                                ? "bg-rose-100 text-rose-700"
+                                : "bg-fuchsia-100 text-fuchsia-700"
+                          )}>
+                            {alternative.status}
+                          </span>
+                        </div>
+                        {alternative.suggestion_note && (
+                          <p className="mt-2 text-sm text-slate-700">{alternative.suggestion_note}</p>
+                        )}
+                        {alternative.response_note && (
+                          <p className="mt-2 text-xs text-slate-500">Requester note: {alternative.response_note}</p>
+                        )}
+                        {canRequesterManageBooking(selectedBookingDetails) && selectedBookingDetails.status === 'Awaiting Alternative Response' && alternative.status === 'Pending Response' && (
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <button onClick={() => respondToAlternative(selectedBookingDetails, alternative, 'accept')} className="px-3 py-2 rounded-xl bg-emerald-100 text-emerald-700 text-xs font-bold">Accept Alternative</button>
+                            <button onClick={() => respondToAlternative(selectedBookingDetails, alternative, 'decline')} className="px-3 py-2 rounded-xl bg-rose-100 text-rose-700 text-xs font-bold">Decline Alternative</button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white p-4">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-4">Activity Timeline</p>
+                {selectedBookingActivityLoading ? (
+                  <div className="py-8 text-center text-sm text-slate-500">Loading activity...</div>
+                ) : selectedBookingActivity.length === 0 ? (
+                  <div className="py-8 text-center text-sm text-slate-400">No activity recorded yet.</div>
+                ) : (
+                  <div className="space-y-3">
+                    {selectedBookingActivity.map((item: any) => {
+                      const timelineRoom = item.room_id_to != null
+                        ? rooms.find(room => idsMatch(room.id, item.room_id_to))
+                        : item.room_id_from != null
+                          ? rooms.find(room => idsMatch(room.id, item.room_id_from))
+                          : null;
+                      const tone = getBookingActivityTone(item);
+                      const summary = getBookingActivitySummary(item, timelineRoom);
+                      const metaBadges = getBookingActivityMetaBadges(item, timelineRoom);
+                      return (
+                        <div key={item.id} className={cn("rounded-xl border px-4 py-3", tone.card)}>
+                          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                            <div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="text-sm font-bold text-slate-800">{item.title}</p>
+                                <span className={cn("px-2 py-1 rounded text-[10px] font-bold uppercase", tone.badge)}>{tone.label}</span>
+                              </div>
+                              <p className="text-xs text-slate-500">{item.actor_name || 'System'}{item.actor_role ? ` • ${item.actor_role}` : ''}</p>
+                            </div>
+                            <p className="text-xs text-slate-400">{formatBookingActivityTimestamp(item.created_at)}</p>
+                          </div>
+                          <p className="mt-2 text-sm text-slate-700">{summary}</p>
+                          {item.message && item.message !== summary && (
+                            <p className="mt-1 text-xs text-slate-500">{item.message}</p>
+                          )}
+                          {metaBadges.length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-500">
+                              {metaBadges.map((badge, index) => (
+                                <span key={`${item.id}-badge-${index}`} className="rounded bg-white px-2 py-1 border border-slate-200">{badge}</span>
+                              ))}
+                            </div>
+                          )}
+                          {item.note_text && (
+                            <div className="mt-2 rounded-lg border border-white/80 bg-white/80 px-3 py-2">
+                              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Recorded Note</p>
+                              <p className="mt-1 text-sm text-slate-700">{item.note_text}</p>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="p-6 border-t border-slate-100">
+              <button onClick={() => setSelectedBookingDetails(null)} className="w-full py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800">Close</button>
             </div>
           </div>
         </div>
@@ -12818,9 +14345,39 @@ function BookingManagement() {
                     )}
                   </div>
 
+                  <div>
+                    <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Temporary Allocations</h4>
+                    {Array.isArray(roomSchedule.temporaryAllocations) && roomSchedule.temporaryAllocations.length > 0 ? (
+                      <div className="space-y-2">
+                        {roomSchedule.temporaryAllocations.map((allocation: any) => {
+                          const temporaryDepartment = departments.find((department: any) => idsMatch(department.id, allocation.temporary_department_id));
+                          return (
+                            <div key={allocation.id} className="p-3 bg-amber-50 border border-amber-200 rounded-xl flex justify-between items-center">
+                              <div>
+                                <p className="font-bold text-amber-900 text-sm">{temporaryDepartment?.name || `Department ${allocation.temporary_department_id}`}</p>
+                                <p className="text-xs text-amber-700">
+                                  {[allocation.purpose, allocation.assigned_by ? `Assigned by ${allocation.assigned_by}` : ''].filter(Boolean).join(' • ')}
+                                </p>
+                                {allocation.allocation_note && (
+                                  <p className="mt-1 text-xs text-amber-800">{allocation.allocation_note}</p>
+                                )}
+                              </div>
+                              <div className="text-right">
+                                <p className="text-xs font-bold text-amber-800">{allocation.start_time} - {allocation.end_time}</p>
+                                <p className="text-[10px] font-bold uppercase tracking-widest text-amber-600">{allocation.status}</p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-slate-400 italic">No temporary allocations for this day.</p>
+                    )}
+                  </div>
+
                   <div className="p-4 bg-slate-50 rounded-xl border border-slate-100">
                     <p className="text-xs text-slate-500 leading-relaxed">
-                      <span className="font-bold text-slate-700">Note:</span> Only approved schedules and bookings are shown. Available time slots are those not covered by the entries above.
+                      <span className="font-bold text-slate-700">Note:</span> Approved schedules, approved bookings, and temporary allocations are shown. Available time slots are those not covered by the entries above.
                     </p>
                   </div>
                 </div>
@@ -12842,7 +14399,7 @@ function BookingManagement() {
 }
 
 function LiveRoomAvailability() {
-  const { user } = useAuth();
+  const { user, selectedHodDepartmentId, setSelectedHodDepartmentId } = useAuth();
   const initialLoadRef = useRef(false);
   const [campuses, setCampuses] = useState<any[]>([]);
   const [buildings, setBuildings] = useState<any[]>([]);
@@ -12915,16 +14472,31 @@ function LiveRoomAvailability() {
 
   const canDirectDecideBookings = isAdminRole(user?.role) || user?.role === 'Dean (P&M)';
   const canBookRooms = isAdminRole(user?.role) || ['Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Faculty', 'Event Coordinator'].includes(user?.role || '');
-  const userDepartmentId = departments.find(dept => normalizeLookupValue(dept.name) === normalizeLookupValue(user?.department))?.id?.toString() || '';
+  const isHodUser = normalizeRoleValue(user?.role) === 'hod';
+  const hodDepartmentIds = useMemo(
+    () => getAssignedDepartmentIdsFromUser(user),
+    [user],
+  );
+  const userDepartmentId = selectedHodDepartmentId
+    || departments.find(dept => normalizeLookupValue(dept.name) === normalizeLookupValue(user?.department))?.id?.toString()
+    || '';
   const userSchoolId = schools.find((school: any) => normalizeLookupValue(school?.name) === normalizeLookupValue(user?.school))?.id?.toString() || '';
   const canChooseAnyRequestDepartment = canDirectDecideBookings || isAdminRole(user?.role) || user?.role === 'Dean' || user?.role === 'Deputy Dean (P&M)';
   const bookingDepartmentOptions = canChooseAnyRequestDepartment
     ? departments
     : normalizeLookupValue(user?.role) === 'dean' && userSchoolId
       ? departments.filter((dept: any) => idsMatch(dept?.school_id, userSchoolId))
+      : isHodUser && hodDepartmentIds.length > 0
+        ? departments.filter((dept: any) => hodDepartmentIds.some((departmentId: string) => idsMatch(dept?.id, departmentId)))
       : !user?.department
         ? departments
         : departments.filter(dept => normalizeLookupValue(dept.name) === normalizeLookupValue(user.department));
+  const hodDepartmentOptions = useMemo(
+    () => bookingDepartmentOptions
+      .map((department: any) => ({ value: department.id?.toString?.() || '', label: department.name }))
+      .filter((option: any) => option.value),
+    [bookingDepartmentOptions],
+  );
   const selectedLiveBookingTimingProfile = useMemo(() => resolveTimingProfileForContext({
     timingProfiles,
     academicCalendars,
@@ -13017,6 +14589,12 @@ function LiveRoomAvailability() {
       setSelectedLiveBookingSlotWindowKey(nextKey);
     }
   }, [filters.endTime, filters.startTime, liveBookingSlotWindows, liveSlotDrivenBooking, selectedLiveBookingSlotWindowKey]);
+
+  useEffect(() => {
+    if (!isHodUser || !userDepartmentId) return;
+    setFilters(prev => prev.departmentId === userDepartmentId ? prev : { ...prev, departmentId: userDepartmentId });
+    setBookingForm(prev => prev.departmentId === userDepartmentId ? prev : { ...prev, departmentId: userDepartmentId });
+  }, [isHodUser, userDepartmentId]);
 
   const selectedBuilding = buildings.find(building => idsMatch(building.id, filters.buildingId));
   const selectedBuildingBlocks = selectedBuilding
@@ -13167,6 +14745,25 @@ function LiveRoomAvailability() {
 
   return (
     <div className="space-y-6">
+      {isHodUser && hodDepartmentOptions.length > 1 && (
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">HOD Department Context</p>
+              <p className="text-sm text-slate-600 mt-1">Bookings and vacancy checks are scoped to the selected department.</p>
+            </div>
+            <select
+              value={selectedHodDepartmentId}
+              onChange={event => setSelectedHodDepartmentId(event.target.value)}
+              className="sm:min-w-72 px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50"
+            >
+              {hodDepartmentOptions.map((option: any) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
           <div>
@@ -13248,9 +14845,17 @@ function LiveRoomAvailability() {
           </div>
           <div>
             <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Department</label>
-            <select value={filters.departmentId} onChange={e => setFilters(prev => ({ ...prev, departmentId: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50">
-              <option value="">All Departments</option>
-              {departments.map((department: any) => <option key={department.id} value={department.id}>{department.name}</option>)}
+            <select
+              value={filters.departmentId}
+              onChange={e => {
+                const departmentId = e.target.value;
+                if (isHodUser) setSelectedHodDepartmentId(departmentId);
+                setFilters(prev => ({ ...prev, departmentId }));
+              }}
+              className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50"
+            >
+              <option value="">{isHodUser ? 'Select Department' : 'All Departments'}</option>
+              {bookingDepartmentOptions.map((department: any) => <option key={department.id} value={department.id}>{department.name}</option>)}
             </select>
           </div>
           <div>
@@ -13584,7 +15189,15 @@ function LiveRoomAvailability() {
               </div>
               <div>
                 <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Department</label>
-                <select value={bookingForm.departmentId} onChange={e => setBookingForm(prev => ({ ...prev, departmentId: e.target.value }))} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50">
+                <select
+                  value={bookingForm.departmentId}
+                  onChange={e => {
+                    const departmentId = e.target.value;
+                    if (isHodUser) setSelectedHodDepartmentId(departmentId);
+                    setBookingForm(prev => ({ ...prev, departmentId }));
+                  }}
+                  className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50"
+                >
                   <option value="">Select Department</option>
                   {bookingDepartmentOptions.map((department: any) => <option key={department.id} value={department.id}>{department.name}</option>)}
                 </select>
@@ -14194,7 +15807,7 @@ function AnalyticsDashboard() {
     name: building,
     count: filteredBookings.filter(booking => matchesAnalyticsValue(getBookingRoomMeta(booking)?.building, building)).length
   })).filter(item => item.count > 0);
-  const bookingStatusData = ['Pending', 'HOD Recommended', 'Approved', 'Postponed', 'Rejected'].map(status => ({
+  const bookingStatusData = BOOKING_REPORT_STATUS_OPTIONS.map(status => ({
     name: status,
     count: filteredBookings.filter(booking => booking.status === status).length
   })).filter(item => item.count > 0);
@@ -14207,7 +15820,7 @@ function AnalyticsDashboard() {
     count: filteredBookings.filter(booking => matchesAnalyticsValue(booking.department_name || getBookingRoomMeta(booking)?.department || 'Unmapped', department)).length
   })).sort((a, b) => b.count - a.count).slice(0, 8);
   const avgUtilization = Math.round(filteredRoomReports.reduce((acc: number, curr: any) => acc + curr.utilization, 0) / (filteredRoomReports.length || 1));
-  const pendingRequests = filteredBookings.filter(item => item.status === 'Pending').length;
+  const pendingRequests = filteredBookings.filter(item => BOOKING_OPEN_WORKFLOW_STATUSES.includes(item.status)).length;
   const approvedRequests = filteredBookings.filter(item => item.status === 'Approved').length;
   const maintenanceRisks = filteredRoomReports.filter((item: any) => item.maintenanceIssues > 0).length;
   const unmappedRooms = filteredRoomReports.filter((item: any) => item.department === 'Unmapped').length;
@@ -14223,7 +15836,10 @@ function AnalyticsDashboard() {
   const alertItems = [
     ...filteredRoomReports.filter((room: any) => room.maintenanceIssues > 0 && room.utilization > 60).map((room: any) => `Room ${room.room_number} is highly used and has maintenance risk.`),
     ...filteredRoomReports.filter((room: any) => room.department === 'Unmapped').map((room: any) => `Room ${room.room_number} is not mapped to any department.`),
-    ...filteredBookings.filter(booking => booking.status === 'Pending').slice(0, 3).map(booking => `${booking.event_name || 'Room request'} is still pending.`)
+    ...filteredBookings
+      .filter(booking => BOOKING_OPEN_WORKFLOW_STATUSES.includes(booking.status))
+      .slice(0, 3)
+      .map(booking => `${booking.event_name || 'Room request'} is still awaiting workflow action (${booking.status}).`)
   ].slice(0, 6);
   const standardRoomTypes = ROOM_TYPE_OPTIONS;
   const analyticsFilterOptions = reportData?.filterOptions || {};
@@ -14307,7 +15923,7 @@ function AnalyticsDashboard() {
           </select>
           <select value={analyticsFilters.bookingStatus} onChange={e => setAnalyticsFilters({ ...analyticsFilters, bookingStatus: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500">
             <option value="">All Statuses</option>
-            {['Pending', 'HOD Recommended', 'Approved', 'Postponed', 'Rejected'].map(status => <option key={status} value={status}>{status}</option>)}
+            {BOOKING_REPORT_STATUS_OPTIONS.map(status => <option key={status} value={status}>{status}</option>)}
           </select>
         </div>
       </div>
@@ -14801,7 +16417,7 @@ function ReportGeneration() {
     vacancy_opportunity: ['Room', 'Building', 'Department', 'IdleHoursPerWeek', 'Utilization', 'Opportunity'],
     capacity_mismatch: ['Date', 'Room', 'Department', 'Event', 'Students', 'Capacity', 'OccupancyPercent', 'MismatchType'],
     exam_impact: ['ExamWindow', 'Department', 'SemesterType', 'StartDate', 'EndDate', 'Days', 'AffectedWeeklyClasses', 'EstimatedBlockedSessions'],
-    booking_lifecycle: ['TotalRequests', 'Approvals', 'Cancellations', 'CancellationRate', 'AverageLeadDays', 'LeadTimeCapturedCount'],
+    booking_lifecycle: ['TotalRequests', 'Approvals', 'Cancellations', 'NoRoomOutcomes', 'ClarificationPending', 'AlternativeResponsesPending', 'OpenRequests', 'CancellationRate', 'AverageLeadDays', 'LeadTimeCapturedCount'],
     no_show_risk: ['Booking', 'Date', 'Room', 'Department', 'Event', 'Students', 'Capacity', 'OccupancyPercent', 'RiskScore'],
     shared_room_conflict: ['Room', 'Building', 'RoomLayout', 'Aliases', 'Departments', 'Sections', 'Overlaps', 'RiskScore'],
     semester_peak_forecast: ['SemesterType', 'Day', 'PeakBand', 'PeakSlots', 'TotalClasses'],
@@ -15062,7 +16678,7 @@ function ReportGeneration() {
     ...(Array.isArray(reportFilterOptions.roomTypes) ? reportFilterOptions.roomTypes : []),
   ].filter(Boolean))).sort((a: any, b: any) => a.localeCompare(b));
   const flagOptions = Array.isArray(reportFilterOptions.flags) ? reportFilterOptions.flags : [];
-  const bookingStatusOptions = ['Pending', 'HOD Recommended', 'Approved', 'Postponed', 'Rejected'];
+  const bookingStatusOptions = BOOKING_REPORT_STATUS_OPTIONS;
   const schoolSummary = Array.from(new Set(filteredRoomReports.map((room: any) => room.school).filter(Boolean))).map((school) => {
     const schoolRooms = filteredRoomReports.filter((room: any) => room.school === school);
     const schoolDepartments = Array.from(new Set(schoolRooms.map((room: any) => room.department).filter((department: string) => department && department !== 'Unmapped')));
@@ -16314,13 +17930,21 @@ function ReportGeneration() {
     const averageLeadDays = leadTimes.length
       ? Math.round((leadTimes.reduce((sum, value) => sum + value, 0) / leadTimes.length) * 10) / 10
       : null;
-    const cancellations = filteredReportBookings.filter((booking: any) => ['Rejected', 'Postponed'].includes(booking.status)).length;
+    const cancellations = filteredReportBookings.filter((booking: any) => BOOKING_CANCELLATION_STATUSES.includes(booking.status)).length;
     const approvals = filteredReportBookings.filter((booking: any) => booking.status === 'Approved').length;
+    const noRoomOutcomes = filteredReportBookings.filter((booking: any) => BOOKING_NO_ROOM_OUTCOME_STATUSES.includes(booking.status)).length;
+    const clarificationPending = filteredReportBookings.filter((booking: any) => booking.status === 'Clarification Required').length;
+    const alternativeResponsesPending = filteredReportBookings.filter((booking: any) => booking.status === 'Awaiting Alternative Response').length;
+    const openRequests = filteredReportBookings.filter((booking: any) => BOOKING_OPEN_WORKFLOW_STATUSES.includes(booking.status)).length;
     const cancellationRate = filteredReportBookings.length > 0 ? Math.round((cancellations / filteredReportBookings.length) * 100) : 0;
     return {
       totalRequests: filteredReportBookings.length,
       approvals,
       cancellations,
+      noRoomOutcomes,
+      clarificationPending,
+      alternativeResponsesPending,
+      openRequests,
       cancellationRate,
       averageLeadDays,
       leadTimeCapturedCount: leadTimes.length,
@@ -17893,6 +19517,10 @@ function ReportGeneration() {
           TotalRequests: bookingLifecycleReport.totalRequests,
           Approvals: bookingLifecycleReport.approvals,
           Cancellations: bookingLifecycleReport.cancellations,
+          NoRoomOutcomes: bookingLifecycleReport.noRoomOutcomes,
+          ClarificationPending: bookingLifecycleReport.clarificationPending,
+          AlternativeResponsesPending: bookingLifecycleReport.alternativeResponsesPending,
+          OpenRequests: bookingLifecycleReport.openRequests,
           CancellationRate: `${bookingLifecycleReport.cancellationRate}%`,
           AverageLeadDays: bookingLifecycleReport.averageLeadDays ?? 'N/A',
           LeadTimeCapturedCount: bookingLifecycleReport.leadTimeCapturedCount,
@@ -19221,11 +20849,17 @@ function ReportGeneration() {
 
             {filters.reportType === 'booking_lifecycle' && (
               <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
-                <h3 className="text-lg font-bold text-slate-800 mb-6">Booking Lead-Time & Cancellation Trends</h3>
-                <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+                <h3 className="text-lg font-bold text-slate-800 mb-6">Booking Workflow, Lead-Time & Resolution Trends</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-7 gap-3">
                   <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100"><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Requests</p><p className="text-2xl font-bold text-slate-800">{bookingLifecycleReport.totalRequests}</p></div>
                   <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100"><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Approvals</p><p className="text-2xl font-bold text-emerald-700">{bookingLifecycleReport.approvals}</p></div>
                   <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100"><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Cancellations</p><p className="text-2xl font-bold text-rose-700">{bookingLifecycleReport.cancellations}</p></div>
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100"><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">No Room / Waitlist</p><p className="text-2xl font-bold text-amber-700">{bookingLifecycleReport.noRoomOutcomes}</p></div>
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100"><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Need Clarification</p><p className="text-2xl font-bold text-cyan-700">{bookingLifecycleReport.clarificationPending}</p></div>
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100"><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Alt Response Pending</p><p className="text-2xl font-bold text-fuchsia-700">{bookingLifecycleReport.alternativeResponsesPending}</p></div>
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100"><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Open Workflow</p><p className="text-2xl font-bold text-orange-700">{bookingLifecycleReport.openRequests}</p></div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
                   <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100"><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Cancellation Rate</p><p className="text-2xl font-bold text-slate-800">{bookingLifecycleReport.cancellationRate}%</p></div>
                   <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100"><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Avg Lead Days</p><p className="text-2xl font-bold text-slate-800">{bookingLifecycleReport.averageLeadDays ?? 'N/A'}</p><p className="text-[10px] text-slate-400 mt-1">captured: {bookingLifecycleReport.leadTimeCapturedCount}</p></div>
                 </div>
@@ -19638,7 +21272,7 @@ function ReportGeneration() {
 }
 
 function TimetableBuilder() {
-  const { user } = useAuth();
+  const { user, selectedHodDepartmentId, setSelectedHodDepartmentId } = useAuth();
   const location = useLocation();
   const TIMETABLE_ROOM_STATUS_OPTIONS = ['All', 'Scheduled', 'Unscheduled'] as const;
   const [schedules, setSchedules] = useState<any[]>([]);
@@ -19649,11 +21283,17 @@ function TimetableBuilder() {
   const [timingProfiles, setTimingProfiles] = useState<any[]>([]);
   const [batchRoomAllocations, setBatchRoomAllocations] = useState<any[]>([]);
   const [departmentAllocations, setDepartmentAllocations] = useState<any[]>([]);
+  const [temporaryRoomAllocations, setTemporaryRoomAllocations] = useState<any[]>([]);
   const [selectedRoom, setSelectedRoom] = useState<string>('');
   const [roomScheduleStatusFilter, setRoomScheduleStatusFilter] = useState<(typeof TIMETABLE_ROOM_STATUS_OPTIONS)[number]>('All');
   const [referenceDate, setReferenceDate] = useState(formatLocalDate(new Date()));
   const [timetableContext, setTimetableContext] = useState({ department_id: '', program: '', year: '', semester: '', specialization: '', section: '' });
   const [loading, setLoading] = useState(true);
+  const isHodUser = normalizeRoleValue(user?.role) === 'hod';
+  const hodDepartmentIds = useMemo(
+    () => getAssignedDepartmentIdsFromUser(user),
+    [user],
+  );
 
   const timeToMinutes = (time?: string) => {
     const match = time?.match(/^(\d{1,2}):(\d{2})$/);
@@ -19663,8 +21303,10 @@ function TimetableBuilder() {
 
   const scopedDepartmentIds = useMemo(() => {
     if (user?.role === 'HOD') {
-      const department = departments.find((item: any) => normalizeLookupValue(item?.name) === normalizeLookupValue(user?.department));
-      return new Set<string>(department?.id ? [department.id.toString()] : []);
+      if (selectedHodDepartmentId) {
+        return new Set<string>([selectedHodDepartmentId]);
+      }
+      return new Set<string>(hodDepartmentIds);
     }
     if (user?.role === 'Dean') {
       const selectedSchool = schools.find((item: any) => normalizeLookupValue(item?.name) === normalizeLookupValue(user?.school));
@@ -19686,7 +21328,13 @@ function TimetableBuilder() {
       );
     }
     return new Set<string>();
-  }, [departments, schools, user?.department, user?.role, user?.school]);
+  }, [departments, hodDepartmentIds, schools, selectedHodDepartmentId, user?.department, user?.role, user?.school]);
+  const hodDepartmentOptions = useMemo(
+    () => departments
+      .filter((department: any) => hodDepartmentIds.some((departmentId: string) => idsMatch(department?.id, departmentId)))
+      .map((department: any) => ({ value: department.id?.toString?.() || '', label: department.name })),
+    [departments, hodDepartmentIds],
+  );
 
   const visibleSchedules = useMemo(() => {
     if (scopedDepartmentIds.size === 0) return schedules;
@@ -19709,9 +21357,14 @@ function TimetableBuilder() {
         .map((allocation: any) => allocation?.room_id?.toString?.())
         .filter(Boolean),
     );
+    (temporaryRoomAllocations || [])
+      .filter((allocation: any) => allocation?.temporary_department_id != null && scopedDepartmentIds.has(allocation.temporary_department_id.toString()))
+      .map((allocation: any) => allocation?.room_id?.toString?.())
+      .filter(Boolean)
+      .forEach((roomId: any) => allowedRoomIds.add(roomId));
     visibleScheduleRoomIds.forEach((roomId) => allowedRoomIds.add(roomId));
     return allowedRoomIds;
-  }, [departmentAllocations, scopedDepartmentIds, visibleScheduleRoomIds]);
+  }, [departmentAllocations, scopedDepartmentIds, temporaryRoomAllocations, visibleScheduleRoomIds]);
 
   const visibleRooms = useMemo(() => {
     if (!visibleRoomIds) return rooms;
@@ -19787,12 +21440,43 @@ function TimetableBuilder() {
       .filter((allocation: any) => idsMatch(allocation?.room_id, roomId))
       .forEach((allocation: any) => addContext(buildDepartmentAllocationTimingContext(allocation)));
 
+    temporaryRoomAllocations
+      .filter((allocation: any) => idsMatch(allocation?.room_id, roomId))
+      .filter((allocation: any) => {
+        if (!normalizedReferenceDate) return true;
+        return normalizeComparableDateValue(allocation?.approved_date) === normalizedReferenceDate;
+      })
+      .forEach((allocation: any) => addContext({
+        department_id: allocation?.temporary_department_id,
+        program: '',
+        semester: '',
+        year_of_study: '',
+        specialization: '',
+        section: '',
+        context_source: 'temporary-allocation',
+        approved_date: allocation?.approved_date,
+        start_time: allocation?.start_time,
+        end_time: allocation?.end_time,
+      }));
+
     return Array.from(contextMap.values());
-  }, [activeRoom, batchRoomAllocations, departmentAllocations, referenceDate, roomScopedSchedules, selectedRoom]);
+  }, [activeRoom, batchRoomAllocations, departmentAllocations, referenceDate, roomScopedSchedules, selectedRoom, temporaryRoomAllocations]);
 
   const roomContextRecords = useMemo(
     () => roomTimingContexts.length > 0 ? roomTimingContexts : roomScheduleContexts,
     [roomScheduleContexts, roomTimingContexts],
+  );
+  const roomTemporaryAllocationContexts = useMemo(
+    () => roomTimingContexts.filter((context: any) => context?.context_source === 'temporary-allocation'),
+    [roomTimingContexts],
+  );
+  const activeTemporaryContextDepartmentNames = useMemo(
+    () => Array.from(new Set(
+      roomTemporaryAllocationContexts
+        .map((context: any) => departments.find((department: any) => idsMatch(department?.id, context?.department_id))?.name || '')
+        .filter(Boolean),
+    )),
+    [departments, roomTemporaryAllocationContexts],
   );
 
   const roomDepartmentOptions = useMemo(() => Array.from(new Map(
@@ -19865,6 +21549,19 @@ function TimetableBuilder() {
       .map(context => context.section?.toString().trim())
       .filter((section): section is string => Boolean(section)),
   )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })), [roomContextRecords, timetableContext.department_id, timetableContext.program, timetableContext.year, timetableContext.semester, timetableContext.specialization]);
+
+  useEffect(() => {
+    if (!isHodUser || !selectedHodDepartmentId) return;
+    setTimetableContext(current => current.department_id === selectedHodDepartmentId ? current : {
+      ...current,
+      department_id: selectedHodDepartmentId,
+      program: '',
+      year: '',
+      semester: '',
+      specialization: '',
+      section: '',
+    });
+  }, [isHodUser, selectedHodDepartmentId]);
 
   useEffect(() => {
     setTimetableContext(current => ({
@@ -20035,6 +21732,8 @@ function TimetableBuilder() {
         : await fetchSharedLookupJson('/api/batch_room_allocations');
       const daData = Array.isArray(bundle?.department_allocations) ? bundle.department_allocations
         : await fetchSharedLookupJson('/api/department_allocations');
+      const taData = Array.isArray(bundle?.temporary_room_allocations) ? bundle.temporary_room_allocations
+        : await apiJson('/api/temporary-room-allocations');
       const dedupedSchedules = deduplicateScheduleRows(Array.isArray(sData) ? sData : []);
       const requestedRoomIdsFromSchedules = new Set<string>();
       dedupedSchedules.forEach((schedule: any) => {
@@ -20048,10 +21747,11 @@ function TimetableBuilder() {
       setTimingProfiles(Array.isArray(tpData) ? tpData : []);
       setBatchRoomAllocations(Array.isArray(baData) ? baData : []);
       setDepartmentAllocations(Array.isArray(daData) ? daData : []);
+      setTemporaryRoomAllocations(Array.isArray(taData) ? taData : []);
       const params = new URLSearchParams(location.search);
       const requestedRoomId = params.get('roomId');
       const requestedRoomLabel = params.get('room');
-      const requestedDepartmentId = params.get('departmentId') || '';
+      const requestedDepartmentId = params.get('departmentId') || selectedHodDepartmentId || '';
       const requestedProgram = normalizeProgramValue(params.get('program')) || '';
       const requestedSemester = normalizeExactSemesterValue(params.get('semester'), params.get('year'), '');
       const requestedSpecialization = params.get('specialization')?.trim() || '';
@@ -20084,7 +21784,7 @@ function TimetableBuilder() {
 
   useEffect(() => {
     fetchData();
-  }, [location.search]);
+  }, [location.search, selectedHodDepartmentId]);
 
   useEffect(() => {
     if (roomScheduleStatusFilter !== 'Unscheduled') return;
@@ -20185,6 +21885,25 @@ function TimetableBuilder() {
 
   return (
     <div className="space-y-8">
+      {isHodUser && hodDepartmentOptions.length > 1 && (
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">HOD Department Context</p>
+              <p className="text-sm text-slate-600 mt-1">Timetable scope follows the selected department across route changes.</p>
+            </div>
+            <select
+              value={selectedHodDepartmentId}
+              onChange={event => setSelectedHodDepartmentId(event.target.value)}
+              className="sm:min-w-72 px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50"
+            >
+              {hodDepartmentOptions.map((option: any) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex justify-between items-center">
         <div className="flex items-center gap-4">
           <div className="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center text-white">
@@ -20338,6 +22057,12 @@ function TimetableBuilder() {
             )}
           </div>
         )}
+        {activeTemporaryContextDepartmentNames.length > 0 && (
+          <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            Temporary allocation context on {referenceDate}: <span className="font-bold">{activeTemporaryContextDepartmentNames.join(', ')}</span>.
+            Vacancy and room context already treat these slots as temporarily reserved.
+          </div>
+        )}
       </div>
 
       <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
@@ -20383,11 +22108,19 @@ function TimetableBuilder() {
         )}
       </div>
 
-      {requiresContextFilterForVacancy && (
+        {requiresContextFilterForVacancy && (
         <div className="rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3">
           <p className="text-sm font-bold text-blue-800">Mixed timetable patterns detected for this room.</p>
           <p className="mt-1 text-xs text-blue-700">
             This room is used by multiple department, year, semester, branch, or section contexts. Vacant slots are inferred from the room&apos;s combined timing patterns; select a context above to see more accurate context-specific vacancy.
+          </p>
+        </div>
+      )}
+      {roomTemporaryAllocationContexts.length > 0 && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
+          <p className="text-sm font-bold text-amber-800">Temporary room assignment is active in this timetable context.</p>
+          <p className="mt-1 text-xs text-amber-700">
+            The selected room has one or more temporary allocations on the reference date, so related slots are treated as department-specific temporary usage alongside the normal timetable.
           </p>
         </div>
       )}

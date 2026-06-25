@@ -158,6 +158,18 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       FOREIGN KEY(school_id) REFERENCES schools(id)
     );
 
+    CREATE TABLE IF NOT EXISTS user_department_assignments (
+      id ${idDefinition},
+      user_id INTEGER NOT NULL,
+      department_id INTEGER NOT NULL,
+      is_primary INTEGER DEFAULT 0,
+      valid_from DATE,
+      valid_until DATE,
+      status TEXT DEFAULT 'Active',
+      FOREIGN KEY(user_id) REFERENCES users(id),
+      FOREIGN KEY(department_id) REFERENCES departments(id)
+    );
+
     CREATE TABLE IF NOT EXISTS department_allocations (
       id ${idDefinition},
       school_id INTEGER NOT NULL,
@@ -287,6 +299,11 @@ const ensureBookingColumns = async () => {
   await ensureColumn("bookings", "recommended_by", "TEXT");
   await ensureColumn("bookings", "decided_by", "TEXT");
   await ensureColumn("bookings", "request_group_id", "TEXT");
+  await ensureColumn("bookings", "request_type", "TEXT DEFAULT 'Department Room'");
+  await ensureColumn("bookings", "required_capacity", "INTEGER");
+  await ensureColumn("bookings", "preferred_building", "TEXT");
+  await ensureColumn("bookings", "status_remark", "TEXT");
+  await ensureColumn("bookings", "allocation_note", "TEXT");
 };
 
 await ensureBookingColumns();
@@ -308,6 +325,150 @@ await ensureColumn("users", "responsibilities", "TEXT");
 await ensureColumn("users", "access_limits", "TEXT");
 await ensureColumn("users", "access_paths", "TEXT");
 await ensureColumn("users", "force_password_change", "INTEGER DEFAULT 0");
+await ensureColumn("user_department_assignments", "is_primary", "INTEGER DEFAULT 0");
+await ensureColumn("user_department_assignments", "valid_from", "DATE");
+await ensureColumn("user_department_assignments", "valid_until", "DATE");
+await ensureColumn("user_department_assignments", "status", "TEXT DEFAULT 'Active'");
+
+const normalizeStatusValue = (value: any) => value?.toString().trim().toLowerCase() || "";
+const getCurrentIsoDate = () => new Date().toISOString().split("T")[0];
+const isAssignmentActive = (assignment: any, today = getCurrentIsoDate()) => {
+  const status = normalizeStatusValue(assignment?.status);
+  if (status && !["active", "current"].includes(status)) return false;
+  const validFrom = assignment?.valid_from?.toString().trim();
+  const validUntil = assignment?.valid_until?.toString().trim();
+  if (validFrom && validFrom > today) return false;
+  if (validUntil && validUntil < today) return false;
+  return true;
+};
+
+const getDepartmentAssignmentsForUser = async (userId: string | number) => {
+  const assignments = await db.prepare(`
+    SELECT
+      uda.*,
+      d.name as department_name,
+      d.department_id as department_code,
+      d.school_id as school_id
+    FROM user_department_assignments uda
+    JOIN departments d ON uda.department_id = d.id
+    WHERE uda.user_id = ?
+    ORDER BY uda.is_primary DESC, uda.id ASC
+  `).all(userId) as any[];
+  const today = getCurrentIsoDate();
+  return assignments.filter((assignment: any) => isAssignmentActive(assignment, today));
+};
+
+const resolvePrimaryAssignment = (assignments: any[]) =>
+  assignments.find((assignment: any) => Number(assignment?.is_primary) === 1)
+  || assignments[0]
+  || null;
+
+const ensureUserDepartmentAssignments = async (user: any) => {
+  if (!user?.id) return [];
+
+  let assignments = await getDepartmentAssignmentsForUser(user.id);
+  if (assignments.length > 0) return assignments;
+
+  const legacyDepartment = user.department?.toString().trim();
+  if (!legacyDepartment) return [];
+
+  const department = await db.prepare(`
+    SELECT id, name, department_id, school_id
+    FROM departments
+    WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+  `).get(legacyDepartment) as any;
+  if (!department) return [];
+
+  await db.prepare(`
+    INSERT INTO user_department_assignments (user_id, department_id, is_primary, status)
+    VALUES (?, ?, 1, 'Active')
+  `).run(user.id, department.id);
+
+  assignments = await getDepartmentAssignmentsForUser(user.id);
+  return assignments;
+};
+
+const buildUserDepartmentContext = async (user: any) => {
+  const assignments = await ensureUserDepartmentAssignments(user);
+  const primaryAssignment = resolvePrimaryAssignment(assignments);
+  const assignedDepartmentIds = assignments
+    .map((assignment: any) => assignment.department_id?.toString())
+    .filter(Boolean);
+  const assignedDepartmentNames = assignments
+    .map((assignment: any) => assignment.department_name?.toString().trim())
+    .filter(Boolean);
+
+  return {
+    assignments,
+    primaryAssignment,
+    primaryDepartmentId: primaryAssignment?.department_id?.toString() || null,
+    primaryDepartmentName: primaryAssignment?.department_name || user.department || null,
+    assignedDepartmentIds,
+    assignedDepartmentNames,
+  };
+};
+
+const parseDelimitedValues = (value: any) => {
+  if (Array.isArray(value)) return value.map(item => item?.toString().trim()).filter(Boolean);
+  return value?.toString().split(/[;,]/).map((item: string) => item.trim()).filter(Boolean) || [];
+};
+
+const syncUserDepartmentAssignments = async (userId: string | number, payload: any) => {
+  const explicitIds = parseDelimitedValues(payload.assigned_department_ids);
+  const explicitNames = parseDelimitedValues(payload.assigned_departments);
+  const legacyDepartment = payload.department?.toString().trim();
+  const primaryCandidate = payload.primary_department_id?.toString().trim()
+    || payload.primary_department?.toString().trim()
+    || payload.department?.toString().trim()
+    || "";
+  const requestedValues = Array.from(new Set([
+    ...explicitIds,
+    ...explicitNames,
+    ...(legacyDepartment ? [legacyDepartment] : []),
+  ]));
+
+  if (requestedValues.length === 0) {
+    await db.prepare("DELETE FROM user_department_assignments WHERE user_id = ?").run(userId);
+    return [];
+  }
+
+  const resolvedAssignments: any[] = [];
+  for (const value of requestedValues) {
+    const department = await db.prepare(`
+      SELECT id, name, department_id, school_id
+      FROM departments
+      WHERE id = ?
+         OR LOWER(TRIM(department_id)) = LOWER(TRIM(?))
+         OR LOWER(TRIM(name)) = LOWER(TRIM(?))
+    `).get(value, value, value) as any;
+    if (!department) {
+      throw new Error(`Could not match department assignment "${value}".`);
+    }
+    if (!resolvedAssignments.some((item) => item.id === department.id)) {
+      resolvedAssignments.push(department);
+    }
+  }
+
+  let primaryDepartmentId = resolvedAssignments[0]?.id || null;
+  if (primaryCandidate) {
+    const matchedPrimary = resolvedAssignments.find((department) =>
+      department.id?.toString() === primaryCandidate
+      || department.department_id?.toString().trim().toLowerCase() === primaryCandidate.toLowerCase()
+      || department.name?.toString().trim().toLowerCase() === primaryCandidate.toLowerCase()
+    );
+    if (matchedPrimary) primaryDepartmentId = matchedPrimary.id;
+  }
+
+  await db.prepare("DELETE FROM user_department_assignments WHERE user_id = ?").run(userId);
+  for (const department of resolvedAssignments) {
+    await db.prepare(`
+      INSERT INTO user_department_assignments (user_id, department_id, is_primary, status)
+      VALUES (?, ?, ?, 'Active')
+    `).run(userId, department.id, department.id === primaryDepartmentId ? 1 : 0);
+  }
+
+  return getDepartmentAssignmentsForUser(userId);
+};
 
 const normalizeRoomTypeValue = (value: any) => {
   const normalized = value?.toString().trim().toLowerCase();
@@ -632,13 +793,146 @@ const ensureNotificationReadsTable = async () => {
   `);
 };
 
+const ensureBookingActivityTable = async () => {
+  const idDefinition = db.dialect === "postgres" ? "SERIAL PRIMARY KEY" : "INTEGER PRIMARY KEY AUTOINCREMENT";
+  const timestampType = db.dialect === "postgres" ? "TIMESTAMP" : "DATETIME";
+
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS booking_activity (
+      id ${idDefinition},
+      booking_id INTEGER,
+      request_group_id TEXT,
+      actor_name TEXT,
+      actor_role TEXT,
+      action_type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      message TEXT,
+      status_from TEXT,
+      status_to TEXT,
+      room_id_from INTEGER,
+      room_id_to INTEGER,
+      note_text TEXT,
+      created_at ${timestampType} DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+};
+
+const ensureBookingAlternativesTable = async () => {
+  const idDefinition = db.dialect === "postgres" ? "SERIAL PRIMARY KEY" : "INTEGER PRIMARY KEY AUTOINCREMENT";
+  const timestampType = db.dialect === "postgres" ? "TIMESTAMP" : "DATETIME";
+
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS booking_alternatives (
+      id ${idDefinition},
+      booking_id INTEGER,
+      request_group_id TEXT,
+      status TEXT DEFAULT 'Pending Response',
+      suggested_date TEXT,
+      suggested_start_time TEXT,
+      suggested_end_time TEXT,
+      suggested_capacity INTEGER,
+      suggested_room_type TEXT,
+      suggested_building TEXT,
+      suggested_room_count INTEGER,
+      suggestion_note TEXT,
+      internal_candidate_room_ids TEXT,
+      response_note TEXT,
+      created_by TEXT,
+      created_role TEXT,
+      responded_by TEXT,
+      responded_role TEXT,
+      responded_at ${timestampType},
+      created_at ${timestampType} DEFAULT CURRENT_TIMESTAMP,
+      updated_at ${timestampType} DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+};
+
+const ensureTemporaryRoomAllocationsTable = async () => {
+  const idDefinition = db.dialect === "postgres" ? "SERIAL PRIMARY KEY" : "INTEGER PRIMARY KEY AUTOINCREMENT";
+  const timestampType = db.dialect === "postgres" ? "TIMESTAMP" : "DATETIME";
+
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS temporary_room_allocations (
+      id ${idDefinition},
+      booking_id INTEGER NOT NULL,
+      request_group_id TEXT,
+      room_id INTEGER NOT NULL,
+      temporary_department_id INTEGER NOT NULL,
+      original_department_id INTEGER,
+      approved_date TEXT NOT NULL,
+      start_time TEXT NOT NULL,
+      end_time TEXT NOT NULL,
+      purpose TEXT,
+      request_type TEXT,
+      allocation_note TEXT,
+      assigned_by TEXT,
+      assigned_role TEXT,
+      released_at ${timestampType},
+      status TEXT DEFAULT 'Upcoming',
+      created_at ${timestampType} DEFAULT CURRENT_TIMESTAMP,
+      updated_at ${timestampType} DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(booking_id)
+    );
+  `);
+};
+
 await ensureNotificationsTable();
 await ensureNotificationReadsTable();
+await ensureBookingActivityTable();
+await ensureBookingAlternativesTable();
+await ensureTemporaryRoomAllocationsTable();
 
 const createNotification = async (targetRole: string | null, targetName: string | null, title: string, message: string, targetDepartment: string | null = null) => {
   await ensureNotificationsTable();
   await db.prepare("INSERT INTO notifications (target_role, target_name, target_department, title, message) VALUES (?, ?, ?, ?, ?)")
     .run(targetRole, targetName, targetDepartment, title, message);
+};
+
+const createBookingActivityLog = async (
+  booking: any,
+  actor: { name?: string | null; role?: string | null } | null,
+  payload: {
+    actionType: string;
+    title: string;
+    message?: string | null;
+    statusFrom?: string | null;
+    statusTo?: string | null;
+    roomIdFrom?: string | number | null;
+    roomIdTo?: string | number | null;
+    noteText?: string | null;
+  }
+) => {
+  await ensureBookingActivityTable();
+  await db.prepare(`
+    INSERT INTO booking_activity (
+      booking_id,
+      request_group_id,
+      actor_name,
+      actor_role,
+      action_type,
+      title,
+      message,
+      status_from,
+      status_to,
+      room_id_from,
+      room_id_to,
+      note_text
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    booking?.id ?? null,
+    booking?.request_group_id ?? null,
+    actor?.name ?? null,
+    actor?.role ?? null,
+    payload.actionType,
+    payload.title,
+    payload.message ?? null,
+    payload.statusFrom ?? null,
+    payload.statusTo ?? null,
+    payload.roomIdFrom ?? null,
+    payload.roomIdTo ?? null,
+    payload.noteText ?? null,
+  );
 };
 
 const getDepartmentNameById = async (departmentId?: string | number | null) => {
@@ -691,17 +985,21 @@ const backfillNotificationsIfEmpty = async () => {
 const getNotificationAudienceParams = (user: any) => {
   const normalizedRole = user?.role || null;
   const normalizedName = user?.name?.toString().trim().toLowerCase() || null;
-  const normalizedDepartment = user?.department?.toString().trim().toLowerCase() || null;
+  const normalizedDepartments = Array.from(new Set([
+    user?.department?.toString().trim().toLowerCase() || null,
+    ...(Array.isArray(user?.assigned_departments) ? user.assigned_departments : [])
+      .map((department: any) => department?.toString().trim().toLowerCase())
+      .filter(Boolean),
+  ].filter(Boolean)));
 
-  return { normalizedRole, normalizedName, normalizedDepartment };
+  return { normalizedRole, normalizedName, normalizedDepartments };
 };
 
 const getNotificationsForUser = async (user: any, limit = 20) => {
   await ensureNotificationsTable();
   await ensureNotificationReadsTable();
-  const { normalizedRole, normalizedName, normalizedDepartment } = getNotificationAudienceParams(user);
-
-  return await db.prepare(`
+  const { normalizedRole, normalizedName, normalizedDepartments } = getNotificationAudienceParams(user);
+  const notifications = await db.prepare(`
     SELECT
       n.*,
       CASE WHEN nr.notification_id IS NULL THEN 0 ELSE 1 END as is_read
@@ -712,10 +1010,17 @@ const getNotificationsForUser = async (user: any, limit = 20) => {
     WHERE (n.target_role IS NULL AND n.target_name IS NULL AND n.target_department IS NULL)
       OR (n.target_role = ? AND n.target_department IS NULL)
       OR LOWER(TRIM(COALESCE(n.target_name, ''))) = ?
-      OR (n.target_role = ? AND LOWER(TRIM(COALESCE(n.target_department, ''))) = ?)
     ORDER BY n.created_at DESC, n.id DESC
     LIMIT ?
-  `).all(user.id, normalizedRole, normalizedName, normalizedRole, normalizedDepartment, limit);
+  `).all(user.id, normalizedRole, normalizedName, Math.max(limit * 5, 100));
+
+  return notifications
+    .filter((notification: any) => {
+      const targetDepartment = notification?.target_department?.toString().trim().toLowerCase();
+      if (!targetDepartment) return true;
+      return normalizedDepartments.includes(targetDepartment);
+    })
+    .slice(0, limit);
 };
 
 const markAllNotificationsRead = async (user: any, notificationIds?: number[]) => {
@@ -783,12 +1088,19 @@ const getAuthCookieOptions = () => ({
 });
 
 // Auth Middleware
-const authenticate = (req: any, res: any, next: any) => {
+const authenticate = async (req: any, res: any, next: any) => {
   const token = req.cookies.token;
   if (!token) return res.status(401).json({ error: "Unauthorized" });
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    req.user = decoded;
+    const userId = (decoded as any)?.id;
+    if (userId) {
+      const user = await db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
+      if (!user) return res.status(401).json({ error: "Unauthorized" });
+      req.user = await getUserSessionPayload(user);
+    } else {
+      req.user = decoded;
+    }
     next();
   } catch (err) {
     res.status(401).json({ error: "Invalid token" });
@@ -815,18 +1127,36 @@ const parseAIJsonResponse = (text: string) => {
 
 // --- AUTH ROUTES ---
 
-const getUserSessionPayload = (user: any) => ({
-  id: user.id,
-  email: user.email,
-  role: user.role,
-  name: user.full_name,
-  department: user.department,
-  designation: user.designation,
-  responsibilities: user.responsibilities,
-  access_limits: user.access_limits,
-  access_paths: user.access_paths,
-  force_password_change: !!user.force_password_change
-});
+const getUserSessionPayload = async (user: any) => {
+  const context = await buildUserDepartmentContext(user);
+  return {
+    id: user.id,
+    email: user.email,
+    role: user.role,
+    name: user.full_name,
+    department: context.primaryDepartmentName || user.department || null,
+    primary_department_id: context.primaryDepartmentId,
+    primary_department: context.primaryDepartmentName,
+    assigned_department_ids: context.assignedDepartmentIds,
+    assigned_departments: context.assignedDepartmentNames,
+    department_assignments: context.assignments.map((assignment: any) => ({
+      id: assignment.id,
+      department_id: assignment.department_id,
+      department_name: assignment.department_name,
+      department_code: assignment.department_code,
+      school_id: assignment.school_id,
+      is_primary: Number(assignment.is_primary) === 1,
+      valid_from: assignment.valid_from || null,
+      valid_until: assignment.valid_until || null,
+      status: assignment.status || "Active",
+    })),
+    designation: user.designation,
+    responsibilities: user.responsibilities,
+    access_limits: user.access_limits,
+    access_paths: user.access_paths,
+    force_password_change: !!user.force_password_change
+  };
+};
 
 app.post("/api/auth/login", async (req, res) => {
   try {
@@ -835,7 +1165,7 @@ app.post("/api/auth/login", async (req, res) => {
     if (!user || !bcrypt.compareSync(password, user.password)) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
-    const sessionUser = getUserSessionPayload(user);
+    const sessionUser = await getUserSessionPayload(user);
     const token = jwt.sign(sessionUser, JWT_SECRET, { expiresIn: "24h" });
     res.cookie("token", token, getAuthCookieOptions());
     res.json({ user: sessionUser });
@@ -849,12 +1179,16 @@ app.post("/api/auth/logout", (req, res) => {
   res.json({ success: true });
 });
 
-app.get("/api/auth/me", (req, res) => {
+app.get("/api/auth/me", async (req, res) => {
   const token = req.cookies.token;
   if (!token) return res.status(401).json({ error: "Not logged in" });
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    res.json({ user: decoded });
+    const userId = (decoded as any)?.id;
+    if (!userId) return res.json({ user: decoded });
+    const user = await db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
+    if (!user) return res.status(401).json({ error: "Not logged in" });
+    res.json({ user: await getUserSessionPayload(user) });
   } catch (err) {
     res.status(401).json({ error: "Invalid token" });
   }
@@ -971,7 +1305,7 @@ app.post("/api/auth/change-password", authenticate, async (req: any, res) => {
     const hashedPassword = bcrypt.hashSync(password.toString(), 10);
     await db.prepare("UPDATE users SET password = ?, force_password_change = 0 WHERE id = ?").run(hashedPassword, req.user.id);
     const user: any = await db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
-    const sessionUser = getUserSessionPayload(user);
+    const sessionUser = await getUserSessionPayload(user);
     const token = jwt.sign(sessionUser, JWT_SECRET, { expiresIn: "24h" });
     res.cookie("token", token, getAuthCookieOptions());
     res.json({ user: sessionUser });
@@ -1188,7 +1522,12 @@ const checkDuplicateRecord = async (tableName: string, data: any, excludeId?: st
 };
 
 const isPastDateTime = (date: string, time: string) => {
-  const value = new Date(`${date}T${time}`);
+  const normalizedDate = date instanceof Date
+    ? date.toISOString().slice(0, 10)
+    : date?.toString().trim().includes("T")
+      ? date.toString().trim().slice(0, 10)
+      : date?.toString().trim();
+  const value = new Date(`${normalizedDate}T${time}`);
   return Number.isNaN(value.getTime()) || value.getTime() < Date.now();
 };
 
@@ -1199,7 +1538,26 @@ const getBookingDepartmentName = async (booking: any) => {
 };
 
 const isDecisionRole = (role: string) => ["Administrator", "Dean (P&M)", "Deputy Dean (P&M)"].includes(role);
-const openBookingStatuses = ["Pending", "HOD Recommended", "Approved"];
+const openBookingStatuses = [
+  "Pending",
+  "HOD Recommended",
+  "Approved",
+  "No Room Available",
+  "Awaiting Alternative Response",
+  "Waitlisted",
+  "Clarification Required",
+];
+const bookingDeanWorkflowStatuses = ["Approved", "Rejected", "Postponed", "No Room Available", "Waitlisted", "Clarification Required"];
+const bookingRequesterRevisionStatuses = ["No Room Available", "Waitlisted", "Clarification Required", "Postponed", "Awaiting Alternative Response"];
+const normalizeBookingRequestType = (value: any) =>
+  value?.toString().trim() === "Additional Room" ? "Additional Room" : "Department Room";
+const isAdditionalRoomBooking = (booking: any) => normalizeBookingRequestType(booking?.request_type) === "Additional Room";
+const getAccessibleDepartmentIdSet = (user: any) =>
+  new Set(
+    (Array.isArray(user?.assigned_department_ids) ? user.assigned_department_ids : [])
+      .map((departmentId: any) => departmentId?.toString())
+      .filter(Boolean)
+  );
 
 const getApprovedBookingConflict = async (booking: any, excludeId?: string | number) => {
   if (!booking?.room_id || !booking?.date || !booking?.start_time || !booking?.end_time) return null;
@@ -1268,11 +1626,290 @@ const notifyBookingAuthorities = async (booking: any, title: string, message: st
   await createNotification("Deputy Dean (P&M)", null, title, message);
 };
 
+const getBookingWorkflowItems = async (booking: any) => {
+  if (!booking) return [];
+  if (booking.request_group_id) {
+    return await db.prepare("SELECT * FROM bookings WHERE request_group_id = ? ORDER BY date ASC, start_time ASC, id ASC").all(booking.request_group_id) as any[];
+  }
+  return [booking];
+};
+
+const canAccessBookingWorkflow = async (booking: any, user: any) => {
+  if (!booking || !user) return false;
+  if (isDecisionRole(user.role)) return true;
+  if (booking.faculty_name === user.name) return true;
+  if (user.role === "HOD" && booking.department_id != null) {
+    const departmentIds = getAccessibleDepartmentIdSet(user);
+    if (departmentIds.has(booking.department_id.toString())) return true;
+  }
+  return false;
+};
+
+const sanitizeBookingAlternative = (alternative: any, canViewInternalDetails: boolean) => {
+  if (canViewInternalDetails) return alternative;
+  const { internal_candidate_room_ids, ...safeAlternative } = alternative || {};
+  return safeAlternative;
+};
+
+const deriveTemporaryAllocationStatus = (date: string, startTime: string, endTime: string) => {
+  const now = new Date();
+  const start = new Date(`${date}T${startTime}`);
+  const end = new Date(`${date}T${endTime}`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return "Upcoming";
+  if (now < start) return "Upcoming";
+  if (now >= start && now < end) return "Active";
+  return "Completed";
+};
+
+const getLatestDepartmentAllocationForRoom = async (roomId?: string | number | null) => {
+  if (!roomId) return null;
+  return await db.prepare(`
+    SELECT *
+    FROM department_allocations
+    WHERE room_id = ?
+    ORDER BY id DESC
+    LIMIT 1
+  `).get(roomId) as any;
+};
+
+const refreshTemporaryRoomAllocationStatuses = async () => {
+  await ensureTemporaryRoomAllocationsTable();
+  const allocations = await db.prepare(`
+    SELECT *
+    FROM temporary_room_allocations
+    WHERE status IN ('Upcoming', 'Active')
+  `).all() as any[];
+  for (const allocation of allocations) {
+    const nextStatus = deriveTemporaryAllocationStatus(allocation.approved_date, allocation.start_time, allocation.end_time);
+    if (nextStatus !== allocation.status) {
+      await db.prepare(`
+        UPDATE temporary_room_allocations
+        SET status = ?, released_at = CASE WHEN ? = 'Completed' THEN CURRENT_TIMESTAMP ELSE released_at END, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(nextStatus, nextStatus, allocation.id);
+      const relatedBooking = allocation.booking_id
+        ? await db.prepare("SELECT * FROM bookings WHERE id = ?").get(allocation.booking_id) as any
+        : null;
+      if (relatedBooking) {
+        if (nextStatus === "Active") {
+          await createBookingActivityLog(relatedBooking, { name: "System", role: "System" }, {
+            actionType: "temporary_allocation_started",
+            title: "Temporary allocation started",
+            message: `Temporary access started for Room ${relatedBooking.room_id || allocation.room_id}.`,
+            statusTo: relatedBooking.status ?? null,
+            roomIdTo: allocation.room_id ?? null,
+            noteText: allocation.allocation_note || null,
+          });
+          await createNotification(null, relatedBooking.faculty_name, "Temporary allocation started", `${relatedBooking.event_name || "Your request"} now has active temporary room access.`);
+        }
+        if (nextStatus === "Completed") {
+          await createBookingActivityLog(relatedBooking, { name: "System", role: "System" }, {
+            actionType: "temporary_allocation_completed",
+            title: "Temporary allocation completed",
+            message: `Temporary access ended and the room returned to its original department.`,
+            statusTo: relatedBooking.status ?? null,
+            roomIdTo: allocation.room_id ?? null,
+            noteText: allocation.allocation_note || null,
+          });
+          await createNotification(null, relatedBooking.faculty_name, "Temporary allocation ended", `${relatedBooking.event_name || "Your request"} completed and the temporary room access window has ended.`);
+          const temporaryDepartmentName = await getDepartmentNameById(allocation.temporary_department_id);
+          const originalDepartmentName = await getDepartmentNameById(allocation.original_department_id);
+          if (temporaryDepartmentName) {
+            await createNotification("HOD", null, "Temporary allocation ended", `Temporary access for ${relatedBooking.event_name || "a request"} has ended.`, temporaryDepartmentName);
+          }
+          if (originalDepartmentName) {
+            await createNotification("HOD", null, "Room returned to department", `Room access has returned to the original department after temporary use.`, originalDepartmentName);
+          }
+        }
+      }
+    }
+  }
+};
+
+const syncTemporaryRoomAllocationForBooking = async (booking: any, actor?: { name?: string | null; role?: string | null } | null) => {
+  await ensureTemporaryRoomAllocationsTable();
+  await refreshTemporaryRoomAllocationStatuses();
+  if (!booking?.id) return;
+
+  const existingAllocation = await db.prepare("SELECT * FROM temporary_room_allocations WHERE booking_id = ?").get(booking.id) as any;
+  const shouldHaveAllocation = isAdditionalRoomBooking(booking)
+    && booking.status === "Approved"
+    && booking.room_id
+    && booking.department_id
+    && booking.date
+    && booking.start_time
+    && booking.end_time;
+
+  if (!shouldHaveAllocation) {
+    if (existingAllocation && existingAllocation.status !== "Revoked") {
+      await db.prepare(`
+        UPDATE temporary_room_allocations
+        SET status = 'Revoked', released_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+        WHERE booking_id = ?
+      `).run(booking.id);
+    }
+    return;
+  }
+
+  const originalAllocation = await getLatestDepartmentAllocationForRoom(booking.room_id);
+  const nextStatus = deriveTemporaryAllocationStatus(booking.date, booking.start_time, booking.end_time);
+  const payload = [
+    booking.request_group_id ?? null,
+    booking.room_id,
+    booking.department_id,
+    originalAllocation?.department_id ?? null,
+    booking.date,
+    booking.start_time,
+    booking.end_time,
+    booking.purpose || null,
+    booking.request_type || null,
+    booking.allocation_note || null,
+    actor?.name || booking.decided_by || null,
+    actor?.role || null,
+    nextStatus,
+    booking.id,
+  ];
+
+  if (existingAllocation) {
+    await db.prepare(`
+      UPDATE temporary_room_allocations
+      SET
+        request_group_id = ?,
+        room_id = ?,
+        temporary_department_id = ?,
+        original_department_id = ?,
+        approved_date = ?,
+        start_time = ?,
+        end_time = ?,
+        purpose = ?,
+        request_type = ?,
+        allocation_note = ?,
+        assigned_by = ?,
+        assigned_role = ?,
+        status = ?,
+        released_at = CASE WHEN ? = 'Completed' THEN COALESCE(released_at, CURRENT_TIMESTAMP) ELSE NULL END,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE booking_id = ?
+    `).run(...payload, nextStatus);
+    return;
+  }
+
+  await db.prepare(`
+    INSERT INTO temporary_room_allocations (
+      booking_id,
+      request_group_id,
+      room_id,
+      temporary_department_id,
+      original_department_id,
+      approved_date,
+      start_time,
+      end_time,
+      purpose,
+      request_type,
+      allocation_note,
+      assigned_by,
+      assigned_role,
+      status,
+      released_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 'Completed' THEN CURRENT_TIMESTAMP ELSE NULL END)
+  `).run(
+    booking.id,
+    booking.request_group_id ?? null,
+    booking.room_id,
+    booking.department_id,
+    originalAllocation?.department_id ?? null,
+    booking.date,
+    booking.start_time,
+    booking.end_time,
+    booking.purpose || null,
+    booking.request_type || null,
+    booking.allocation_note || null,
+    actor?.name || booking.decided_by || null,
+    actor?.role || null,
+    nextStatus,
+    nextStatus,
+  );
+};
+
+const getTemporaryAllocationConflict = async (roomId: any, date: string, startTime: string, endTime: string, excludeBookingId?: string | number) => {
+  await ensureTemporaryRoomAllocationsTable();
+  await refreshTemporaryRoomAllocationStatuses();
+  return await db.prepare(`
+    SELECT id, booking_id
+    FROM temporary_room_allocations
+    WHERE room_id = ?
+      AND approved_date = ?
+      AND status IN ('Upcoming', 'Active')
+      ${excludeBookingId ? "AND booking_id != ?" : ""}
+      AND NOT (end_time <= ? OR start_time >= ?)
+    LIMIT 1
+  `).get(
+    roomId,
+    date,
+    ...(excludeBookingId ? [excludeBookingId] : []),
+    startTime,
+    endTime,
+  ) as any;
+};
+
+const getTemporaryAllocationScheduleConflict = async (roomId: any, dayOfWeek: string, startTime: string, endTime: string) => {
+  if (!roomId || !dayOfWeek || !startTime || !endTime) return null;
+  await ensureTemporaryRoomAllocationsTable();
+  await refreshTemporaryRoomAllocationStatuses();
+  const allocations = await db.prepare(`
+    SELECT id, approved_date, start_time, end_time, status
+    FROM temporary_room_allocations
+    WHERE room_id = ? AND status IN ('Upcoming', 'Active')
+  `).all(roomId) as any[];
+  return allocations.find((allocation: any) => {
+    const allocationDay = new Date(`${allocation.approved_date}T00:00:00`).toLocaleDateString('en-US', { weekday: 'long' });
+    return allocationDay === dayOfWeek && timesOverlap(allocation.start_time, allocation.end_time, startTime, endTime);
+  }) || null;
+};
+
+const applyBookingQueryFilters = (bookings: any[], query: any) => {
+  const requestedStatus = query.status?.toString().trim() || "";
+  const requestedDepartmentId = query.department_id?.toString() || query.departmentId?.toString() || "";
+  const requestedRequestType = query.requestType?.toString().trim() || query.request_type?.toString().trim() || "";
+  const requestedAssignment = query.assignment?.toString().trim() || "";
+  const requestedDecision = query.decision?.toString().trim() || "";
+
+  return bookings.filter((booking: any) => {
+    if (requestedStatus && booking?.status !== requestedStatus) return false;
+    if (requestedDepartmentId && !idsEqual(booking?.department_id, requestedDepartmentId)) return false;
+    if (requestedRequestType && booking?.request_type !== requestedRequestType) return false;
+    if (requestedAssignment === "assigned" && !booking?.room_id) return false;
+    if (requestedAssignment === "unassigned" && booking?.room_id) return false;
+    if (requestedDecision === "ready") {
+      const isReadyForDecision = booking?.status === "HOD Recommended"
+        || (booking?.request_type === "Additional Room" && ["Pending", "HOD Recommended"].includes(booking?.status) && !!booking?.room_id);
+      if (!isReadyForDecision) return false;
+    }
+    return true;
+  });
+};
+
 await backfillNotificationsIfEmpty();
 
 const createCrudRoutes = (tableName: string, idField: string = "id") => {
   app.get(`/api/${tableName}`, authenticate, async (req, res) => {
     try {
+      if (tableName === "users") {
+        const users = await db.prepare(`SELECT * FROM users`).all() as any[];
+        const enrichedUsers = await Promise.all(users.map(async (user: any) => {
+          const context = await buildUserDepartmentContext(user);
+          return {
+            ...user,
+            department: context.primaryDepartmentName || user.department || null,
+            primary_department_id: context.primaryDepartmentId,
+            primary_department: context.primaryDepartmentName,
+            assigned_department_ids: context.assignedDepartmentIds.join(","),
+            assigned_departments: context.assignedDepartmentNames.join(", "),
+          };
+        }));
+        return res.json(enrichedUsers);
+      }
+
       if (tableName === "bookings") {
         const bookings = await db.prepare(`
           SELECT bk.*, r.room_number, d.name as department_name
@@ -1281,13 +1918,16 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
           LEFT JOIN departments d ON bk.department_id = d.id
         `).all();
         const user = (req as any).user;
-        if (isDecisionRole(user.role)) return res.json(bookings);
+        if (isDecisionRole(user.role)) return res.json(applyBookingQueryFilters(bookings as any[], req.query));
         if (user.role === "HOD") {
-          return res.json(bookings.filter((booking: any) =>
-            booking.faculty_name === user.name || (!!user.department && booking.department_name === user.department)
-          ));
+          const accessibleDepartmentIds = getAccessibleDepartmentIdSet(user);
+          return res.json(applyBookingQueryFilters(bookings.filter((booking: any) =>
+            booking.faculty_name === user.name
+            || (booking?.department_id != null && accessibleDepartmentIds.has(booking.department_id.toString()))
+            || (!!user.department && booking.department_name === user.department)
+          ), req.query));
         }
-        return res.json(bookings.filter((booking: any) => booking.faculty_name === user.name));
+        return res.json(applyBookingQueryFilters(bookings.filter((booking: any) => booking.faculty_name === user.name), req.query));
       }
 
       const items = await db.prepare(`SELECT * FROM ${tableName}`).all();
@@ -1312,6 +1952,21 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       if (!req.body.status) {
         req.body.status = "Pending";
       }
+    }
+    const userAssignmentPayload = tableName === "users"
+      ? {
+          assigned_departments: req.body.assigned_departments,
+          assigned_department_ids: req.body.assigned_department_ids,
+          primary_department_id: req.body.primary_department_id,
+          primary_department: req.body.primary_department,
+          department: req.body.department,
+        }
+      : null;
+    if (tableName === "users") {
+      delete req.body.assigned_departments;
+      delete req.body.assigned_department_ids;
+      delete req.body.primary_department_id;
+      delete req.body.primary_department;
     }
     if (tableName === "rooms") {
       req.body = normalizeRoomPayload(req.body);
@@ -1354,15 +2009,37 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         if (req.body.room_id !== undefined && req.body.room_id !== null && req.body.room_id !== "") {
           const room = await db.prepare("SELECT id FROM rooms WHERE id = ?").get(req.body.room_id) as any;
           if (!room) return res.status(400).json({ error: "Please select a valid room." });
+          const temporaryAllocationConflict = await getTemporaryAllocationScheduleConflict(
+            req.body.room_id,
+            req.body.day_of_week,
+            req.body.start_time,
+            req.body.end_time,
+          );
+          if (temporaryAllocationConflict) {
+            return res.status(400).json({ error: "This room has an overlapping temporary allocation for one or more matching schedule slots." });
+          }
         }
       }
 
       if (tableName === "bookings") {
-        if (!req.body.room_id || !req.body.date || !req.body.start_time || !req.body.end_time) {
-          return res.status(400).json({ error: "Room, date, start time, and end time are required." });
+        req.body.request_type = normalizeBookingRequestType(req.body.request_type);
+        const requiresAssignedRoom = !isAdditionalRoomBooking(req.body);
+        if (!req.body.date || !req.body.start_time || !req.body.end_time) {
+          return res.status(400).json({ error: "Date, start time, and end time are required." });
         }
-        const bookableError = await getBookableRoomError(req.body.room_id);
-        if (bookableError) return res.status(400).json({ error: bookableError });
+        if (requiresAssignedRoom && !req.body.room_id) {
+          return res.status(400).json({ error: "Please select a room for a department room booking." });
+        }
+        if (!requiresAssignedRoom) {
+          req.body.room_id = null;
+          if (!req.body.required_capacity && !req.body.student_count) {
+            return res.status(400).json({ error: "Required capacity is needed for an additional room request." });
+          }
+        }
+        if (req.body.room_id) {
+          const bookableError = await getBookableRoomError(req.body.room_id);
+          if (bookableError) return res.status(400).json({ error: bookableError });
+        }
         if (!req.body.department_id) {
           return res.status(400).json({ error: "Department is required so the request can go to the respective HOD." });
         }
@@ -1376,6 +2053,11 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
           if (statusIndex >= 0) values[statusIndex] = req.body.status;
         }
         if (req.body.status === "Approved" && !["Administrator", "Dean (P&M)"].includes((req as any).user.role)) {
+          req.body.status = "Pending";
+          const statusIndex = fields.indexOf("status");
+          if (statusIndex >= 0) values[statusIndex] = req.body.status;
+        }
+        if (req.body.status === "Approved" && !req.body.room_id) {
           req.body.status = "Pending";
           const statusIndex = fields.indexOf("status");
           if (statusIndex >= 0) values[statusIndex] = req.body.status;
@@ -1394,11 +2076,32 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         if (conflictingBooking) {
           return res.status(400).json({ error: "This room already has an approved booking for the selected time slot." });
         }
+        const temporaryConflict = await getTemporaryAllocationConflict(req.body.room_id, req.body.date, req.body.start_time, req.body.end_time);
+        if (temporaryConflict) {
+          return res.status(400).json({ error: "This room already has a temporary allocation for the selected time slot." });
+        }
       }
 
-      const info = await db.prepare(`INSERT INTO ${tableName} (${fields.join(", ")}) VALUES (${placeholders})`).run(...values);
+      const insertPlaceholders = fields.map(() => "?").join(", ");
+      const info = await db.prepare(`INSERT INTO ${tableName} (${fields.join(", ")}) VALUES (${insertPlaceholders})`).run(...values);
+      if (tableName === "users" && userAssignmentPayload) {
+        await syncUserDepartmentAssignments(info.lastInsertRowid, userAssignmentPayload);
+      }
       if (tableName === "bookings") {
-        const message = `${req.body.faculty_name} requested ${req.body.event_name || "a room"} on ${req.body.date} from ${req.body.start_time} to ${req.body.end_time}.`;
+        const requestLabel = isAdditionalRoomBooking(req.body) ? "an additional room requirement" : (req.body.event_name || "a room");
+        const message = `${req.body.faculty_name} requested ${requestLabel} on ${req.body.date} from ${req.body.start_time} to ${req.body.end_time}.`;
+        await createBookingActivityLog(
+          { id: info.lastInsertRowid, ...req.body },
+          { name: (req as any).user?.name || req.body.faculty_name, role: (req as any).user?.role || "Requester" },
+          {
+            actionType: "created",
+            title: "Request submitted",
+            message,
+            statusTo: req.body.status || "Pending",
+            roomIdTo: req.body.room_id ?? null,
+            noteText: req.body.notes || req.body.status_remark || null,
+          }
+        );
         if (req.body.status === "Pending") {
           await createNotification(null, req.body.faculty_name, "Room request submitted", `${req.body.event_name || "Your room request"} was submitted for approval.`);
           await notifyBookingAuthorities(req.body, "New room request", message);
@@ -1414,6 +2117,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
           await createNotification(null, req.body.faculty_name, "Room booking approved", `${req.body.event_name || "Your room request"} is approved.`);
           await notifyBookingAuthorities(req.body, "Room booking approved", `${req.body.event_name || "A room request"} was approved directly.`);
         }
+        await syncTemporaryRoomAllocationForBooking({ id: info.lastInsertRowid, ...req.body }, { name: (req as any).user?.name || null, role: (req as any).user?.role || null });
       }
       res.json({ id: info.lastInsertRowid, ...req.body });
     } catch (err: any) {
@@ -1433,6 +2137,21 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     }
     if (tableName === "bookings") {
       await ensureBookingColumns();
+    }
+    const userAssignmentPayload = tableName === "users"
+      ? {
+          assigned_departments: req.body.assigned_departments,
+          assigned_department_ids: req.body.assigned_department_ids,
+          primary_department_id: req.body.primary_department_id,
+          primary_department: req.body.primary_department,
+          department: req.body.department,
+        }
+      : null;
+    if (tableName === "users") {
+      delete req.body.assigned_departments;
+      delete req.body.assigned_department_ids;
+      delete req.body.primary_department_id;
+      delete req.body.primary_department;
     }
     if (tableName === "rooms") {
       req.body = normalizeRoomPayload(req.body);
@@ -1471,18 +2190,42 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         if (nextSchedule.room_id !== undefined && nextSchedule.room_id !== null && nextSchedule.room_id !== "") {
           const room = await db.prepare("SELECT id FROM rooms WHERE id = ?").get(nextSchedule.room_id) as any;
           if (!room) return res.status(400).json({ error: "Please select a valid room." });
+          const temporaryAllocationConflict = await getTemporaryAllocationScheduleConflict(
+            nextSchedule.room_id,
+            nextSchedule.day_of_week,
+            nextSchedule.start_time,
+            nextSchedule.end_time,
+          );
+          if (temporaryAllocationConflict) {
+            return res.status(400).json({ error: "This room has an overlapping temporary allocation for one or more matching schedule slots." });
+          }
         }
       }
 
       if (tableName === "bookings") {
         const nextBooking = { ...existingItem, ...req.body };
-        const bookableError = await getBookableRoomError(nextBooking.room_id);
-        if (bookableError) return res.status(400).json({ error: bookableError });
+        nextBooking.request_type = normalizeBookingRequestType(nextBooking.request_type);
+        req.body.request_type = nextBooking.request_type;
+        const requiresAssignedRoom = !isAdditionalRoomBooking(nextBooking);
+        if (requiresAssignedRoom && !nextBooking.room_id) {
+          return res.status(400).json({ error: "Please select a room for a department room booking." });
+        }
+        if (!requiresAssignedRoom) {
+          if (!nextBooking.required_capacity && !nextBooking.student_count) {
+            return res.status(400).json({ error: "Required capacity is needed for an additional room request." });
+          }
+        }
+        if (nextBooking.room_id) {
+          const bookableError = await getBookableRoomError(nextBooking.room_id);
+          if (bookableError) return res.status(400).json({ error: bookableError });
+        }
         const requestedStatus = req.body.status;
         const role = (req as any).user.role;
         const isRequester = existingItem.faculty_name === (req as any).user.name;
-        const departmentName = await getBookingDepartmentName(nextBooking);
-        const isDepartmentHod = role === "HOD" && !!departmentName && departmentName === (req as any).user.department;
+        const accessibleDepartmentIds = getAccessibleDepartmentIdSet((req as any).user);
+        const isDepartmentHod = role === "HOD"
+          && nextBooking?.department_id != null
+          && accessibleDepartmentIds.has(nextBooking.department_id.toString());
 
         if (requestedStatus === "HOD Recommended") {
           if (!isDepartmentHod) {
@@ -1492,7 +2235,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
             return res.status(400).json({ error: "Only pending requests can be recommended by HOD." });
           }
         }
-        if (["Approved", "Rejected", "Postponed"].includes(requestedStatus)) {
+        if (bookingDeanWorkflowStatuses.includes(requestedStatus)) {
           const deanCanDecide = ["Administrator", "Dean (P&M)"].includes(role);
           const deputyCanDecide = role === "Deputy Dean (P&M)" && existingItem.status === "HOD Recommended";
           const requesterCanCancel = requestedStatus === "Rejected" && isRequester;
@@ -1503,14 +2246,17 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         if (requestedStatus === "Pending" && !isRequester && !["Administrator", "Dean (P&M)"].includes(role)) {
           return res.status(403).json({ error: "Only the requester, Administrator, or Dean (P&M) can reopen this request." });
         }
-        if (requestedStatus === "Pending" && !["Rejected", "Postponed"].includes(existingItem.status)) {
+        if (requestedStatus === "Pending" && !["Rejected", "Postponed", "Clarification Required"].includes(existingItem.status)) {
           return res.status(400).json({ error: "Only rejected or postponed requests can be reopened." });
         }
         if (requestedStatus === "HOD Recommended") {
           req.body.recommended_by = (req as any).user.name;
         }
-        if (["Approved", "Rejected", "Postponed"].includes(requestedStatus)) {
+        if (bookingDeanWorkflowStatuses.includes(requestedStatus)) {
           req.body.decided_by = (req as any).user.name;
+        }
+        if (requestedStatus === "Approved" && !nextBooking.room_id) {
+          return res.status(400).json({ error: "Assign a room before approving this booking request." });
         }
         if (nextBooking.room_id && nextBooking.date && nextBooking.start_time && nextBooking.end_time && isPastDateTime(nextBooking.date, nextBooking.start_time)) {
           return res.status(400).json({ error: "Past booking times are not allowed." });
@@ -1528,6 +2274,10 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
           if (conflictingBooking) {
             return res.status(400).json({ error: "This room already has an approved booking for the selected time slot." });
           }
+          const temporaryConflict = await getTemporaryAllocationConflict(nextBooking.room_id, nextBooking.date, nextBooking.start_time, nextBooking.end_time, req.params.id);
+          if (temporaryConflict) {
+            return res.status(400).json({ error: "This room already has a temporary allocation for the selected time slot." });
+          }
         }
       }
 
@@ -1539,6 +2289,53 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         values[passIdx] = bcrypt.hashSync(req.body.password, 10);
       }
       await db.prepare(`UPDATE ${tableName} SET ${setClause} WHERE ${idField} = ?`).run(...values);
+      if (tableName === "users" && userAssignmentPayload) {
+        await syncUserDepartmentAssignments(req.params.id, userAssignmentPayload);
+      }
+      if (tableName === "bookings") {
+        const updatedBooking = { ...existingItem, ...req.body, id: existingItem.id };
+        const actor = { name: (req as any).user?.name || null, role: (req as any).user?.role || null };
+        if (existingItem.room_id?.toString?.() !== updatedBooking.room_id?.toString?.()) {
+          await createBookingActivityLog(updatedBooking, actor, {
+            actionType: "room_assigned",
+            title: updatedBooking.room_id ? "Room assigned" : "Room cleared",
+            message: updatedBooking.room_id
+              ? `${actor.name || "A user"} assigned a room to ${existingItem.event_name || "this request"}.`
+              : `${actor.name || "A user"} cleared the assigned room from ${existingItem.event_name || "this request"}.`,
+            roomIdFrom: existingItem.room_id ?? null,
+            roomIdTo: updatedBooking.room_id ?? null,
+            noteText: req.body.allocation_note || null,
+          });
+        }
+        if (existingItem.status !== updatedBooking.status) {
+          await createBookingActivityLog(updatedBooking, actor, {
+            actionType: "status_changed",
+            title: `Status changed to ${updatedBooking.status}`,
+            message: `${actor.name || "A user"} changed the status from ${existingItem.status || "Pending"} to ${updatedBooking.status || "Pending"}.`,
+            statusFrom: existingItem.status ?? null,
+            statusTo: updatedBooking.status ?? null,
+            roomIdTo: updatedBooking.room_id ?? null,
+            noteText: req.body.status_remark || null,
+          });
+        } else if (req.body.status_remark && req.body.status_remark !== existingItem.status_remark) {
+          await createBookingActivityLog(updatedBooking, actor, {
+            actionType: "status_note_updated",
+            title: "Decision remark updated",
+            message: `${actor.name || "A user"} updated the decision remark.`,
+            statusTo: updatedBooking.status ?? null,
+            noteText: req.body.status_remark,
+          });
+        } else if (req.body.allocation_note && req.body.allocation_note !== existingItem.allocation_note) {
+          await createBookingActivityLog(updatedBooking, actor, {
+            actionType: "allocation_note_updated",
+            title: "Allocation note updated",
+            message: `${actor.name || "A user"} updated the allocation note.`,
+            roomIdTo: updatedBooking.room_id ?? null,
+            noteText: req.body.allocation_note,
+          });
+        }
+        await syncTemporaryRoomAllocationForBooking(updatedBooking, actor);
+      }
       if (tableName === "bookings" && req.body.status) {
         const title = req.body.status === "HOD Recommended" ? "Request recommended" : `Request ${req.body.status}`;
         const actor = (req as any).user.name;
@@ -1548,7 +2345,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
           await createNotification("Dean (P&M)", null, title, message);
           await createNotification("Deputy Dean (P&M)", null, title, message);
         }
-        if (["Approved", "Rejected", "Postponed"].includes(req.body.status)) {
+        if (bookingDeanWorkflowStatuses.includes(req.body.status)) {
           await createNotification("Dean (P&M)", null, title, message);
           await createNotification("Deputy Dean (P&M)", null, title, message);
           const departmentName = await getBookingDepartmentName(existingItem);
@@ -1568,6 +2365,9 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       return res.status(403).json({ error: "Only Administrator can remove users." });
     }
     try {
+      if (tableName === "users") {
+        await db.prepare(`DELETE FROM user_department_assignments`).run();
+      }
       await db.prepare(`DELETE FROM ${tableName}`).run();
       res.json({ success: true });
     } catch (err: any) {
@@ -1581,11 +2381,23 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     }
     try {
       const existingItem = await db.prepare(`SELECT * FROM ${tableName} WHERE ${idField} = ?`).get(req.params.id) as any;
+      if (tableName === "users") {
+        await db.prepare(`DELETE FROM user_department_assignments WHERE user_id = ?`).run(req.params.id);
+      }
       await db.prepare(`DELETE FROM ${tableName} WHERE ${idField} = ?`).run(req.params.id);
       if (tableName === "bookings" && existingItem) {
+        await syncTemporaryRoomAllocationForBooking({ ...existingItem, status: "Revoked", room_id: null }, { name: (req as any).user?.name || null, role: (req as any).user?.role || null });
         const actor = (req as any).user.name;
         const title = "Room request deleted";
         const message = `${actor} deleted ${existingItem.event_name || "a room request"} for ${existingItem.date || "the selected date"}.`;
+        await createBookingActivityLog(existingItem, { name: actor, role: (req as any).user?.role || null }, {
+          actionType: "deleted",
+          title,
+          message,
+          statusFrom: existingItem.status ?? null,
+          roomIdFrom: existingItem.room_id ?? null,
+          noteText: existingItem.status_remark || existingItem.allocation_note || null,
+        });
         await createNotification(null, existingItem.faculty_name, title, message);
         await notifyBookingAuthorities(existingItem, title, message);
       }
@@ -1602,8 +2414,377 @@ createCrudRoutes("buildings");
 createCrudRoutes("blocks");
 createCrudRoutes("floors");
 
+app.get("/api/bookings/:id/activity", authenticate, async (req, res) => {
+  try {
+    await ensureBookingActivityTable();
+    const booking = await db.prepare("SELECT * FROM bookings WHERE id = ?").get(req.params.id) as any;
+    if (!booking) {
+      return res.status(404).json({ error: "Booking not found." });
+    }
+    const items = booking.request_group_id
+      ? await db.prepare(`
+          SELECT * FROM booking_activity
+          WHERE request_group_id = ?
+          ORDER BY created_at DESC, id DESC
+        `).all(booking.request_group_id) as any[]
+      : await db.prepare(`
+          SELECT * FROM booking_activity
+          WHERE booking_id = ?
+          ORDER BY created_at DESC, id DESC
+        `).all(req.params.id) as any[];
+    res.json(items);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get("/api/bookings/:id/alternatives", authenticate, async (req, res) => {
+  try {
+    await ensureBookingAlternativesTable();
+    const booking = await db.prepare("SELECT * FROM bookings WHERE id = ?").get(req.params.id) as any;
+    if (!booking) {
+      return res.status(404).json({ error: "Booking not found." });
+    }
+    const canAccess = await canAccessBookingWorkflow(booking, (req as any).user);
+    if (!canAccess) {
+      return res.status(403).json({ error: "You do not have access to these alternatives." });
+    }
+    const items = booking.request_group_id
+      ? await db.prepare(`
+          SELECT * FROM booking_alternatives
+          WHERE request_group_id = ?
+          ORDER BY created_at DESC, id DESC
+        `).all(booking.request_group_id) as any[]
+      : await db.prepare(`
+          SELECT * FROM booking_alternatives
+          WHERE booking_id = ?
+          ORDER BY created_at DESC, id DESC
+        `).all(booking.id) as any[];
+    const canViewInternalDetails = isDecisionRole((req as any).user?.role || "");
+    res.json(items.map(item => sanitizeBookingAlternative(item, canViewInternalDetails)));
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/bookings/:id/alternatives", authenticate, async (req, res) => {
+  try {
+    await ensureBookingAlternativesTable();
+    const actor = (req as any).user;
+    if (!["Administrator", "Dean (P&M)", "Deputy Dean (P&M)"].includes(actor?.role)) {
+      return res.status(403).json({ error: "Only Planning and Monitoring decision roles can suggest alternatives." });
+    }
+    const booking = await db.prepare("SELECT * FROM bookings WHERE id = ?").get(req.params.id) as any;
+    if (!booking) {
+      return res.status(404).json({ error: "Booking not found." });
+    }
+    if (!isAdditionalRoomBooking(booking)) {
+      return res.status(400).json({ error: "Alternatives are currently supported for additional-room requests only." });
+    }
+    const suggestionPayload = {
+      suggestedDate: req.body.suggested_date?.toString().trim() || "",
+      suggestedStartTime: req.body.suggested_start_time?.toString().trim() || "",
+      suggestedEndTime: req.body.suggested_end_time?.toString().trim() || "",
+      suggestedCapacity: parseInt(req.body.suggested_capacity, 10) || null,
+      suggestedRoomType: req.body.suggested_room_type?.toString().trim() || "",
+      suggestedBuilding: req.body.suggested_building?.toString().trim() || "",
+      suggestedRoomCount: parseInt(req.body.suggested_room_count, 10) || null,
+      suggestionNote: req.body.suggestion_note?.toString().trim() || "",
+      internalCandidateRoomIds: Array.isArray(req.body.internal_candidate_room_ids)
+        ? req.body.internal_candidate_room_ids.map((item: any) => item?.toString?.()).filter(Boolean)
+        : [],
+    };
+    const hasSuggestionContent = suggestionPayload.suggestedDate
+      || suggestionPayload.suggestedStartTime
+      || suggestionPayload.suggestedEndTime
+      || suggestionPayload.suggestedCapacity
+      || suggestionPayload.suggestedRoomType
+      || suggestionPayload.suggestedBuilding
+      || suggestionPayload.suggestedRoomCount
+      || suggestionPayload.suggestionNote;
+    if (!hasSuggestionContent) {
+      return res.status(400).json({ error: "Add at least one alternative detail before sending it to the requester." });
+    }
+
+    const workflowItems = await getBookingWorkflowItems(booking);
+    const alternativeBookingId = workflowItems[0]?.id || booking.id;
+    const alternativeInfo = await db.prepare(`
+      INSERT INTO booking_alternatives (
+        booking_id,
+        request_group_id,
+        status,
+        suggested_date,
+        suggested_start_time,
+        suggested_end_time,
+        suggested_capacity,
+        suggested_room_type,
+        suggested_building,
+        suggested_room_count,
+        suggestion_note,
+        internal_candidate_room_ids,
+        created_by,
+        created_role
+      ) VALUES (?, ?, 'Pending Response', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      alternativeBookingId,
+      booking.request_group_id ?? null,
+      suggestionPayload.suggestedDate || null,
+      suggestionPayload.suggestedStartTime || null,
+      suggestionPayload.suggestedEndTime || null,
+      suggestionPayload.suggestedCapacity,
+      suggestionPayload.suggestedRoomType || null,
+      suggestionPayload.suggestedBuilding || null,
+      suggestionPayload.suggestedRoomCount,
+      suggestionPayload.suggestionNote || null,
+      suggestionPayload.internalCandidateRoomIds.length > 0 ? JSON.stringify(suggestionPayload.internalCandidateRoomIds) : null,
+      actor.name || null,
+      actor.role || null,
+    );
+
+    for (const item of workflowItems) {
+      await db.prepare(`
+        UPDATE bookings
+        SET status = ?, status_remark = ?, decided_by = ?
+        WHERE id = ?
+      `).run("Awaiting Alternative Response", suggestionPayload.suggestionNote || "Alternative shared for requester review.", actor.name || null, item.id);
+    }
+
+    await createBookingActivityLog(booking, { name: actor.name || null, role: actor.role || null }, {
+      actionType: "alternative_suggested",
+      title: "Alternative shared",
+      message: `${actor.name || "A planner"} shared an alternative arrangement with the requester.`,
+      statusFrom: booking.status ?? null,
+      statusTo: "Awaiting Alternative Response",
+      noteText: suggestionPayload.suggestionNote || null,
+    });
+    await createNotification(null, booking.faculty_name, "Alternative proposal shared", `${booking.event_name || "Your request"} has an alternative arrangement for your response.`);
+    await notifyBookingAuthorities(booking, "Alternative proposal shared", `${actor.name || "A planner"} shared an alternative arrangement for ${booking.event_name || "this request"}.`);
+
+    const createdAlternative = await db.prepare("SELECT * FROM booking_alternatives WHERE id = ?").get(alternativeInfo.lastInsertRowid) as any;
+    res.json(sanitizeBookingAlternative(createdAlternative, true));
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/bookings/:id/alternatives/:alternativeId/respond", authenticate, async (req, res) => {
+  try {
+    await ensureBookingAlternativesTable();
+    const actor = (req as any).user;
+    const booking = await db.prepare("SELECT * FROM bookings WHERE id = ?").get(req.params.id) as any;
+    if (!booking) {
+      return res.status(404).json({ error: "Booking not found." });
+    }
+    if (booking.faculty_name !== actor?.name) {
+      return res.status(403).json({ error: "Only the requester can respond to this alternative." });
+    }
+    const alternative = await db.prepare("SELECT * FROM booking_alternatives WHERE id = ?").get(req.params.alternativeId) as any;
+    if (!alternative) {
+      return res.status(404).json({ error: "Alternative not found." });
+    }
+    const workflowItems = await getBookingWorkflowItems(booking);
+    const belongsToWorkflow = booking.request_group_id
+      ? alternative.request_group_id === booking.request_group_id
+      : Number(alternative.booking_id) === Number(booking.id);
+    if (!belongsToWorkflow) {
+      return res.status(400).json({ error: "This alternative does not belong to the selected request." });
+    }
+    if (alternative.status !== "Pending Response") {
+      return res.status(400).json({ error: "This alternative already has a final response." });
+    }
+    const response = req.body.response?.toString().trim().toLowerCase();
+    if (!["accept", "decline"].includes(response)) {
+      return res.status(400).json({ error: "Response must be either accept or decline." });
+    }
+    const responseNote = req.body.response_note?.toString().trim() || "";
+    const alternativeStatus = response === "accept" ? "Accepted" : "Declined";
+
+    await db.prepare(`
+      UPDATE booking_alternatives
+      SET status = ?, response_note = ?, responded_by = ?, responded_role = ?, responded_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(alternativeStatus, responseNote || null, actor.name || null, actor.role || null, alternative.id);
+
+    if (response === "accept") {
+      for (const item of workflowItems) {
+        const nextDate = alternative.suggested_date || item.date;
+        const nextStartTime = alternative.suggested_start_time || item.start_time;
+        if (nextDate && nextStartTime && isPastDateTime(nextDate, nextStartTime)) {
+          return res.status(400).json({ error: "The accepted alternative is already in the past. Ask Planning and Monitoring to send a fresh option." });
+        }
+      }
+      for (const item of workflowItems) {
+        await db.prepare(`
+          UPDATE bookings
+          SET
+            date = ?,
+            start_time = ?,
+            end_time = ?,
+            required_capacity = ?,
+            room_type = ?,
+            preferred_building = ?,
+            status = ?,
+            status_remark = ?,
+            decided_by = NULL
+          WHERE id = ?
+        `).run(
+          alternative.suggested_date || item.date,
+          alternative.suggested_start_time || item.start_time,
+          alternative.suggested_end_time || item.end_time,
+          alternative.suggested_capacity || item.required_capacity || item.student_count || null,
+          alternative.suggested_room_type || item.room_type || null,
+          alternative.suggested_building || item.preferred_building || null,
+          "Pending",
+          responseNote || "Requester accepted the suggested alternative.",
+          item.id,
+        );
+      }
+      await createBookingActivityLog(booking, { name: actor.name || null, role: actor.role || null }, {
+        actionType: "alternative_accepted",
+        title: "Alternative accepted",
+        message: `${actor.name || "The requester"} accepted the suggested alternative.`,
+        statusFrom: booking.status ?? null,
+        statusTo: "Pending",
+        noteText: responseNote || null,
+      });
+      await notifyBookingAuthorities(booking, "Alternative accepted", `${actor.name || "The requester"} accepted an alternative for ${booking.event_name || "this request"}.`);
+      await createNotification(null, booking.faculty_name, "Alternative accepted", `${booking.event_name || "Your request"} was updated with the accepted alternative and is back under review.`);
+    } else {
+      for (const item of workflowItems) {
+        await db.prepare(`
+          UPDATE bookings
+          SET status = ?, status_remark = ?, decided_by = NULL
+          WHERE id = ?
+        `).run("No Room Available", responseNote || "Requester declined the suggested alternative.", item.id);
+      }
+      await createBookingActivityLog(booking, { name: actor.name || null, role: actor.role || null }, {
+        actionType: "alternative_declined",
+        title: "Alternative declined",
+        message: `${actor.name || "The requester"} declined the suggested alternative.`,
+        statusFrom: booking.status ?? null,
+        statusTo: "No Room Available",
+        noteText: responseNote || null,
+      });
+      await notifyBookingAuthorities(booking, "Alternative declined", `${actor.name || "The requester"} declined an alternative for ${booking.event_name || "this request"}.`);
+      await createNotification(null, booking.faculty_name, "Alternative declined", `${booking.event_name || "Your request"} remains without a suitable room after declining the suggested option.`);
+    }
+
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/bookings/:id/revise", authenticate, async (req, res) => {
+  try {
+    const actor = (req as any).user;
+    const booking = await db.prepare("SELECT * FROM bookings WHERE id = ?").get(req.params.id) as any;
+    if (!booking) {
+      return res.status(404).json({ error: "Booking not found." });
+    }
+    if (booking.faculty_name !== actor?.name) {
+      return res.status(403).json({ error: "Only the requester can revise this request." });
+    }
+    if (!bookingRequesterRevisionStatuses.includes(booking.status)) {
+      return res.status(400).json({ error: "This request is not currently open for requester revision." });
+    }
+    const workflowItems = await getBookingWorkflowItems(booking);
+    const revisedDate = req.body.date?.toString().trim() || "";
+    const revisedStartTime = req.body.start_time?.toString().trim() || "";
+    const revisedEndTime = req.body.end_time?.toString().trim() || "";
+    if ((revisedDate || revisedStartTime) && !(revisedDate && revisedStartTime && revisedEndTime)) {
+      return res.status(400).json({ error: "Date, start time, and end time must be revised together." });
+    }
+    if (revisedDate && revisedStartTime && isPastDateTime(revisedDate, revisedStartTime)) {
+      return res.status(400).json({ error: "Revised request timings cannot be in the past." });
+    }
+    const revisedCapacity = req.body.required_capacity != null && req.body.required_capacity !== ""
+      ? (parseInt(req.body.required_capacity, 10) || 0)
+      : null;
+    if (revisedCapacity !== null && revisedCapacity <= 0) {
+      return res.status(400).json({ error: "Required capacity must be greater than zero." });
+    }
+    const revisedNote = req.body.revision_note?.toString().trim() || req.body.notes?.toString().trim() || "";
+
+    for (const item of workflowItems) {
+      await db.prepare(`
+        UPDATE bookings
+        SET
+          date = ?,
+          start_time = ?,
+          end_time = ?,
+          required_capacity = ?,
+          room_type = ?,
+          preferred_building = ?,
+          notes = ?,
+          status = ?,
+          status_remark = ?,
+          decided_by = NULL,
+          room_id = CASE WHEN request_type = 'Additional Room' THEN NULL ELSE room_id END
+        WHERE id = ?
+      `).run(
+        revisedDate || item.date,
+        revisedStartTime || item.start_time,
+        revisedEndTime || item.end_time,
+        revisedCapacity || item.required_capacity || item.student_count || null,
+        req.body.room_type?.toString().trim() || item.room_type || null,
+        req.body.preferred_building?.toString().trim() || item.preferred_building || null,
+        req.body.notes?.toString().trim() || item.notes || null,
+        "Pending",
+        revisedNote || "Requester revised the requirements.",
+        item.id,
+      );
+    }
+
+    await createBookingActivityLog(booking, { name: actor.name || null, role: actor.role || null }, {
+      actionType: "request_revised",
+      title: "Requirements revised",
+      message: `${actor.name || "The requester"} revised the room requirements.`,
+      statusFrom: booking.status ?? null,
+      statusTo: "Pending",
+      noteText: revisedNote || null,
+    });
+    await notifyBookingAuthorities(booking, "Request revised", `${actor.name || "The requester"} revised ${booking.event_name || "this request"} and sent it back for review.`);
+    await createNotification(null, booking.faculty_name, "Request revised", `${booking.event_name || "Your request"} was updated and returned for review.`);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get("/api/temporary-room-allocations", authenticate, async (req, res) => {
+  try {
+    await ensureTemporaryRoomAllocationsTable();
+    await refreshTemporaryRoomAllocationStatuses();
+    const actor = (req as any).user;
+    const requestedDepartmentId = req.query.departmentId?.toString() || req.query.department_id?.toString() || "";
+    const requestedBookingId = req.query.bookingId?.toString() || req.query.booking_id?.toString() || "";
+    let items = await db.prepare(`
+      SELECT *
+      FROM temporary_room_allocations
+      ORDER BY approved_date DESC, start_time DESC, id DESC
+    `).all() as any[];
+
+    if (actor?.role === "HOD") {
+      const accessibleDepartmentIds = getAccessibleDepartmentIdSet(actor);
+      items = items.filter((item: any) => item?.temporary_department_id != null && accessibleDepartmentIds.has(item.temporary_department_id.toString()));
+    }
+    if (requestedDepartmentId) {
+      items = items.filter((item: any) => idsEqual(item?.temporary_department_id, requestedDepartmentId) || idsEqual(item?.original_department_id, requestedDepartmentId));
+    }
+    if (requestedBookingId) {
+      items = items.filter((item: any) => idsEqual(item?.booking_id, requestedBookingId));
+    }
+    res.json(items);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.get(`/api/rooms`, authenticate, async (req, res) => {
   try {
+    await ensureTemporaryRoomAllocationsTable();
+    await refreshTemporaryRoomAllocationStatuses();
     const now = new Date();
     const dayOfWeek = now.toLocaleDateString('en-US', { weekday: 'long' });
     const currentTime = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
@@ -1626,6 +2807,12 @@ app.get(`/api/rooms`, authenticate, async (req, res) => {
       `).all(currentDate, currentTime, currentTime) as any[])
         .map((b: any) => b.room_id?.toString()).filter(Boolean)
     );
+    const activeTemporaryAllocations = await db.prepare(`
+      SELECT room_id
+      FROM temporary_room_allocations
+      WHERE approved_date = ? AND status IN ('Upcoming', 'Active') AND start_time <= ? AND end_time > ?
+    `).all(currentDate, currentTime, currentTime) as any[];
+    const temporaryAllocatedRoomIds = new Set(activeTemporaryAllocations.map((item: any) => item.room_id?.toString()).filter(Boolean));
 
     // Push location filtering to SQL with JOINs — eliminates 3 extra lookup queries
     const floorId = req.query.floor_id?.toString() || "";
@@ -1657,6 +2844,7 @@ app.get(`/api/rooms`, authenticate, async (req, res) => {
       if (room.status !== 'Available') return room;
       if (scheduledRoomIds.has(room.id?.toString())) return { ...room, status: 'Occupied (Scheduled)' };
       if (bookedRoomIds.has(room.id?.toString())) return { ...room, status: 'Occupied (Booked)' };
+      if (temporaryAllocatedRoomIds.has(room.id?.toString())) return { ...room, status: 'Occupied (Temporary Allocation)' };
       return room;
     });
 
@@ -1712,16 +2900,24 @@ app.get(`/api/rooms`, authenticate, async (req, res) => {
   }
 });
 
-  app.get(`/api/rooms/:roomId/schedule`, authenticate, async (req, res) => {
+app.get(`/api/rooms/:roomId/schedule`, authenticate, async (req, res) => {
     try {
+      await ensureTemporaryRoomAllocationsTable();
+      await refreshTemporaryRoomAllocationStatuses();
       const { roomId } = req.params;
       const { date } = req.query;
       const dayOfWeek = new Date(date as string).toLocaleDateString('en-US', { weekday: 'long' });
       
       const schedules = await db.prepare(`SELECT * FROM schedules WHERE room_id = ? AND day_of_week = ?`).all(roomId, dayOfWeek);
       const bookings = await db.prepare(`SELECT * FROM bookings WHERE room_id = ? AND date = ? AND status = 'Approved'`).all(roomId, date);
+      const temporaryAllocations = await db.prepare(`
+        SELECT *
+        FROM temporary_room_allocations
+        WHERE room_id = ? AND approved_date = ?
+        ORDER BY start_time ASC, id ASC
+      `).all(roomId, date) as any[];
       
-      res.json({ schedules, bookings });
+      res.json({ schedules, bookings, temporaryAllocations });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -1791,6 +2987,8 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
 // --- VACANCY CHECK ROUTE ---
 
 app.get("/api/rooms/vacant", authenticate, async (req, res) => {
+  await ensureTemporaryRoomAllocationsTable();
+  await refreshTemporaryRoomAllocationStatuses();
   const { date, time, duration, members } = req.query;
   if (!date || !time || !duration) {
     return res.status(400).json({ error: "Date, time, and duration are required" });
@@ -1838,10 +3036,17 @@ app.get("/api/rooms/vacant", authenticate, async (req, res) => {
     AND status = 'Approved'
     AND NOT (end_time <= ? OR start_time >= ?)
   `).all(date, requestedStart, requestedEnd) as any[];
+  const busyTemporaryAllocations = await db.prepare(`
+    SELECT room_id FROM temporary_room_allocations
+    WHERE approved_date = ?
+      AND status IN ('Upcoming', 'Active')
+      AND NOT (end_time <= ? OR start_time >= ?)
+  `).all(date, requestedStart, requestedEnd) as any[];
 
   const busyRoomIds = new Set([
     ...busySchedules.map(s => s.room_id),
-    ...busyBookings.map(b => b.room_id)
+    ...busyBookings.map(b => b.room_id),
+    ...busyTemporaryAllocations.map((item: any) => item.room_id),
   ]);
 
   const vacantRooms = allRooms.filter(r => !busyRoomIds.has(r.id));
@@ -1851,6 +3056,8 @@ app.get("/api/rooms/vacant", authenticate, async (req, res) => {
 // --- USAGE REPORTS & AI SUGGESTIONS ---
 
 app.get("/api/events/search-rooms", authenticate, async (req, res) => {
+  await ensureTemporaryRoomAllocationsTable();
+  await refreshTemporaryRoomAllocationStatuses();
   const { date, startTime, endTime, strength } = req.query;
 
   if (!date || !startTime || !endTime || !strength) {
@@ -1900,9 +3107,19 @@ app.get("/api/events/search-rooms", authenticate, async (req, res) => {
       )
     `).all(date, endTime, startTime, startTime, endTime, startTime, endTime) as any[];
     const busyRoomIdsBookings = new Set(busyInBookings.map(b => b.room_id));
+    const busyInTemporaryAllocations = await db.prepare(`
+      SELECT DISTINCT room_id FROM temporary_room_allocations
+      WHERE approved_date = ? AND status IN ('Upcoming', 'Active')
+      AND (
+        (start_time < ? AND end_time > ?) OR
+        (start_time < ? AND end_time > ?) OR
+        (start_time >= ? AND start_time < ?)
+      )
+    `).all(date, endTime, startTime, startTime, endTime, startTime, endTime) as any[];
+    const busyRoomIdsTemporary = new Set(busyInTemporaryAllocations.map((item: any) => item.room_id));
 
     // 4. Filter vacant rooms
-    const vacantRooms = allRooms.filter(r => !busyRoomIdsSchedules.has(r.id) && !busyRoomIdsBookings.has(r.id));
+    const vacantRooms = allRooms.filter(r => !busyRoomIdsSchedules.has(r.id) && !busyRoomIdsBookings.has(r.id) && !busyRoomIdsTemporary.has(r.id));
 
     // 5. Find single room options
     const singleOptions = vacantRooms
@@ -2086,11 +3303,22 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
       };
     });
 
+    const bookingStatusOptions = [
+      "Pending",
+      "HOD Recommended",
+      "Awaiting Alternative Response",
+      "Clarification Required",
+      "Waitlisted",
+      "No Room Available",
+      "Approved",
+      "Postponed",
+      "Rejected",
+    ];
     const bookingCountByStatus = new Map<string, number>();
     for (const b of allBookings) {
       if (b.status) bookingCountByStatus.set(b.status, (bookingCountByStatus.get(b.status) || 0) + 1);
     }
-    const bookingStatusReports = ["Pending", "HOD Recommended", "Approved", "Postponed", "Rejected"].map(status => ({
+    const bookingStatusReports = bookingStatusOptions.map(status => ({
       name: status,
       count: bookingCountByStatus.get(status) || 0,
     }));

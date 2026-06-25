@@ -17,7 +17,23 @@ export interface User {
   id: number;
   full_name: string;
   employee_id: string;
+  school?: string;
   department?: string;
+  primary_department_id?: string | null;
+  primary_department?: string | null;
+  assigned_department_ids?: string[];
+  assigned_departments?: string[];
+  department_assignments?: Array<{
+    id: number;
+    department_id: number;
+    department_name: string;
+    department_code?: string;
+    school_id?: number;
+    is_primary: boolean;
+    valid_from?: string | null;
+    valid_until?: string | null;
+    status?: string;
+  }>;
   designation?: string;
   role: Role;
   email: string;
@@ -106,13 +122,60 @@ export interface Booking {
   department?: string;
   event_name?: string;
   student_count?: number;
+  required_capacity?: number;
   room_type?: string;
   equipment_required?: string;
   preferred_building?: string;
+  request_type?: 'Department Room' | 'Additional Room';
+  status_remark?: string;
+  allocation_note?: string;
   date?: string;
   time_slot?: string;
   duration?: string;
-  status: 'Pending' | 'Approved' | 'Rejected';
+  status: 'Pending' | 'HOD Recommended' | 'Approved' | 'Rejected' | 'Postponed' | 'No Room Available' | 'Awaiting Alternative Response' | 'Waitlisted' | 'Clarification Required';
+}
+
+export interface BookingAlternative {
+  id: number;
+  booking_id?: number;
+  request_group_id?: string | null;
+  status: 'Pending Response' | 'Accepted' | 'Declined';
+  suggested_date?: string;
+  suggested_start_time?: string;
+  suggested_end_time?: string;
+  suggested_capacity?: number;
+  suggested_room_type?: string;
+  suggested_building?: string;
+  suggested_room_count?: number;
+  suggestion_note?: string;
+  response_note?: string;
+  created_by?: string;
+  created_role?: string;
+  responded_by?: string;
+  responded_role?: string;
+  responded_at?: string;
+  created_at?: string;
+}
+
+export interface TemporaryRoomAllocation {
+  id: number;
+  booking_id: number;
+  request_group_id?: string | null;
+  room_id: number;
+  temporary_department_id: number;
+  original_department_id?: number | null;
+  approved_date: string;
+  start_time: string;
+  end_time: string;
+  purpose?: string;
+  request_type?: string;
+  allocation_note?: string;
+  assigned_by?: string;
+  assigned_role?: string;
+  released_at?: string;
+  status: 'Upcoming' | 'Active' | 'Completed' | 'Revoked';
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface MaintenanceRecord {
