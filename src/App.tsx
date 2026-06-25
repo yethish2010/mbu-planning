@@ -278,6 +278,7 @@ const getScopedMappedRoomIds = ({
   role,
   departmentName,
   schoolName,
+  schoolIds,
   departments,
   schools,
   departmentAllocations,
@@ -285,6 +286,7 @@ const getScopedMappedRoomIds = ({
   role: unknown;
   departmentName?: unknown;
   schoolName?: unknown;
+  schoolIds?: string[];
   departments: any[];
   schools: any[];
   departmentAllocations: any[];
@@ -300,12 +302,17 @@ const getScopedMappedRoomIds = ({
     const departmentId = department?.id?.toString();
     if (departmentId) scopedDepartmentIds.add(departmentId);
   } else if (isSchoolScopedRole(role)) {
-    const selectedSchool = (schools || []).find((item: any) => normalizeLookupValue(item?.name) === normalizeLookupValue(schoolName));
+    const explicitSchoolIds = Array.isArray(schoolIds) ? schoolIds.map((item) => item?.toString?.() || '').filter(Boolean) : [];
+    const selectedSchool = explicitSchoolIds.length === 0
+      ? (schools || []).find((item: any) => normalizeLookupValue(item?.name) === normalizeLookupValue(schoolName))
+      : null;
     const fallbackDepartment = (departments || []).find((item: any) => normalizeLookupValue(item?.name) === normalizeLookupValue(departmentName));
-    const schoolId = selectedSchool?.id?.toString() || fallbackDepartment?.school_id?.toString?.() || '';
+    const scopedSchoolIds = explicitSchoolIds.length > 0
+      ? explicitSchoolIds
+      : [selectedSchool?.id?.toString() || fallbackDepartment?.school_id?.toString?.() || ''].filter(Boolean);
     (departments || []).forEach((item: any) => {
       const departmentId = item?.id?.toString?.() || '';
-      if (departmentId && schoolId && idsMatch(item?.school_id, schoolId)) {
+      if (departmentId && scopedSchoolIds.some((schoolId) => idsMatch(item?.school_id, schoolId))) {
         scopedDepartmentIds.add(departmentId);
       }
     });
@@ -3586,6 +3593,11 @@ const getAssignedDepartmentIdsFromUser = (user: any) =>
     .map((departmentId: any) => departmentId?.toString?.() || '')
     .filter(Boolean);
 
+const getAssignedSchoolIdsFromUser = (user: any) =>
+  (Array.isArray(user?.assigned_school_ids) ? user.assigned_school_ids : [])
+    .map((schoolId: any) => schoolId?.toString?.() || '')
+    .filter(Boolean);
+
 function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<any>(null);
   const [selectedHodDepartmentId, setSelectedHodDepartmentId] = useState('');
@@ -5131,22 +5143,43 @@ function DashboardHome() {
       .filter((option: any) => option.value && option.label),
     [roleDepartmentsById, user?.department_assignments],
   );
+  const assignedSchoolIds = useMemo(
+    () => getAssignedSchoolIdsFromUser(user),
+    [user],
+  );
   const userSchool = useMemo(
-    () => (roleDashboardData.schools || []).find((school: any) => normalizeLookupValue(school?.name) === normalizeLookupValue(user?.school)),
-    [roleDashboardData.schools, user?.school],
+    () => {
+      if (assignedSchoolIds.length > 0) {
+        return roleSchoolsById.get(assignedSchoolIds[0]) || null;
+      }
+      return (roleDashboardData.schools || []).find((school: any) => normalizeLookupValue(school?.name) === normalizeLookupValue(user?.school));
+    },
+    [assignedSchoolIds, roleDashboardData.schools, roleSchoolsById, user?.school],
   );
   const deanSchool = useMemo(
     () => userSchool || roleSchoolsById.get(userDepartment?.school_id?.toString?.() || '') || null,
     [roleSchoolsById, userDepartment, userSchool],
   );
+  const scopedDeanSchoolIds = useMemo(
+    () => new Set(
+      (assignedSchoolIds.length > 0
+        ? assignedSchoolIds
+        : [deanSchool?.id?.toString?.() || '']
+      ).filter(Boolean),
+    ),
+    [assignedSchoolIds, deanSchool],
+  );
   const schoolDepartmentIds = useMemo(
     () => new Set(
       (roleDashboardData.departments || [])
-        .filter((department: any) => deanSchool && idsMatch(department?.school_id, deanSchool?.id))
+        .filter((department: any) => {
+          const departmentSchoolId = department?.school_id?.toString?.() || '';
+          return departmentSchoolId && scopedDeanSchoolIds.has(departmentSchoolId);
+        })
         .map((department: any) => department.id?.toString())
         .filter(Boolean),
     ),
-    [deanSchool, roleDashboardData.departments],
+    [roleDashboardData.departments, scopedDeanSchoolIds],
   );
   const departmentRoomIds = useMemo(
     () => getScopedMappedRoomIds({
@@ -5164,11 +5197,12 @@ function DashboardHome() {
       role: 'Dean',
       departmentName: userDepartment?.name,
       schoolName: deanSchool?.name,
+      schoolIds: Array.from(scopedDeanSchoolIds),
       departments: roleDashboardData.departments || [],
       schools: roleDashboardData.schools || [],
       departmentAllocations: roleDashboardData.departmentAllocations || [],
     }) || new Set<string>(),
-    [deanSchool?.name, roleDashboardData.departmentAllocations, roleDashboardData.departments, roleDashboardData.schools, userDepartment?.name],
+    [deanSchool?.name, roleDashboardData.departmentAllocations, roleDashboardData.departments, roleDashboardData.schools, scopedDeanSchoolIds, userDepartment?.name],
   );
   const hodTwinRooms = useMemo(
     () => allTwinRooms.filter((room: any) => departmentRoomIds.has(room?.id?.toString?.() || '')),
@@ -5227,9 +5261,9 @@ function DashboardHome() {
     [roleDashboardData.batchAllocations, userDepartment],
   );
   const deanDepartmentUsageRows = useMemo(() => {
-    if (!deanSchool) return [];
+    if (scopedDeanSchoolIds.size === 0) return [];
     return (roleDashboardData.departments || [])
-      .filter((department: any) => idsMatch(department?.school_id, deanSchool?.id))
+      .filter((department: any) => scopedDeanSchoolIds.has(department?.school_id?.toString?.() || ''))
       .map((department: any) => {
         const mappedRoomIds = new Set<string>();
         (roleDashboardData.departmentAllocations || []).forEach((allocation: any) => {
@@ -5249,7 +5283,7 @@ function DashboardHome() {
       })
       .sort((left: any, right: any) => right.occupiedNow - left.occupiedNow || right.requestCount - left.requestCount || left.name.localeCompare(right.name))
       .slice(0, 8);
-  }, [deanBookings, deanSchool, deanTwinRooms, roleDashboardData.departmentAllocations, roleDashboardData.departments]);
+  }, [deanBookings, deanTwinRooms, roleDashboardData.departmentAllocations, roleDashboardData.departments, scopedDeanSchoolIds]);
   const deanShortageRows = useMemo(() => {
     return deanDepartmentUsageRows
       .map((department: any) => {
@@ -11967,11 +12001,13 @@ function BookingManagement() {
   const userDepartmentId = selectedHodDepartmentId
     || departments.find(dept => normalizeLookupValue(dept.name) === normalizeLookupValue(user?.department))?.id?.toString()
     || '';
-  const userSchoolId = schools.find((school: any) => normalizeLookupValue(school?.name) === normalizeLookupValue(user?.school))?.id?.toString() || '';
+  const userSchoolIds = getAssignedSchoolIdsFromUser(user);
+  const fallbackUserSchoolId = schools.find((school: any) => normalizeLookupValue(school?.name) === normalizeLookupValue(user?.school))?.id?.toString() || '';
+  const scopedUserSchoolIds = userSchoolIds.length > 0 ? userSchoolIds : (fallbackUserSchoolId ? [fallbackUserSchoolId] : []);
   const bookingDepartmentOptions = canChooseAnyRequestDepartment
     ? departments
-    : normalizeLookupValue(user?.role) === 'dean' && userSchoolId
-      ? departments.filter((dept: any) => idsMatch(dept?.school_id, userSchoolId))
+    : normalizeLookupValue(user?.role) === 'dean' && scopedUserSchoolIds.length > 0
+      ? departments.filter((dept: any) => scopedUserSchoolIds.some((schoolId: string) => idsMatch(dept?.school_id, schoolId)))
       : isHodUser && hodDepartmentIds.length > 0
         ? departments.filter((dept: any) => hodDepartmentIds.some((departmentId: string) => idsMatch(dept?.id, departmentId)))
         : !user?.department
@@ -14565,12 +14601,14 @@ function LiveRoomAvailability() {
   const userDepartmentId = selectedHodDepartmentId
     || departments.find(dept => normalizeLookupValue(dept.name) === normalizeLookupValue(user?.department))?.id?.toString()
     || '';
-  const userSchoolId = schools.find((school: any) => normalizeLookupValue(school?.name) === normalizeLookupValue(user?.school))?.id?.toString() || '';
+  const userSchoolIds = getAssignedSchoolIdsFromUser(user);
+  const fallbackUserSchoolId = schools.find((school: any) => normalizeLookupValue(school?.name) === normalizeLookupValue(user?.school))?.id?.toString() || '';
+  const scopedUserSchoolIds = userSchoolIds.length > 0 ? userSchoolIds : (fallbackUserSchoolId ? [fallbackUserSchoolId] : []);
   const canChooseAnyRequestDepartment = canDirectDecideBookings || isAdminRole(user?.role) || user?.role === 'Dean' || user?.role === 'Deputy Dean (P&M)';
   const bookingDepartmentOptions = canChooseAnyRequestDepartment
     ? departments
-    : normalizeLookupValue(user?.role) === 'dean' && userSchoolId
-      ? departments.filter((dept: any) => idsMatch(dept?.school_id, userSchoolId))
+    : normalizeLookupValue(user?.role) === 'dean' && scopedUserSchoolIds.length > 0
+      ? departments.filter((dept: any) => scopedUserSchoolIds.some((schoolId: string) => idsMatch(dept?.school_id, schoolId)))
       : isHodUser && hodDepartmentIds.length > 0
         ? departments.filter((dept: any) => hodDepartmentIds.some((departmentId: string) => idsMatch(dept?.id, departmentId)))
       : !user?.department
@@ -21394,11 +21432,15 @@ function TimetableBuilder() {
       return new Set<string>(hodDepartmentIds);
     }
     if (user?.role === 'Dean') {
-      const selectedSchool = schools.find((item: any) => normalizeLookupValue(item?.name) === normalizeLookupValue(user?.school));
-      if (selectedSchool?.id) {
+      const scopedSchoolIds = getAssignedSchoolIdsFromUser(user);
+      const fallbackSchool = schools.find((item: any) => normalizeLookupValue(item?.name) === normalizeLookupValue(user?.school));
+      const effectiveSchoolIds = scopedSchoolIds.length > 0
+        ? scopedSchoolIds
+        : [fallbackSchool?.id?.toString?.() || ''].filter(Boolean);
+      if (effectiveSchoolIds.length > 0) {
         return new Set<string>(
           departments
-            .filter((item: any) => idsMatch(item?.school_id, selectedSchool.id))
+            .filter((item: any) => effectiveSchoolIds.some((schoolId: string) => idsMatch(item?.school_id, schoolId)))
             .map((item: any) => item.id?.toString())
             .filter(Boolean),
         );
