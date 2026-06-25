@@ -5169,6 +5169,14 @@ function DashboardHome() {
     ),
     [assignedSchoolIds, deanSchool],
   );
+  const deanScopeSchools = useMemo(
+    () => (roleDashboardData.schools || []).filter((school: any) => scopedDeanSchoolIds.has(school?.id?.toString?.() || '')),
+    [roleDashboardData.schools, scopedDeanSchoolIds],
+  );
+  const deanScopeLabel = useMemo(
+    () => deanScopeSchools.map((school: any) => school?.name).filter(Boolean).join(', ') || deanSchool?.name || 'Assigned Schools',
+    [deanScopeSchools, deanSchool],
+  );
   const schoolDepartmentIds = useMemo(
     () => new Set(
       (roleDashboardData.departments || [])
@@ -5307,9 +5315,9 @@ function DashboardHome() {
   }, [deanBookings, deanDepartmentUsageRows]);
   const deanUnderutilizedRooms = useMemo(
     () => lowestUsageRooms
-      .filter((room: any) => !deanSchool || schoolDepartmentIds.has(roleDashboardData.departments.find((department: any) => normalizeLookupValue(department?.name) === normalizeLookupValue(room?.department))?.id?.toString?.() || ''))
+      .filter((room: any) => scopedDeanSchoolIds.size === 0 || schoolDepartmentIds.has(roleDashboardData.departments.find((department: any) => normalizeLookupValue(department?.name) === normalizeLookupValue(room?.department))?.id?.toString?.() || ''))
       .slice(0, 8),
-    [deanSchool, lowestUsageRooms, roleDashboardData.departments, schoolDepartmentIds],
+    [lowestUsageRooms, roleDashboardData.departments, schoolDepartmentIds, scopedDeanSchoolIds],
   );
   const executiveKpiRows = useMemo(() => ([
     { label: 'Available Now', value: stats?.availableNow || 0, detail: 'Rooms immediately available for reuse' },
@@ -5901,11 +5909,11 @@ function DashboardHome() {
   };
 
   const renderDeanDashboard = () => {
-    if (!deanSchool) {
+    if (deanScopeSchools.length === 0 && !deanSchool) {
       return (
         <div className="rounded-[32px] border border-amber-200 bg-amber-50 p-8 text-amber-900">
           <h3 className="text-xl font-bold">School scope needed</h3>
-          <p className="text-sm mt-2">Assign this Dean user to a department within the correct school so the dashboard can resolve school-wise usage, booking requests, and infrastructure shortage signals.</p>
+          <p className="text-sm mt-2">Assign this Dean user to one or more schools so the dashboard can resolve usage, booking requests, and infrastructure shortage signals across the full scope.</p>
         </div>
       );
     }
@@ -5923,9 +5931,13 @@ function DashboardHome() {
         <div className="rounded-[36px] border border-slate-200 bg-white p-8 shadow-sm">
           <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
             <div>
-              <p className="text-[11px] uppercase tracking-[0.24em] font-bold text-blue-600">School Oversight</p>
-              <h3 className="text-3xl font-black text-slate-900 mt-2">{deanSchool.name}</h3>
-              <p className="text-sm text-slate-500 mt-2">Monitor departmental usage, request flow, shortage hotspots, and underused inventory across the school.</p>
+              <p className="text-[11px] uppercase tracking-[0.24em] font-bold text-blue-600">
+                {deanScopeSchools.length > 1 ? 'Multi-School Oversight' : 'School Oversight'}
+              </p>
+              <h3 className="text-3xl font-black text-slate-900 mt-2">{deanScopeLabel}</h3>
+              <p className="text-sm text-slate-500 mt-2">
+                Monitor departmental usage, request flow, shortage hotspots, and underused inventory across {deanScopeSchools.length > 1 ? 'these schools' : 'the school'}.
+              </p>
             </div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600">
               Live as of {formatDisplayDate(currentOperationalDate)} at {currentOperationalTime}
