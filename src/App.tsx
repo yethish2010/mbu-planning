@@ -2301,6 +2301,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
     instructions: [
       `Allowed Role values: ${USER_ROLE_OPTIONS.join(', ')}.`,
+      'School and Department cells can contain one value or multiple values separated by commas.',
       'Fill School for Dean users and all school-level roles. School can be left blank for global roles like Admin, Master Admin, Vice Chancellor, and Pro-Chancellor.',
       'Fill Department for HOD, Faculty, and Event Coordinator users. The system will infer the school from the selected department when possible.',
       'Access Type and Access Scope are imported for clarity, but standard roles automatically derive their final scope: Global for admin/executive roles, School for Dean, and Department for HOD/Faculty/Event Coordinator.',
@@ -7271,16 +7272,36 @@ function UserManagement() {
       });
   }, []);
 
+  const parseSelectionValues = (value: any) =>
+    value?.toString().split(',').map((item: string) => item.trim()).filter(Boolean) || [];
+
+  const resolveSelectedSchoolIds = (formState: any) => {
+    const explicitIds = parseSelectionValues(formState?.assigned_school_ids);
+    if (explicitIds.length > 0) return explicitIds;
+    const legacySchoolName = formState?.school?.toString().trim() || '';
+    if (!legacySchoolName) return [];
+    const matchedSchool = schools.find((school: any) => normalizeLookupValue(school?.name) === normalizeLookupValue(legacySchoolName));
+    return matchedSchool?.id != null ? [matchedSchool.id.toString()] : [];
+  };
+
   const resolveDepartmentOptions = (formState: any) => {
-    const selectedSchool = formState?.school?.toString().trim() || '';
-    if (!selectedSchool) return departments;
-    const matchedSchool = schools.find((school: any) => normalizeLookupValue(school?.name) === normalizeLookupValue(selectedSchool));
-    if (!matchedSchool) return departments;
-    return departments.filter((department: any) => idsMatch(department?.school_id, matchedSchool?.id));
+    const selectedSchoolIds = resolveSelectedSchoolIds(formState);
+    if (selectedSchoolIds.length === 0) return departments;
+    return departments.filter((department: any) =>
+      selectedSchoolIds.some((schoolId: string) => idsMatch(department?.school_id, schoolId))
+    );
+  };
+
+  const resolvePrimarySchoolOptions = (formState: any) => {
+    const selectedIds = resolveSelectedSchoolIds(formState);
+    if (selectedIds.length === 0) return [];
+    return schools
+      .filter((school: any) => selectedIds.some((schoolId: string) => idsMatch(school?.id, schoolId)))
+      .map((school: any) => ({ value: school.id, label: school.name }));
   };
 
   const resolvePrimaryDepartmentOptions = (formState: any) => {
-    const selectedIds = formState?.assigned_department_ids?.toString().split(',').map((value: string) => value.trim()).filter(Boolean) || [];
+    const selectedIds = parseSelectionValues(formState?.assigned_department_ids);
     if (selectedIds.length === 0) return [];
     return departments
       .filter((department: any) => selectedIds.some((departmentId: string) => idsMatch(department?.id, departmentId)))
@@ -7292,7 +7313,40 @@ function UserManagement() {
     { key: 'employee_id', label: 'Employee ID' },
     { key: 'role', label: 'Role', type: 'select', options: USER_ROLE_OPTIONS },
     { key: 'email', label: 'Email Address' },
-    { key: 'school', label: 'School', type: 'select', required: false, options: schools.map((school: any) => school.name) },
+    {
+      key: 'assigned_school_ids',
+      label: 'School',
+      type: 'select',
+      required: false,
+      formOnly: true,
+      multiple: true,
+      options: schools.map((school: any) => ({ value: school.id, label: school.name })),
+      onChange: (nextData: any) => {
+        const selectedSchoolIds = parseSelectionValues(nextData.assigned_school_ids);
+        const validDepartmentIds = departments
+          .filter((department: any) => selectedSchoolIds.length === 0 || selectedSchoolIds.some((schoolId: string) => idsMatch(department?.school_id, schoolId)))
+          .map((department: any) => department.id?.toString())
+          .filter(Boolean);
+        const selectedDepartmentIds = parseSelectionValues(nextData.assigned_department_ids)
+          .filter((departmentId: string) => validDepartmentIds.includes(departmentId));
+        return {
+          ...nextData,
+          primary_school_id: selectedSchoolIds.includes(nextData.primary_school_id?.toString?.() || '') ? nextData.primary_school_id : (selectedSchoolIds[0] || ''),
+          assigned_department_ids: selectedDepartmentIds.join(','),
+          primary_department_id: selectedDepartmentIds.includes(nextData.primary_department_id?.toString?.() || '') ? nextData.primary_department_id : (selectedDepartmentIds[0] || ''),
+        };
+      },
+    },
+    {
+      key: 'primary_school_id',
+      label: 'Primary School',
+      type: 'select',
+      required: false,
+      formOnly: true,
+      options: (formState: any) => resolvePrimarySchoolOptions(formState),
+    },
+    { key: 'assigned_schools', label: 'Schools', tableOnly: true },
+    { key: 'primary_school', label: 'Primary School', tableOnly: true },
     {
       key: 'assigned_department_ids',
       label: 'Assigned Departments',
@@ -7301,6 +7355,13 @@ function UserManagement() {
       formOnly: true,
       multiple: true,
       options: (formState: any) => resolveDepartmentOptions(formState).map((department: any) => ({ value: department.id, label: department.name })),
+      onChange: (nextData: any) => {
+        const selectedDepartmentIds = parseSelectionValues(nextData.assigned_department_ids);
+        return {
+          ...nextData,
+          primary_department_id: selectedDepartmentIds.includes(nextData.primary_department_id?.toString?.() || '') ? nextData.primary_department_id : (selectedDepartmentIds[0] || ''),
+        };
+      },
     },
     {
       key: 'primary_department_id',
@@ -7321,6 +7382,14 @@ function UserManagement() {
 
   const prepareFormData = (item: any) => ({
     ...item,
+    assigned_school_ids: Array.isArray(item?.assigned_school_ids)
+      ? item.assigned_school_ids.join(',')
+      : (item?.assigned_school_ids
+        || schools.find((school: any) => normalizeLookupValue(school?.name) === normalizeLookupValue(item?.school))?.id?.toString?.()
+        || ''),
+    primary_school_id: item?.primary_school_id
+      || schools.find((school: any) => normalizeLookupValue(school?.name) === normalizeLookupValue(item?.school))?.id?.toString?.()
+      || '',
     assigned_department_ids: Array.isArray(item?.assigned_department_ids)
       ? item.assigned_department_ids.join(',')
       : (item?.assigned_department_ids || ''),
@@ -7330,20 +7399,30 @@ function UserManagement() {
     const payload = { ...data };
     payload.role = canonicalizeRoleLabel(payload.role);
     const normalizedRole = normalizeRoleValue(payload.role);
-    const assignedDepartmentIds = payload.assigned_department_ids?.toString().split(',').map((value: string) => value.trim()).filter(Boolean) || [];
+    const assignedDepartmentIds = parseSelectionValues(payload.assigned_department_ids);
     const assignedDepartments = departments.filter((department: any) =>
       assignedDepartmentIds.some((departmentId: string) => idsMatch(department?.id, departmentId))
     );
+    let assignedSchools = schools.filter((school: any) =>
+      parseSelectionValues(payload.assigned_school_ids).some((schoolId: string) => idsMatch(school?.id, schoolId))
+    );
+    if (assignedSchools.length === 0 && assignedDepartments.length > 0) {
+      assignedSchools = schools.filter((school: any) =>
+        assignedDepartments.some((department: any) => idsMatch(department?.school_id, school?.id))
+      );
+      payload.assigned_school_ids = assignedSchools.map((school: any) => school.id).join(',');
+    }
+    const primarySchool = schools.find((school: any) => idsMatch(school?.id, payload.primary_school_id))
+      || assignedSchools[0]
+      || null;
     const primaryDepartment = departments.find((department: any) => idsMatch(department?.id, payload.primary_department_id))
       || assignedDepartments[0]
       || null;
 
-    if (!payload.school && primaryDepartment) {
-      const matchedSchool = schools.find((school: any) => idsMatch(school?.id, primaryDepartment?.school_id));
-      if (matchedSchool?.name) {
-        payload.school = matchedSchool.name;
-      }
-    }
+    payload.primary_school_id = primarySchool?.id?.toString?.() || '';
+    payload.primary_school = primarySchool?.name || '';
+    payload.assigned_schools = assignedSchools.map((school: any) => school.name).join(', ');
+    payload.school = primarySchool?.name || payload.school || '';
     payload.department = primaryDepartment?.name || payload.department || '';
     payload.assigned_departments = assignedDepartments.map((department: any) => department.name).join(', ');
     if (isAdminRole(normalizedRole) || isExecutiveRole(normalizedRole) || ['dean (p&m)', 'deputy dean (p&m)'].includes(normalizedRole)) {
@@ -7351,7 +7430,7 @@ function UserManagement() {
       payload.access_scope = 'All';
     } else if (isSchoolScopedRole(normalizedRole)) {
       payload.access_type = 'School';
-      payload.access_scope = payload.school || payload.access_scope || '';
+      payload.access_scope = payload.assigned_schools || payload.school || payload.access_scope || '';
     } else if (isDepartmentScopedRole(normalizedRole)) {
       payload.access_type = 'Department';
       payload.access_scope = payload.assigned_departments || payload.department || payload.access_scope || '';
@@ -7363,14 +7442,18 @@ function UserManagement() {
 
   const handleImport = async (data: any[]) => {
     const entries = data.map((row) => {
+      const assignedSchoolNames = getImportValue(row, ['Schools', 'Assigned Schools', 'School'])?.toString() || row['School'];
       const assignedDepartmentNames = getImportValue(row, ['Departments', 'Department', 'Assigned Departments'])?.toString() || row['Department'];
+      const primarySchoolName = getImportValue(row, ['Primary School'])?.toString() || '';
       const primaryDepartmentName = getImportValue(row, ['Primary Department'])?.toString() || '';
       const payload = {
         full_name: row['Full Name'],
         employee_id: row['Employee ID']?.toString(),
         role: canonicalizeRoleLabel(row['Role']),
         email: row['Email Address'],
-        school: row['School'],
+        school: primarySchoolName || assignedSchoolNames,
+        assigned_schools: assignedSchoolNames,
+        primary_school: primarySchoolName,
         department: primaryDepartmentName || assignedDepartmentNames,
         assigned_departments: assignedDepartmentNames,
         primary_department: primaryDepartmentName,

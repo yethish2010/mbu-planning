@@ -255,6 +255,18 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       FOREIGN KEY(school_id) REFERENCES schools(id)
     );
 
+    CREATE TABLE IF NOT EXISTS user_school_assignments (
+      id ${idDefinition},
+      user_id INTEGER NOT NULL,
+      school_id INTEGER NOT NULL,
+      is_primary INTEGER DEFAULT 0,
+      valid_from DATE,
+      valid_until DATE,
+      status TEXT DEFAULT 'Active',
+      FOREIGN KEY(user_id) REFERENCES users(id),
+      FOREIGN KEY(school_id) REFERENCES schools(id)
+    );
+
     CREATE TABLE IF NOT EXISTS user_department_assignments (
       id ${idDefinition},
       user_id INTEGER NOT NULL,
@@ -546,6 +558,10 @@ await ensureColumn("users", "access_scope", "TEXT");
 await ensureColumn("users", "access_paths", "TEXT");
 await ensureColumn("users", "dashboard_view_mode", "TEXT");
 await ensureColumn("users", "force_password_change", "INTEGER DEFAULT 0");
+await ensureColumn("user_school_assignments", "is_primary", "INTEGER DEFAULT 0");
+await ensureColumn("user_school_assignments", "valid_from", "DATE");
+await ensureColumn("user_school_assignments", "valid_until", "DATE");
+await ensureColumn("user_school_assignments", "status", "TEXT DEFAULT 'Active'");
 await ensureColumn("user_department_assignments", "is_primary", "INTEGER DEFAULT 0");
 await ensureColumn("user_department_assignments", "valid_from", "DATE");
 await ensureColumn("user_department_assignments", "valid_until", "DATE");
@@ -570,6 +586,21 @@ const isAssignmentActive = (assignment: any, today = getCurrentScopedDate()) => 
   return true;
 };
 
+const getSchoolAssignmentsForUser = async (userId: string | number) => {
+  const assignments = await db.prepare(`
+    SELECT
+      usa.*,
+      s.name as school_name,
+      s.school_id as school_code
+    FROM user_school_assignments usa
+    JOIN schools s ON usa.school_id = s.id
+    WHERE usa.user_id = ?
+    ORDER BY usa.is_primary DESC, usa.id ASC
+  `).all(userId) as any[];
+  const today = getCurrentScopedDate();
+  return assignments.filter((assignment: any) => isAssignmentActive(assignment, today));
+};
+
 const getDepartmentAssignmentsForUser = async (userId: string | number) => {
   const assignments = await db.prepare(`
     SELECT
@@ -590,6 +621,53 @@ const resolvePrimaryAssignment = (assignments: any[]) =>
   assignments.find((assignment: any) => Number(assignment?.is_primary) === 1)
   || assignments[0]
   || null;
+
+const ensureUserSchoolAssignments = async (user: any) => {
+  if (!user?.id) return [];
+
+  let assignments = await getSchoolAssignmentsForUser(user.id);
+  if (assignments.length > 0) return assignments;
+
+  const legacySchool = user.school?.toString().trim();
+  if (!legacySchool) return [];
+
+  const school = await db.prepare(`
+    SELECT id, name, school_id
+    FROM schools
+    WHERE id = ?
+       OR LOWER(TRIM(school_id)) = LOWER(TRIM(?))
+       OR LOWER(TRIM(name)) = LOWER(TRIM(?))
+  `).get(legacySchool, legacySchool, legacySchool) as any;
+  if (!school) return [];
+
+  await db.prepare(`
+    INSERT INTO user_school_assignments (user_id, school_id, is_primary, status)
+    VALUES (?, ?, 1, 'Active')
+  `).run(user.id, school.id);
+
+  assignments = await getSchoolAssignmentsForUser(user.id);
+  return assignments;
+};
+
+const buildUserSchoolContext = async (user: any) => {
+  const assignments = await ensureUserSchoolAssignments(user);
+  const primaryAssignment = resolvePrimaryAssignment(assignments);
+  const assignedSchoolIds = assignments
+    .map((assignment: any) => assignment.school_id?.toString())
+    .filter(Boolean);
+  const assignedSchoolNames = assignments
+    .map((assignment: any) => assignment.school_name?.toString().trim())
+    .filter(Boolean);
+
+  return {
+    assignments,
+    primaryAssignment,
+    primarySchoolId: primaryAssignment?.school_id?.toString() || null,
+    primarySchoolName: primaryAssignment?.school_name || user.school || null,
+    assignedSchoolIds,
+    assignedSchoolNames,
+  };
+};
 
 const ensureUserDepartmentAssignments = async (user: any) => {
   if (!user?.id) return [];
@@ -641,6 +719,88 @@ const parseDelimitedValues = (value: any) => {
   return value?.toString().split(/[;,]/).map((item: string) => item.trim()).filter(Boolean) || [];
 };
 
+const resolveSchoolRecordsFromValues = async (values: string[]) => {
+  const resolvedSchools: any[] = [];
+  for (const value of values) {
+    const school = await db.prepare(`
+      SELECT id, name, school_id
+      FROM schools
+      WHERE id = ?
+         OR LOWER(TRIM(school_id)) = LOWER(TRIM(?))
+         OR LOWER(TRIM(name)) = LOWER(TRIM(?))
+    `).get(value, value, value) as any;
+    if (!school) {
+      throw new Error(`Could not match school assignment "${value}".`);
+    }
+    if (!resolvedSchools.some((item) => item.id === school.id)) {
+      resolvedSchools.push(school);
+    }
+  }
+  return resolvedSchools;
+};
+
+const resolveDepartmentRecordsFromValues = async (values: string[]) => {
+  const resolvedDepartments: any[] = [];
+  for (const value of values) {
+    const department = await db.prepare(`
+      SELECT id, name, department_id, school_id
+      FROM departments
+      WHERE id = ?
+         OR LOWER(TRIM(department_id)) = LOWER(TRIM(?))
+         OR LOWER(TRIM(name)) = LOWER(TRIM(?))
+    `).get(value, value, value) as any;
+    if (!department) {
+      throw new Error(`Could not match department assignment "${value}".`);
+    }
+    if (!resolvedDepartments.some((item) => item.id === department.id)) {
+      resolvedDepartments.push(department);
+    }
+  }
+  return resolvedDepartments;
+};
+
+const syncUserSchoolAssignments = async (userId: string | number, payload: any) => {
+  const explicitIds = parseDelimitedValues(payload.assigned_school_ids);
+  const explicitNames = parseDelimitedValues(payload.assigned_schools);
+  const legacySchool = payload.school?.toString().trim();
+  const primaryCandidate = payload.primary_school_id?.toString().trim()
+    || payload.primary_school?.toString().trim()
+    || payload.school?.toString().trim()
+    || "";
+  const requestedValues = Array.from(new Set([
+    ...explicitIds,
+    ...explicitNames,
+    ...(legacySchool ? [legacySchool] : []),
+  ]));
+
+  if (requestedValues.length === 0) {
+    await db.prepare("DELETE FROM user_school_assignments WHERE user_id = ?").run(userId);
+    return [];
+  }
+
+  const resolvedAssignments = await resolveSchoolRecordsFromValues(requestedValues);
+  let primarySchoolId = resolvedAssignments[0]?.id || null;
+  if (primaryCandidate) {
+    const normalizedPrimaryCandidate = primaryCandidate.toLowerCase();
+    const matchedPrimary = resolvedAssignments.find((school) =>
+      school.id?.toString() === primaryCandidate
+      || school.school_id?.toString().trim().toLowerCase() === normalizedPrimaryCandidate
+      || school.name?.toString().trim().toLowerCase() === normalizedPrimaryCandidate
+    );
+    if (matchedPrimary) primarySchoolId = matchedPrimary.id;
+  }
+
+  await db.prepare("DELETE FROM user_school_assignments WHERE user_id = ?").run(userId);
+  for (const school of resolvedAssignments) {
+    await db.prepare(`
+      INSERT INTO user_school_assignments (user_id, school_id, is_primary, status)
+      VALUES (?, ?, ?, 'Active')
+    `).run(userId, school.id, school.id === primarySchoolId ? 1 : 0);
+  }
+
+  return getSchoolAssignmentsForUser(userId);
+};
+
 const syncUserDepartmentAssignments = async (userId: string | number, payload: any) => {
   const explicitIds = parseDelimitedValues(payload.assigned_department_ids);
   const explicitNames = parseDelimitedValues(payload.assigned_departments);
@@ -660,22 +820,7 @@ const syncUserDepartmentAssignments = async (userId: string | number, payload: a
     return [];
   }
 
-  const resolvedAssignments: any[] = [];
-  for (const value of requestedValues) {
-    const department = await db.prepare(`
-      SELECT id, name, department_id, school_id
-      FROM departments
-      WHERE id = ?
-         OR LOWER(TRIM(department_id)) = LOWER(TRIM(?))
-         OR LOWER(TRIM(name)) = LOWER(TRIM(?))
-    `).get(value, value, value) as any;
-    if (!department) {
-      throw new Error(`Could not match department assignment "${value}".`);
-    }
-    if (!resolvedAssignments.some((item) => item.id === department.id)) {
-      resolvedAssignments.push(department);
-    }
-  }
+  const resolvedAssignments = await resolveDepartmentRecordsFromValues(requestedValues);
 
   let primaryDepartmentId = resolvedAssignments[0]?.id || null;
   if (primaryCandidate) {
@@ -2313,6 +2458,17 @@ const getScopedDepartmentIdsForUser = async (user?: any) => {
   }
 
   if (role === "Dean") {
+    const accessibleSchoolIds = Array.from(getAccessibleSchoolIdSet(user));
+    if (accessibleSchoolIds.length > 0) {
+      const placeholders = accessibleSchoolIds.map(() => "?").join(", ");
+      const departments = await db.prepare(`
+        SELECT id
+        FROM departments
+        WHERE school_id IN (${placeholders})
+      `).all(...accessibleSchoolIds) as any[];
+      return departments.map((department: any) => department?.id?.toString()).filter(Boolean);
+    }
+
     const scopedSchool = user?.school
       ? await getSchoolRecordByName(user.school)
       : null;
@@ -2371,34 +2527,82 @@ const normalizeUserPayload = async (payload: any, existingItem?: any) => {
   const role = normalizeRoleLabel(nextPayload.role);
   const normalizedRequestedAccessType = normalizeUserAccessTypeValue(nextPayload.access_type);
   const requestedAccessScope = nextPayload.access_scope?.toString().trim() || "";
-  const schoolRecord = nextPayload.school ? await getSchoolRecordByName(nextPayload.school) : null;
-  if (nextPayload.school && !schoolRecord) {
-    throw new Error(`School "${nextPayload.school}" was not found. Create the school first or use the exact school name.`);
+  const requestedSchoolValues = Array.from(new Set([
+    ...parseDelimitedValues(nextPayload.assigned_school_ids),
+    ...parseDelimitedValues(nextPayload.assigned_schools),
+    ...(nextPayload.school ? [nextPayload.school] : []),
+  ]));
+  const requestedDepartmentValues = Array.from(new Set([
+    ...parseDelimitedValues(nextPayload.assigned_department_ids),
+    ...parseDelimitedValues(nextPayload.assigned_departments),
+    ...(nextPayload.department ? [nextPayload.department] : []),
+  ]));
+
+  const resolvedSchoolRecords = await resolveSchoolRecordsFromValues(requestedSchoolValues);
+  const resolvedDepartmentRecords = await resolveDepartmentRecordsFromValues(requestedDepartmentValues);
+  const inferredSchoolIdsFromDepartments = Array.from(new Set(
+    resolvedDepartmentRecords
+      .map((department: any) => department?.school_id?.toString())
+      .filter(Boolean),
+  ));
+  const inferredSchoolRecords = inferredSchoolIdsFromDepartments.length === 0
+    ? []
+    : (await Promise.all(
+        inferredSchoolIdsFromDepartments.map(async (schoolId) =>
+          await db.prepare("SELECT id, name, school_id FROM schools WHERE id = ?").get(schoolId) as any
+        ),
+      )).filter(Boolean);
+  const mergedSchoolRecords = [...resolvedSchoolRecords];
+  inferredSchoolRecords.forEach((school) => {
+    if (!mergedSchoolRecords.some((item) => item.id === school.id)) {
+      mergedSchoolRecords.push(school);
+    }
+  });
+
+  if (resolvedSchoolRecords.length > 0 && resolvedDepartmentRecords.some((department: any) =>
+    !resolvedSchoolRecords.some((school: any) => idsEqual(school.id, department.school_id))
+  )) {
+    throw new Error("One or more selected departments do not belong to the selected schools.");
   }
 
-  const departmentScope = nextPayload.department ? await getDepartmentScopeByName(nextPayload.department) : null;
-  if (nextPayload.department && !departmentScope?.department) {
-    throw new Error(`Department "${nextPayload.department}" was not found. Create the department first or use the exact department name.`);
-  }
-
-  const inferredSchoolName = schoolRecord?.name
-    || (departmentScope?.department?.school_id
-      ? (await db.prepare("SELECT name FROM schools WHERE id = ?").get(departmentScope.department.school_id) as any)?.name
-      : "");
-
-  if (schoolRecord && departmentScope?.department?.school_id && !idsEqual(schoolRecord.id, departmentScope.department.school_id)) {
-    throw new Error(`Department "${nextPayload.department}" does not belong to school "${nextPayload.school}".`);
-  }
-
-  if (DEPARTMENT_SCOPE_ROLE_VALUES.has(role) && !nextPayload.department) {
+  if (DEPARTMENT_SCOPE_ROLE_VALUES.has(role) && resolvedDepartmentRecords.length === 0 && !nextPayload.department) {
     throw new Error(`${role} users must be linked to a department.`);
   }
-  if (SCHOOL_SCOPE_ROLE_VALUES.has(role) && !(nextPayload.school || inferredSchoolName)) {
+  if (SCHOOL_SCOPE_ROLE_VALUES.has(role) && mergedSchoolRecords.length === 0 && !nextPayload.school) {
     throw new Error(`${role} users must be linked to a school.`);
   }
 
-  nextPayload.school = nextPayload.school || inferredSchoolName || null;
-  nextPayload.department = nextPayload.department || null;
+  const primarySchoolCandidate = nextPayload.primary_school_id?.toString().trim()
+    || nextPayload.primary_school?.toString().trim()
+    || nextPayload.school?.toString().trim()
+    || "";
+  const primaryDepartmentCandidate = nextPayload.primary_department_id?.toString().trim()
+    || nextPayload.primary_department?.toString().trim()
+    || nextPayload.department?.toString().trim()
+    || "";
+  const normalizedPrimarySchoolCandidate = primarySchoolCandidate.toLowerCase();
+  const normalizedPrimaryDepartmentCandidate = primaryDepartmentCandidate.toLowerCase();
+  const primarySchoolRecord = mergedSchoolRecords.find((school: any) =>
+    school.id?.toString() === primarySchoolCandidate
+    || school.school_id?.toString().trim().toLowerCase() === normalizedPrimarySchoolCandidate
+    || school.name?.toString().trim().toLowerCase() === normalizedPrimarySchoolCandidate
+  ) || mergedSchoolRecords[0] || null;
+  const primaryDepartmentRecord = resolvedDepartmentRecords.find((department: any) =>
+    department.id?.toString() === primaryDepartmentCandidate
+    || department.department_id?.toString().trim().toLowerCase() === normalizedPrimaryDepartmentCandidate
+    || department.name?.toString().trim().toLowerCase() === normalizedPrimaryDepartmentCandidate
+  ) || resolvedDepartmentRecords[0] || null;
+
+  nextPayload.assigned_school_ids = mergedSchoolRecords.map((school: any) => school.id?.toString()).filter(Boolean).join(",");
+  nextPayload.assigned_schools = mergedSchoolRecords.map((school: any) => school.name).filter(Boolean).join(", ");
+  nextPayload.primary_school_id = primarySchoolRecord?.id?.toString() || null;
+  nextPayload.primary_school = primarySchoolRecord?.name || null;
+  nextPayload.assigned_department_ids = resolvedDepartmentRecords.map((department: any) => department.id?.toString()).filter(Boolean).join(",");
+  nextPayload.assigned_departments = resolvedDepartmentRecords.map((department: any) => department.name).filter(Boolean).join(", ");
+  nextPayload.primary_department_id = primaryDepartmentRecord?.id?.toString() || null;
+  nextPayload.primary_department = primaryDepartmentRecord?.name || null;
+  nextPayload.school = primarySchoolRecord?.name || null;
+  nextPayload.department = primaryDepartmentRecord?.name || null;
 
   let derivedAccessType = normalizedRequestedAccessType;
   let derivedAccessScope = requestedAccessScope;
@@ -2409,17 +2613,17 @@ const normalizeUserPayload = async (payload: any, existingItem?: any) => {
     nextPayload.school = nextPayload.school || null;
   } else if (SCHOOL_SCOPE_ROLE_VALUES.has(role)) {
     derivedAccessType = "School";
-    derivedAccessScope = nextPayload.school || requestedAccessScope || "";
+    derivedAccessScope = mergedSchoolRecords.map((school: any) => school.name).join(", ") || nextPayload.school || requestedAccessScope || "";
   } else if (DEPARTMENT_SCOPE_ROLE_VALUES.has(role)) {
     derivedAccessType = "Department";
-    derivedAccessScope = nextPayload.department || requestedAccessScope || "";
+    derivedAccessScope = resolvedDepartmentRecords.map((department: any) => department.name).join(", ") || nextPayload.department || requestedAccessScope || "";
   } else if (!derivedAccessType) {
-    if (nextPayload.department) {
+    if (resolvedDepartmentRecords.length > 0 || nextPayload.department) {
       derivedAccessType = "Department";
-      derivedAccessScope = nextPayload.department;
-    } else if (nextPayload.school) {
+      derivedAccessScope = resolvedDepartmentRecords.map((department: any) => department.name).join(", ") || nextPayload.department || requestedAccessScope || "";
+    } else if (mergedSchoolRecords.length > 0 || nextPayload.school) {
       derivedAccessType = "School";
-      derivedAccessScope = nextPayload.school;
+      derivedAccessScope = mergedSchoolRecords.map((school: any) => school.name).join(", ") || nextPayload.school || requestedAccessScope || "";
     } else {
       derivedAccessType = "Global";
       derivedAccessScope = "All";
@@ -2894,13 +3098,28 @@ const mergeExtractedSchedulesWithHeaderRooms = (schedules: any[], sectionRoomMap
 // --- AUTH ROUTES ---
 
 const getUserSessionPayload = async (user: any) => {
+  const schoolContext = await buildUserSchoolContext(user);
   const context = await buildUserDepartmentContext(user);
   return {
     id: user.id,
     email: user.email,
     role: normalizeRoleLabel(user.role),
     name: user.full_name,
-    school: user.school,
+    school: schoolContext.primarySchoolName || user.school,
+    primary_school_id: schoolContext.primarySchoolId,
+    primary_school: schoolContext.primarySchoolName,
+    assigned_school_ids: schoolContext.assignedSchoolIds,
+    assigned_schools: schoolContext.assignedSchoolNames,
+    school_assignments: schoolContext.assignments.map((assignment: any) => ({
+      id: assignment.id,
+      school_id: assignment.school_id,
+      school_name: assignment.school_name,
+      school_code: assignment.school_code,
+      is_primary: Number(assignment.is_primary) === 1,
+      valid_from: assignment.valid_from || null,
+      valid_until: assignment.valid_until || null,
+      status: assignment.status || "Active",
+    })),
     department: context.primaryDepartmentName || user.department || null,
     primary_department_id: context.primaryDepartmentId,
     primary_department: context.primaryDepartmentName,
@@ -4021,7 +4240,7 @@ await cleanupDuplicateSchedules();
 await syncBatchAllocationStatuses();
 lastBatchSyncAt = Date.now();
 
-const isPastDateTime = (date: string, time: string) => {
+const isPastDateTime = (date: any, time: string) => {
   const normalizedDate = date instanceof Date
     ? date.toISOString().slice(0, 10)
     : date?.toString().trim().includes("T")
@@ -4582,6 +4801,13 @@ const getAccessibleDepartmentIdSet = (user: any) =>
       .filter(Boolean)
   );
 
+const getAccessibleSchoolIdSet = (user: any) =>
+  new Set(
+    (Array.isArray(user?.assigned_school_ids) ? user.assigned_school_ids : [])
+      .map((schoolId: any) => schoolId?.toString())
+      .filter(Boolean)
+  );
+
 const getApprovedBookingConflict = async (booking: any, excludeId?: string | number) => {
   if (!booking?.room_id || !booking?.date || !booking?.start_time || !booking?.end_time) return null;
   return await db.prepare(`
@@ -4936,9 +5162,15 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       if (tableName === "users") {
         const users = await db.prepare(`SELECT * FROM users`).all() as any[];
         const enrichedUsers = await Promise.all(users.map(async (user: any) => {
+          const schoolContext = await buildUserSchoolContext(user);
           const context = await buildUserDepartmentContext(user);
           return {
             ...user,
+            school: schoolContext.primarySchoolName || user.school || null,
+            primary_school_id: schoolContext.primarySchoolId,
+            primary_school: schoolContext.primarySchoolName,
+            assigned_school_ids: schoolContext.assignedSchoolIds.join(","),
+            assigned_schools: schoolContext.assignedSchoolNames.join(", "),
             department: context.primaryDepartmentName || user.department || null,
             primary_department_id: context.primaryDepartmentId,
             primary_department: context.primaryDepartmentName,
@@ -4959,17 +5191,28 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         const user = (req as any).user;
         if (isDecisionRole(user.role)) return res.json(applyBookingQueryFilters(bookings as any[], req.query));
         if (user.role === "Dean") {
-          const scope = user.school
-            ? await getSchoolRecordByName(user.school).then(async (school) => {
-                if (!school) return { departmentIdsInSchool: [] as string[] };
-              const siblingDepartments = await db.prepare(`SELECT id FROM departments WHERE school_id = ?`).all(school.id) as any[];
-              return {
-                departmentIdsInSchool: siblingDepartments
+          const accessibleSchoolIds = Array.from(getAccessibleSchoolIdSet(user));
+          const scope = accessibleSchoolIds.length > 0
+            ? await db.prepare(`
+                SELECT id
+                FROM departments
+                WHERE school_id IN (${accessibleSchoolIds.map(() => "?").join(", ")})
+              `).all(...accessibleSchoolIds).then((departments: any[]) => ({
+                departmentIdsInSchool: departments
                   .map((item: any) => item?.id?.toString())
                   .filter(Boolean),
-              };
-            })
-            : await getDepartmentScopeByName(user.department);
+              }))
+            : user.school
+              ? await getSchoolRecordByName(user.school).then(async (school) => {
+                  if (!school) return { departmentIdsInSchool: [] as string[] };
+                const siblingDepartments = await db.prepare(`SELECT id FROM departments WHERE school_id = ?`).all(school.id) as any[];
+                return {
+                  departmentIdsInSchool: siblingDepartments
+                    .map((item: any) => item?.id?.toString())
+                    .filter(Boolean),
+                };
+              })
+              : await getDepartmentScopeByName(user.department);
           if (scope.departmentIdsInSchool.length > 0) {
             const allowedDepartmentIds = new Set(scope.departmentIdsInSchool);
             return res.json(applyBookingQueryFilters(bookings.filter((booking: any) =>
@@ -5305,6 +5548,30 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         const importContext = createBulkImportContext(tableName, records);
         const scopedPersistBulkImportRecord = async (payload: any, existingItem?: any, context?: BulkImportContext) => {
           const normalizedPayload = await normalizeBulkImportPayload(tableName, payload, existingItem);
+          const userAssignmentPayload = tableName === "users"
+            ? {
+                assigned_schools: normalizedPayload.assigned_schools,
+                assigned_school_ids: normalizedPayload.assigned_school_ids,
+                primary_school_id: normalizedPayload.primary_school_id,
+                primary_school: normalizedPayload.primary_school,
+                school: normalizedPayload.school,
+                assigned_departments: normalizedPayload.assigned_departments,
+                assigned_department_ids: normalizedPayload.assigned_department_ids,
+                primary_department_id: normalizedPayload.primary_department_id,
+                primary_department: normalizedPayload.primary_department,
+                department: normalizedPayload.department,
+              }
+            : null;
+          if (tableName === "users") {
+            delete normalizedPayload.assigned_schools;
+            delete normalizedPayload.assigned_school_ids;
+            delete normalizedPayload.primary_school_id;
+            delete normalizedPayload.primary_school;
+            delete normalizedPayload.assigned_departments;
+            delete normalizedPayload.assigned_department_ids;
+            delete normalizedPayload.primary_department_id;
+            delete normalizedPayload.primary_department;
+          }
           await validateBulkImportPayload(tableName, normalizedPayload, existingItem, context);
 
           const fields = Object.keys(normalizedPayload);
@@ -5320,6 +5587,10 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
               values[passwordIndex] = bcrypt.hashSync(normalizedPayload.password, 10);
             }
             await transactionDb.prepare(`UPDATE ${tableName} SET ${setClause} WHERE id = ?`).run(...values);
+            if (tableName === "users" && userAssignmentPayload) {
+              await syncUserSchoolAssignments(existingItem.id, userAssignmentPayload);
+              await syncUserDepartmentAssignments(existingItem.id, userAssignmentPayload);
+            }
             return { ...existingItem, ...normalizedPayload, id: existingItem.id, __importAction: "updated" as const };
           }
 
@@ -5330,6 +5601,10 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
             values[passwordIndex] = bcrypt.hashSync(normalizedPayload.password, 10);
           }
           const info = await transactionDb.prepare(`INSERT INTO ${tableName} (${fields.join(", ")}) VALUES (${placeholders})`).run(...values);
+          if (tableName === "users" && userAssignmentPayload) {
+            await syncUserSchoolAssignments(info.lastInsertRowid, userAssignmentPayload);
+            await syncUserDepartmentAssignments(info.lastInsertRowid, userAssignmentPayload);
+          }
           return { id: info.lastInsertRowid, ...normalizedPayload, __importAction: "created" as const };
         };
 
@@ -5387,6 +5662,11 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     }
     const userAssignmentPayload = tableName === "users"
       ? {
+          assigned_schools: req.body.assigned_schools,
+          assigned_school_ids: req.body.assigned_school_ids,
+          primary_school_id: req.body.primary_school_id,
+          primary_school: req.body.primary_school,
+          school: req.body.school,
           assigned_departments: req.body.assigned_departments,
           assigned_department_ids: req.body.assigned_department_ids,
           primary_department_id: req.body.primary_department_id,
@@ -5398,6 +5678,22 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     try {
       if (tableName === "users") {
         req.body = await normalizeUserPayload(req.body);
+        if (userAssignmentPayload) Object.assign(userAssignmentPayload, {
+          assigned_schools: req.body.assigned_schools,
+          assigned_school_ids: req.body.assigned_school_ids,
+          primary_school_id: req.body.primary_school_id,
+          primary_school: req.body.primary_school,
+          school: req.body.school,
+          assigned_departments: req.body.assigned_departments,
+          assigned_department_ids: req.body.assigned_department_ids,
+          primary_department_id: req.body.primary_department_id,
+          primary_department: req.body.primary_department,
+          department: req.body.department,
+        });
+        delete req.body.assigned_schools;
+        delete req.body.assigned_school_ids;
+        delete req.body.primary_school_id;
+        delete req.body.primary_school;
         delete req.body.assigned_departments;
         delete req.body.assigned_department_ids;
         delete req.body.primary_department_id;
@@ -5558,6 +5854,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       const insertPlaceholders = fields.map(() => "?").join(", ");
       const info = await db.prepare(`INSERT INTO ${tableName} (${fields.join(", ")}) VALUES (${insertPlaceholders})`).run(...values);
       if (tableName === "users" && userAssignmentPayload) {
+        await syncUserSchoolAssignments(info.lastInsertRowid, userAssignmentPayload);
         await syncUserDepartmentAssignments(info.lastInsertRowid, userAssignmentPayload);
       }
       if (tableName === "bookings") {
@@ -5614,6 +5911,11 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     }
     const userAssignmentPayload = tableName === "users"
       ? {
+          assigned_schools: req.body.assigned_schools,
+          assigned_school_ids: req.body.assigned_school_ids,
+          primary_school_id: req.body.primary_school_id,
+          primary_school: req.body.primary_school,
+          school: req.body.school,
           assigned_departments: req.body.assigned_departments,
           assigned_department_ids: req.body.assigned_department_ids,
           primary_department_id: req.body.primary_department_id,
@@ -5632,6 +5934,22 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       }
       if (tableName === "users") {
         req.body = await normalizeUserPayload(req.body, existingItem);
+        if (userAssignmentPayload) Object.assign(userAssignmentPayload, {
+          assigned_schools: req.body.assigned_schools,
+          assigned_school_ids: req.body.assigned_school_ids,
+          primary_school_id: req.body.primary_school_id,
+          primary_school: req.body.primary_school,
+          school: req.body.school,
+          assigned_departments: req.body.assigned_departments,
+          assigned_department_ids: req.body.assigned_department_ids,
+          primary_department_id: req.body.primary_department_id,
+          primary_department: req.body.primary_department,
+          department: req.body.department,
+        });
+        delete req.body.assigned_schools;
+        delete req.body.assigned_school_ids;
+        delete req.body.primary_school_id;
+        delete req.body.primary_school;
         delete req.body.assigned_departments;
         delete req.body.assigned_department_ids;
         delete req.body.primary_department_id;
@@ -5797,6 +6115,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       }
       await db.prepare(`UPDATE ${tableName} SET ${setClause} WHERE ${idField} = ?`).run(...values);
       if (tableName === "users" && userAssignmentPayload) {
+        await syncUserSchoolAssignments(req.params.id, userAssignmentPayload);
         await syncUserDepartmentAssignments(req.params.id, userAssignmentPayload);
       }
       if (tableName === "bookings") {
@@ -5880,6 +6199,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         }
       }
       if (tableName === "users") {
+        await db.prepare(`DELETE FROM user_school_assignments`).run();
         await db.prepare(`DELETE FROM user_department_assignments`).run();
       }
       await db.prepare(`DELETE FROM ${tableName}`).run();
@@ -5897,6 +6217,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     try {
       const existingItem = await db.prepare(`SELECT * FROM ${tableName} WHERE ${idField} = ?`).get(req.params.id) as any;
       if (tableName === "users") {
+        await db.prepare(`DELETE FROM user_school_assignments WHERE user_id = ?`).run(req.params.id);
         await db.prepare(`DELETE FROM user_department_assignments WHERE user_id = ?`).run(req.params.id);
       }
       if (tableName === "department_allocations" && existingItem) {

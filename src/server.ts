@@ -158,6 +158,18 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       FOREIGN KEY(school_id) REFERENCES schools(id)
     );
 
+    CREATE TABLE IF NOT EXISTS user_school_assignments (
+      id ${idDefinition},
+      user_id INTEGER NOT NULL,
+      school_id INTEGER NOT NULL,
+      is_primary INTEGER DEFAULT 0,
+      valid_from DATE,
+      valid_until DATE,
+      status TEXT DEFAULT 'Active',
+      FOREIGN KEY(user_id) REFERENCES users(id),
+      FOREIGN KEY(school_id) REFERENCES schools(id)
+    );
+
     CREATE TABLE IF NOT EXISTS user_department_assignments (
       id ${idDefinition},
       user_id INTEGER NOT NULL,
@@ -325,6 +337,13 @@ await ensureColumn("users", "responsibilities", "TEXT");
 await ensureColumn("users", "access_limits", "TEXT");
 await ensureColumn("users", "access_paths", "TEXT");
 await ensureColumn("users", "force_password_change", "INTEGER DEFAULT 0");
+await ensureColumn("users", "school", "TEXT");
+await ensureColumn("users", "access_type", "TEXT");
+await ensureColumn("users", "access_scope", "TEXT");
+await ensureColumn("user_school_assignments", "is_primary", "INTEGER DEFAULT 0");
+await ensureColumn("user_school_assignments", "valid_from", "DATE");
+await ensureColumn("user_school_assignments", "valid_until", "DATE");
+await ensureColumn("user_school_assignments", "status", "TEXT DEFAULT 'Active'");
 await ensureColumn("user_department_assignments", "is_primary", "INTEGER DEFAULT 0");
 await ensureColumn("user_department_assignments", "valid_from", "DATE");
 await ensureColumn("user_department_assignments", "valid_until", "DATE");
@@ -340,6 +359,21 @@ const isAssignmentActive = (assignment: any, today = getCurrentIsoDate()) => {
   if (validFrom && validFrom > today) return false;
   if (validUntil && validUntil < today) return false;
   return true;
+};
+
+const getSchoolAssignmentsForUser = async (userId: string | number) => {
+  const assignments = await db.prepare(`
+    SELECT
+      usa.*,
+      s.name as school_name,
+      s.school_id as school_code
+    FROM user_school_assignments usa
+    JOIN schools s ON usa.school_id = s.id
+    WHERE usa.user_id = ?
+    ORDER BY usa.is_primary DESC, usa.id ASC
+  `).all(userId) as any[];
+  const today = getCurrentIsoDate();
+  return assignments.filter((assignment: any) => isAssignmentActive(assignment, today));
 };
 
 const getDepartmentAssignmentsForUser = async (userId: string | number) => {
@@ -362,6 +396,53 @@ const resolvePrimaryAssignment = (assignments: any[]) =>
   assignments.find((assignment: any) => Number(assignment?.is_primary) === 1)
   || assignments[0]
   || null;
+
+const ensureUserSchoolAssignments = async (user: any) => {
+  if (!user?.id) return [];
+
+  let assignments = await getSchoolAssignmentsForUser(user.id);
+  if (assignments.length > 0) return assignments;
+
+  const legacySchool = user.school?.toString().trim();
+  if (!legacySchool) return [];
+
+  const school = await db.prepare(`
+    SELECT id, name, school_id
+    FROM schools
+    WHERE id = ?
+       OR LOWER(TRIM(school_id)) = LOWER(TRIM(?))
+       OR LOWER(TRIM(name)) = LOWER(TRIM(?))
+  `).get(legacySchool, legacySchool, legacySchool) as any;
+  if (!school) return [];
+
+  await db.prepare(`
+    INSERT INTO user_school_assignments (user_id, school_id, is_primary, status)
+    VALUES (?, ?, 1, 'Active')
+  `).run(user.id, school.id);
+
+  assignments = await getSchoolAssignmentsForUser(user.id);
+  return assignments;
+};
+
+const buildUserSchoolContext = async (user: any) => {
+  const assignments = await ensureUserSchoolAssignments(user);
+  const primaryAssignment = resolvePrimaryAssignment(assignments);
+  const assignedSchoolIds = assignments
+    .map((assignment: any) => assignment.school_id?.toString())
+    .filter(Boolean);
+  const assignedSchoolNames = assignments
+    .map((assignment: any) => assignment.school_name?.toString().trim())
+    .filter(Boolean);
+
+  return {
+    assignments,
+    primaryAssignment,
+    primarySchoolId: primaryAssignment?.school_id?.toString() || null,
+    primarySchoolName: primaryAssignment?.school_name || user.school || null,
+    assignedSchoolIds,
+    assignedSchoolNames,
+  };
+};
 
 const ensureUserDepartmentAssignments = async (user: any) => {
   if (!user?.id) return [];
@@ -411,6 +492,68 @@ const buildUserDepartmentContext = async (user: any) => {
 const parseDelimitedValues = (value: any) => {
   if (Array.isArray(value)) return value.map(item => item?.toString().trim()).filter(Boolean);
   return value?.toString().split(/[;,]/).map((item: string) => item.trim()).filter(Boolean) || [];
+};
+
+const resolveSchoolRecordsFromValues = async (values: string[]) => {
+  const resolvedSchools: any[] = [];
+  for (const value of values) {
+    const school = await db.prepare(`
+      SELECT id, name, school_id
+      FROM schools
+      WHERE id = ?
+         OR LOWER(TRIM(school_id)) = LOWER(TRIM(?))
+         OR LOWER(TRIM(name)) = LOWER(TRIM(?))
+    `).get(value, value, value) as any;
+    if (!school) {
+      throw new Error(`Could not match school assignment "${value}".`);
+    }
+    if (!resolvedSchools.some((item) => item.id === school.id)) {
+      resolvedSchools.push(school);
+    }
+  }
+  return resolvedSchools;
+};
+
+const syncUserSchoolAssignments = async (userId: string | number, payload: any) => {
+  const explicitIds = parseDelimitedValues(payload.assigned_school_ids);
+  const explicitNames = parseDelimitedValues(payload.assigned_schools);
+  const legacySchool = payload.school?.toString().trim();
+  const primaryCandidate = payload.primary_school_id?.toString().trim()
+    || payload.primary_school?.toString().trim()
+    || payload.school?.toString().trim()
+    || "";
+  const requestedValues = Array.from(new Set([
+    ...explicitIds,
+    ...explicitNames,
+    ...(legacySchool ? [legacySchool] : []),
+  ]));
+
+  if (requestedValues.length === 0) {
+    await db.prepare("DELETE FROM user_school_assignments WHERE user_id = ?").run(userId);
+    return [];
+  }
+
+  const resolvedAssignments = await resolveSchoolRecordsFromValues(requestedValues);
+  let primarySchoolId = resolvedAssignments[0]?.id || null;
+  if (primaryCandidate) {
+    const normalizedPrimaryCandidate = primaryCandidate.toLowerCase();
+    const matchedPrimary = resolvedAssignments.find((school) =>
+      school.id?.toString() === primaryCandidate
+      || school.school_id?.toString().trim().toLowerCase() === normalizedPrimaryCandidate
+      || school.name?.toString().trim().toLowerCase() === normalizedPrimaryCandidate
+    );
+    if (matchedPrimary) primarySchoolId = matchedPrimary.id;
+  }
+
+  await db.prepare("DELETE FROM user_school_assignments WHERE user_id = ?").run(userId);
+  for (const school of resolvedAssignments) {
+    await db.prepare(`
+      INSERT INTO user_school_assignments (user_id, school_id, is_primary, status)
+      VALUES (?, ?, ?, 'Active')
+    `).run(userId, school.id, school.id === primarySchoolId ? 1 : 0);
+  }
+
+  return getSchoolAssignmentsForUser(userId);
 };
 
 const syncUserDepartmentAssignments = async (userId: string | number, payload: any) => {
@@ -1128,12 +1271,28 @@ const parseAIJsonResponse = (text: string) => {
 // --- AUTH ROUTES ---
 
 const getUserSessionPayload = async (user: any) => {
+  const schoolContext = await buildUserSchoolContext(user);
   const context = await buildUserDepartmentContext(user);
   return {
     id: user.id,
     email: user.email,
     role: user.role,
     name: user.full_name,
+    school: schoolContext.primarySchoolName || user.school || null,
+    primary_school_id: schoolContext.primarySchoolId,
+    primary_school: schoolContext.primarySchoolName,
+    assigned_school_ids: schoolContext.assignedSchoolIds,
+    assigned_schools: schoolContext.assignedSchoolNames,
+    school_assignments: schoolContext.assignments.map((assignment: any) => ({
+      id: assignment.id,
+      school_id: assignment.school_id,
+      school_name: assignment.school_name,
+      school_code: assignment.school_code,
+      is_primary: Number(assignment.is_primary) === 1,
+      valid_from: assignment.valid_from || null,
+      valid_until: assignment.valid_until || null,
+      status: assignment.status || "Active",
+    })),
     department: context.primaryDepartmentName || user.department || null,
     primary_department_id: context.primaryDepartmentId,
     primary_department: context.primaryDepartmentName,
@@ -1521,7 +1680,7 @@ const checkDuplicateRecord = async (tableName: string, data: any, excludeId?: st
   return null;
 };
 
-const isPastDateTime = (date: string, time: string) => {
+const isPastDateTime = (date: any, time: string) => {
   const normalizedDate = date instanceof Date
     ? date.toISOString().slice(0, 10)
     : date?.toString().trim().includes("T")
@@ -1529,6 +1688,16 @@ const isPastDateTime = (date: string, time: string) => {
       : date?.toString().trim();
   const value = new Date(`${normalizedDate}T${time}`);
   return Number.isNaN(value.getTime()) || value.getTime() < Date.now();
+};
+
+const timesOverlap = (
+  existingStart?: string | null,
+  existingEnd?: string | null,
+  selectedStart?: string | null,
+  selectedEnd?: string | null,
+) => {
+  if (!existingStart || !existingEnd || !selectedStart || !selectedEnd) return false;
+  return existingStart < selectedEnd && existingEnd > selectedStart;
 };
 
 const getBookingDepartmentName = async (booking: any) => {
@@ -1897,9 +2066,15 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       if (tableName === "users") {
         const users = await db.prepare(`SELECT * FROM users`).all() as any[];
         const enrichedUsers = await Promise.all(users.map(async (user: any) => {
+          const schoolContext = await buildUserSchoolContext(user);
           const context = await buildUserDepartmentContext(user);
           return {
             ...user,
+            school: schoolContext.primarySchoolName || user.school || null,
+            primary_school_id: schoolContext.primarySchoolId,
+            primary_school: schoolContext.primarySchoolName,
+            assigned_school_ids: schoolContext.assignedSchoolIds.join(","),
+            assigned_schools: schoolContext.assignedSchoolNames.join(", "),
             department: context.primaryDepartmentName || user.department || null,
             primary_department_id: context.primaryDepartmentId,
             primary_department: context.primaryDepartmentName,
@@ -1955,6 +2130,11 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     }
     const userAssignmentPayload = tableName === "users"
       ? {
+          assigned_schools: req.body.assigned_schools,
+          assigned_school_ids: req.body.assigned_school_ids,
+          primary_school_id: req.body.primary_school_id,
+          primary_school: req.body.primary_school,
+          school: req.body.school,
           assigned_departments: req.body.assigned_departments,
           assigned_department_ids: req.body.assigned_department_ids,
           primary_department_id: req.body.primary_department_id,
@@ -1963,6 +2143,10 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         }
       : null;
     if (tableName === "users") {
+      delete req.body.assigned_schools;
+      delete req.body.assigned_school_ids;
+      delete req.body.primary_school_id;
+      delete req.body.primary_school;
       delete req.body.assigned_departments;
       delete req.body.assigned_department_ids;
       delete req.body.primary_department_id;
@@ -2085,6 +2269,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       const insertPlaceholders = fields.map(() => "?").join(", ");
       const info = await db.prepare(`INSERT INTO ${tableName} (${fields.join(", ")}) VALUES (${insertPlaceholders})`).run(...values);
       if (tableName === "users" && userAssignmentPayload) {
+        await syncUserSchoolAssignments(info.lastInsertRowid, userAssignmentPayload);
         await syncUserDepartmentAssignments(info.lastInsertRowid, userAssignmentPayload);
       }
       if (tableName === "bookings") {
@@ -2140,6 +2325,11 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     }
     const userAssignmentPayload = tableName === "users"
       ? {
+          assigned_schools: req.body.assigned_schools,
+          assigned_school_ids: req.body.assigned_school_ids,
+          primary_school_id: req.body.primary_school_id,
+          primary_school: req.body.primary_school,
+          school: req.body.school,
           assigned_departments: req.body.assigned_departments,
           assigned_department_ids: req.body.assigned_department_ids,
           primary_department_id: req.body.primary_department_id,
@@ -2148,6 +2338,10 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         }
       : null;
     if (tableName === "users") {
+      delete req.body.assigned_schools;
+      delete req.body.assigned_school_ids;
+      delete req.body.primary_school_id;
+      delete req.body.primary_school;
       delete req.body.assigned_departments;
       delete req.body.assigned_department_ids;
       delete req.body.primary_department_id;
@@ -2290,6 +2484,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       }
       await db.prepare(`UPDATE ${tableName} SET ${setClause} WHERE ${idField} = ?`).run(...values);
       if (tableName === "users" && userAssignmentPayload) {
+        await syncUserSchoolAssignments(req.params.id, userAssignmentPayload);
         await syncUserDepartmentAssignments(req.params.id, userAssignmentPayload);
       }
       if (tableName === "bookings") {
@@ -2366,6 +2561,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     }
     try {
       if (tableName === "users") {
+        await db.prepare(`DELETE FROM user_school_assignments`).run();
         await db.prepare(`DELETE FROM user_department_assignments`).run();
       }
       await db.prepare(`DELETE FROM ${tableName}`).run();
@@ -2382,6 +2578,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     try {
       const existingItem = await db.prepare(`SELECT * FROM ${tableName} WHERE ${idField} = ?`).get(req.params.id) as any;
       if (tableName === "users") {
+        await db.prepare(`DELETE FROM user_school_assignments WHERE user_id = ?`).run(req.params.id);
         await db.prepare(`DELETE FROM user_department_assignments WHERE user_id = ?`).run(req.params.id);
       }
       await db.prepare(`DELETE FROM ${tableName} WHERE ${idField} = ?`).run(req.params.id);

@@ -18,6 +18,20 @@ export interface User {
   full_name: string;
   employee_id: string;
   school?: string;
+  primary_school_id?: string | null;
+  primary_school?: string | null;
+  assigned_school_ids?: string[];
+  assigned_schools?: string[];
+  school_assignments?: Array<{
+    id: number;
+    school_id: number;
+    school_name: string;
+    school_code?: string;
+    is_primary: boolean;
+    valid_from?: string | null;
+    valid_until?: string | null;
+    status?: string;
+  }>;
   department?: string;
   primary_department_id?: string | null;
   primary_department?: string | null;
