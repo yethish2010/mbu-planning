@@ -3787,9 +3787,14 @@ const getAssignedDepartmentIdsFromUser = (user: any) =>
     .filter(Boolean);
 
 const getAssignedSchoolIdsFromUser = (user: any) =>
-  (Array.isArray(user?.assigned_school_ids) ? user.assigned_school_ids : [])
-    .map((schoolId: any) => schoolId?.toString?.() || '')
-    .filter(Boolean);
+  Array.from(new Set([
+    ...(Array.isArray(user?.assigned_school_ids)
+      ? user.assigned_school_ids
+      : user?.assigned_school_ids?.toString?.().split(',') || []),
+    ...(user?.primary_school_id ? [user.primary_school_id] : []),
+  ]
+    .map((schoolId: any) => schoolId?.toString?.().trim() || '')
+    .filter(Boolean)));
 
 function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<any>(null);
@@ -10014,9 +10019,14 @@ function BatchRoomAllocationManagement() {
   const getBlockOptionsForBuilding = (formData: any) => {
     const building = buildings.find(b => b.id == formData.building_id);
     if (!building) return [];
-    return blocks
-      .filter(block => idsMatch(block.building_id, building.id) && !isImplicitBuildingBlock(block, building))
-      .map(block => ({ value: block.id, label: block.name }));
+    const buildingBlocks = blocks.filter(block => idsMatch(block.building_id, building.id));
+    const visibleBlocks = buildingBlocks.filter(block => !isImplicitBuildingBlock(block, building));
+    const directBlock = buildingBlocks.find(block => isImplicitBuildingBlock(block, building));
+    const directHasFloors = !!directBlock && floors.some(floor => idsMatch(floor.block_id, directBlock.id));
+    return [
+      ...(directHasFloors && directBlock ? [{ value: directBlock.id, label: 'Direct floors' }] : []),
+      ...visibleBlocks.map(block => ({ value: block.id, label: block.name })),
+    ];
   };
 
   const getFloorOptionsForSelection = (formData: any) => {
@@ -11030,9 +11040,14 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
   const getBlockOptionsForBuilding = (formData: any) => {
     const building = buildings.find(b => b.id == formData.building_id);
     if (!building) return [];
-    return blocks
-      .filter(block => idsMatch(block.building_id, building.id) && !isImplicitBuildingBlock(block, building))
-      .map(block => ({ value: block.id, label: block.name }));
+    const buildingBlocks = blocks.filter(block => idsMatch(block.building_id, building.id));
+    const visibleBlocks = buildingBlocks.filter(block => !isImplicitBuildingBlock(block, building));
+    const directBlock = buildingBlocks.find(block => isImplicitBuildingBlock(block, building));
+    const directHasFloors = !!directBlock && floors.some(floor => idsMatch(floor.block_id, directBlock.id));
+    return [
+      ...(directHasFloors && directBlock ? [{ value: directBlock.id, label: 'Direct floors' }] : []),
+      ...visibleBlocks.map(block => ({ value: block.id, label: block.name })),
+    ];
   };
 
   const getFloorOptionsForSelection = (formData: any) => {
@@ -11097,6 +11112,11 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
     return room?.capacity ?? item?.capacity ?? 'Unknown';
   };
 
+  const hasSelectableBlocksForBuilding = (buildingId: unknown) => {
+    if (!buildingId) return false;
+    return getBlockOptionsForBuilding({ building_id: buildingId }).length > 0;
+  };
+
   const scopedDepartments = isScopedHodUser
     ? departments.filter((department: any) => assignedHodDepartmentIds.some((departmentId) => idsMatch(department?.id, departmentId)))
     : departments;
@@ -11119,8 +11139,13 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
     !lookupFilters.school_id || department.school_id?.toString() === lookupFilters.school_id
   );
   const getHodSchoolIds = (hodUser: any) => Array.from(new Set(
-    getAssignedDepartmentIdsForUser(hodUser)
-      .map((departmentId) => departments.find((department: any) => idsMatch(department?.id, departmentId))?.school_id?.toString?.())
+    [
+      ...getAssignedSchoolIdsFromUser(hodUser),
+      ...getAssignedDepartmentIdsForUser(hodUser)
+        .map((departmentId) => departments.find((department: any) => idsMatch(department?.id, departmentId))?.school_id?.toString?.())
+        .filter(Boolean),
+      schools.find((school: any) => normalizeLookupValue(school?.name) === normalizeLookupValue(hodUser?.school))?.id?.toString?.() || '',
+    ]
       .filter(Boolean)
   ));
   const lookupHodUsers = hodUsers
@@ -11199,7 +11224,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
       label: 'Block',
       type: 'select',
       resetKeys: ['floor_id', 'room_id'],
-      disabled: (formData: any) => !formData.building_id || !buildingHasVisibleBlocks(formData.building_id),
+      disabled: (formData: any) => !formData.building_id || !hasSelectableBlocksForBuilding(formData.building_id),
       options: getBlockOptionsForBuilding,
       render: (item: any) => {
         const room = rooms.find(r => idsMatch(r.id, item.room_id));
@@ -11567,7 +11592,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
     return {
       ...item,
       building_id: building?.id || '',
-      block_id: block && !isImplicitBuildingBlock(block, building) ? block.id : '',
+      block_id: block?.id || '',
       floor_id: floor?.id || '',
       room_type: item?.room_type || room?.room_type || '',
       room_capacity: room?.capacity || item?.capacity || '',
