@@ -6970,6 +6970,14 @@ function GenericCRUD({
       : (field.formLabel || field.label);
     return field.required === false ? `${baseLabel} (Optional)` : baseLabel;
   };
+  const isFieldDisabled = (field: any) =>
+    typeof field.disabled === 'function' ? field.disabled(formData, editingItem) : !!field.disabled;
+  const isFieldReadOnly = (field: any) =>
+    typeof field.readOnly === 'function' ? field.readOnly(formData, editingItem) : !!field.readOnly;
+  const getFieldPlaceholder = (field: any) =>
+    typeof field.placeholder === 'function'
+      ? field.placeholder(formData, editingItem)
+      : field.placeholder;
 
   const defaultDataSorter = (left: any, right: any) => {
     for (const field of tableFields) {
@@ -7487,6 +7495,7 @@ function GenericCRUD({
                           required={f.required !== false}
                           value={formData[f.key] || ''}
                           onChange={e => applyFieldValueChange(f, e.target.value)}
+                          disabled={isFieldDisabled(f)}
                           className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
                         >
                           <option value="">Select {getFormFieldLabel(f)}</option>
@@ -7497,6 +7506,17 @@ function GenericCRUD({
                           })}
                         </select>
                       )
+                    ) : f.type === 'textarea' ? (
+                      <textarea
+                        required={f.required !== false}
+                        value={formData[f.key] || ''}
+                        onChange={e => applyFieldValueChange(f, e.target.value)}
+                        readOnly={isFieldReadOnly(f)}
+                        disabled={isFieldDisabled(f)}
+                        rows={f.rows || 3}
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500 resize-none"
+                        placeholder={getFieldPlaceholder(f) || `Enter ${getFormFieldLabel(f)}`}
+                      />
                     ) : f.type === 'password' ? (
                       <div className="space-y-2">
                         <div className="relative">
@@ -7505,8 +7525,10 @@ function GenericCRUD({
                             required={f.required !== false}
                             value={formData[f.key] || ''}
                             onChange={e => applyFieldValueChange(f, e.target.value)}
+                            readOnly={isFieldReadOnly(f)}
+                            disabled={isFieldDisabled(f)}
                             className="w-full px-3 py-2 pr-16 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
-                            placeholder={editingItem ? 'Enter new password' : `Enter ${getFormFieldLabel(f)}`}
+                            placeholder={getFieldPlaceholder(f) || (editingItem ? 'Enter new password' : `Enter ${getFormFieldLabel(f)}`)}
                           />
                           <button
                             type="button"
@@ -7534,9 +7556,11 @@ function GenericCRUD({
                           ? normalizeComparableDateValue(formData[f.key]) || ''
                           : (formData[f.key] || '')}
                         onChange={e => applyFieldValueChange(f, e.target.value)}
+                        readOnly={isFieldReadOnly(f)}
+                        disabled={isFieldDisabled(f)}
                         {...((f.type || 'text') === 'date' ? getDateFieldConstraint(f.key, formData) : {})}
                         className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
-                        placeholder={`Enter ${getFormFieldLabel(f)}`}
+                        placeholder={getFieldPlaceholder(f) || `Enter ${getFormFieldLabel(f)}`}
                       />
                     )}
                   </div>
@@ -11160,7 +11184,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
       label: 'Block',
       type: 'select',
       resetKeys: ['floor_id', 'room_id'],
-      show: (formData: any) => buildingHasVisibleBlocks(formData.building_id),
+      disabled: (formData: any) => !formData.building_id || !buildingHasVisibleBlocks(formData.building_id),
       options: getBlockOptionsForBuilding,
       render: (item: any) => {
         const room = rooms.find(r => idsMatch(r.id, item.room_id));
@@ -11193,7 +11217,10 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
       options: getAvailableRoomOptions,
       onChange: (nextData: any, roomId: string) => {
         const room = rooms.find(r => r.id?.toString() === roomId?.toString());
-        return room ? { ...nextData, room_type: room.room_type, capacity: nextData.capacity || room.capacity } : nextData;
+        if (!room) return nextData;
+        return isHodUser
+          ? { ...nextData, room_type: room.room_type, room_capacity: room.capacity, capacity: nextData.capacity || room.capacity }
+          : { ...nextData, room_type: room.room_type, room_capacity: room.capacity };
       },
     },
   ];
@@ -11213,8 +11240,24 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
         {
           key: 'room_capacity',
           label: 'Room Capacity',
+          formOnly: true,
+          readOnly: true,
+          required: false,
+          placeholder: 'Auto-filled after room selection',
+        },
+        {
+          key: 'room_capacity',
+          label: 'Room Capacity',
           tableOnly: true,
           render: getRoomCapacity,
+        },
+        {
+          key: 'room_type',
+          label: 'Room Type',
+          formOnly: true,
+          readOnly: true,
+          required: false,
+          placeholder: 'Auto-filled after room selection',
         },
         {
           key: 'room_type',
@@ -11242,6 +11285,22 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
           options: (formData: any) => getHodOptionsForSchool(formData.school_id),
         },
         ...baseFields.slice(1),
+        {
+          key: 'room_type',
+          label: 'Room Type',
+          formOnly: true,
+          readOnly: true,
+          required: false,
+          placeholder: 'Auto-filled after room selection',
+        },
+        {
+          key: 'room_capacity',
+          label: 'Room Capacity',
+          formOnly: true,
+          readOnly: true,
+          required: false,
+          placeholder: 'Auto-filled after room selection',
+        },
         {
           key: 'room_type',
           label: 'Room Type',
@@ -11488,6 +11547,8 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
       building_id: building?.id || '',
       block_id: block && !isImplicitBuildingBlock(block, building) ? block.id : '',
       floor_id: floor?.id || '',
+      room_type: item?.room_type || room?.room_type || '',
+      room_capacity: room?.capacity || item?.capacity || '',
     };
   };
 
