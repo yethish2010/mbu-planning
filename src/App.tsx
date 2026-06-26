@@ -11151,12 +11151,14 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
   const lookupHodUsers = hodUsers
     .filter((hodUser: any) => !lookupFilters.school_id || getHodSchoolIds(hodUser).includes(lookupFilters.school_id))
     .sort((a: any, b: any) => (a.full_name || '').localeCompare(b.full_name || ''));
+  const getHodDisplayLabel = (hodUser: any) =>
+    `${hodUser?.full_name || hodUser?.employee_id || 'HOD'}${hodUser?.employee_id ? ` (${hodUser.employee_id})` : ''}`;
   const getHodOptionsForSchool = (schoolId: string) => hodUsers
     .filter((hodUser: any) => !schoolId || getHodSchoolIds(hodUser).includes(schoolId))
     .sort((a: any, b: any) => (a.full_name || '').localeCompare(b.full_name || ''))
     .map((hodUser: any) => ({
       value: hodUser.id,
-      label: `${hodUser.full_name || hodUser.employee_id || 'HOD'}${hodUser.employee_id ? ` (${hodUser.employee_id})` : ''}`,
+      label: getHodDisplayLabel(hodUser),
     }));
   const myAllocatedRooms = isScopedHodUser
     ? hodRoomAllocations
@@ -11332,9 +11334,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
           render: (item: any) => {
             const hodUser = hodUsers.find((entry: any) => idsMatch(entry.id, item.hod_user_id));
             if (!hodUser) return item?.hod_user_id || 'Unknown';
-            const name = hodUser.full_name || 'Unknown';
-            const employeeId = hodUser.employee_id ? ` (${hodUser.employee_id})` : '';
-            return `${name}${employeeId}`;
+            return getHodDisplayLabel(hodUser);
           },
         },
         ...baseFields.slice(1),
@@ -11381,6 +11381,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
         normalizeLookupValue(hodUser.full_name),
         normalizeLookupValue(hodUser.employee_id),
         normalizeLookupValue(hodUser.email),
+        normalizeLookupValue(getHodDisplayLabel(hodUser)),
       ].includes(normalized)
     ) || null;
   };
