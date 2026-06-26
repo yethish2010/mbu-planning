@@ -12844,11 +12844,17 @@ function BookingManagement() {
     const requiredCapacity = parseInt(booking.required_capacity || booking.student_count || '0', 10) || 0;
     const preferredBuilding = normalizeLookupValue(booking.preferred_building);
     const requestedRoomType = normalizeRoomTypeValue(booking.room_type);
+    const isAdditionalRoomRequest = normalizeLookupValue(booking.request_type) === 'additional room';
     return candidateRooms
       .filter(room => {
         if (!isRoomReservable(room)) return false;
         if (requiredCapacity > 0 && (parseInt(room.capacity, 10) || 0) < requiredCapacity) return false;
-        if (requestedRoomType && requestedRoomType !== 'additional room requirement' && normalizeRoomTypeValue(room.room_type) !== requestedRoomType) return false;
+        if (
+          !isAdditionalRoomRequest &&
+          requestedRoomType &&
+          requestedRoomType !== 'additional room requirement' &&
+          normalizeRoomTypeValue(room.room_type) !== requestedRoomType
+        ) return false;
         return true;
       })
       .sort((left, right) => {
@@ -12857,6 +12863,9 @@ function BookingManagement() {
         const leftPreferred = preferredBuilding && normalizeLookupValue(leftDetails.building?.name) === preferredBuilding ? 1 : 0;
         const rightPreferred = preferredBuilding && normalizeLookupValue(rightDetails.building?.name) === preferredBuilding ? 1 : 0;
         if (leftPreferred !== rightPreferred) return rightPreferred - leftPreferred;
+        const leftRoomTypePreferred = requestedRoomType && normalizeRoomTypeValue(left.room_type) === requestedRoomType ? 1 : 0;
+        const rightRoomTypePreferred = requestedRoomType && normalizeRoomTypeValue(right.room_type) === requestedRoomType ? 1 : 0;
+        if (leftRoomTypePreferred !== rightRoomTypePreferred) return rightRoomTypePreferred - leftRoomTypePreferred;
         const leftCapacityDiff = requiredCapacity > 0 ? Math.abs((parseInt(left.capacity, 10) || 0) - requiredCapacity) : 0;
         const rightCapacityDiff = requiredCapacity > 0 ? Math.abs((parseInt(right.capacity, 10) || 0) - requiredCapacity) : 0;
         if (leftCapacityDiff !== rightCapacityDiff) return leftCapacityDiff - rightCapacityDiff;
