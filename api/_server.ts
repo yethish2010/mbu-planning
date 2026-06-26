@@ -558,6 +558,7 @@ await ensureColumn("users", "access_scope", "TEXT");
 await ensureColumn("users", "access_paths", "TEXT");
 await ensureColumn("users", "dashboard_view_mode", "TEXT");
 await ensureColumn("users", "force_password_change", "INTEGER DEFAULT 0");
+await ensureColumn("bookings", "requester_user_id", "INTEGER");
 await ensureColumn("user_school_assignments", "is_primary", "INTEGER DEFAULT 0");
 await ensureColumn("user_school_assignments", "valid_from", "DATE");
 await ensureColumn("user_school_assignments", "valid_until", "DATE");
@@ -2688,7 +2689,11 @@ const backfillNotificationsIfEmpty = async () => {
 };
 
 const getNotificationAudienceParams = (user: any) => {
-  const normalizedRole = user?.role || null;
+  const normalizedRole = normalizeRoleLabel(user?.role);
+  const normalizedRoleAliases = Array.from(new Set([
+    normalizedRole,
+    user?.role?.toString().trim() || null,
+  ].filter(Boolean)));
   const normalizedName = user?.name?.toString().trim().toLowerCase() || null;
   const normalizedDepartments = Array.from(new Set([
     user?.department?.toString().trim().toLowerCase() || null,
@@ -2697,13 +2702,13 @@ const getNotificationAudienceParams = (user: any) => {
       .filter(Boolean),
   ].filter(Boolean)));
 
-  return { normalizedRole, normalizedName, normalizedDepartments };
+  return { normalizedRoleAliases, normalizedName, normalizedDepartments };
 };
 
 const getNotificationsForUser = async (user: any, limit = 20) => {
   await ensureNotificationsTable();
   await ensureNotificationReadsTable();
-  const { normalizedRole, normalizedName, normalizedDepartments } = getNotificationAudienceParams(user);
+  const { normalizedRoleAliases, normalizedName, normalizedDepartments } = getNotificationAudienceParams(user);
 
   const notifications = await db.prepare(`
     SELECT
@@ -2714,14 +2719,21 @@ const getNotificationsForUser = async (user: any, limit = 20) => {
       ON nr.notification_id = n.id
       AND nr.user_id = ?
     WHERE (n.target_role IS NULL AND n.target_name IS NULL AND n.target_department IS NULL)
-      OR (n.target_role = ? AND n.target_department IS NULL)
       OR LOWER(TRIM(COALESCE(n.target_name, ''))) = ?
+      OR n.target_role IS NOT NULL
     ORDER BY n.created_at DESC, n.id DESC
     LIMIT ?
-  `).all(user.id, normalizedRole, normalizedName, Math.max(limit * 5, 100));
+  `).all(user.id, normalizedName, Math.max(limit * 10, 200));
 
   return notifications
     .filter((notification: any) => {
+      const targetRole = notification?.target_role?.toString().trim();
+      if (targetRole) {
+        const normalizedTargetRole = normalizeRoleLabel(targetRole);
+        if (!normalizedRoleAliases.includes(normalizedTargetRole) && !normalizedRoleAliases.includes(targetRole)) {
+          return false;
+        }
+      }
       const targetDepartment = notification?.target_department?.toString().trim().toLowerCase();
       if (!targetDepartment) return true;
       return normalizedDepartments.includes(targetDepartment);
@@ -4794,6 +4806,15 @@ const bookingRequesterRevisionStatuses = ["No Room Available", "Waitlisted", "Cl
 const normalizeBookingRequestType = (value: any) =>
   value?.toString().trim() === "Additional Room" ? "Additional Room" : "Department Room";
 const isAdditionalRoomBooking = (booking: any) => normalizeBookingRequestType(booking?.request_type) === "Additional Room";
+const normalizeBookingRequesterValue = (value: any) => value?.toString().trim().toLowerCase() || "";
+const isBookingRequester = (booking: any, user: any) => {
+  const bookingRequesterUserId = booking?.requester_user_id?.toString().trim();
+  const currentUserId = user?.id?.toString().trim();
+  if (bookingRequesterUserId && currentUserId && bookingRequesterUserId === currentUserId) return true;
+  const bookingRequesterName = normalizeBookingRequesterValue(booking?.faculty_name);
+  const currentUserName = normalizeBookingRequesterValue(user?.name);
+  return !!bookingRequesterName && bookingRequesterName === currentUserName;
+};
 const getAccessibleDepartmentIdSet = (user: any) =>
   new Set(
     (Array.isArray(user?.assigned_department_ids) ? user.assigned_department_ids : [])
@@ -4827,10 +4848,31 @@ const getApprovedBookingConflict = async (booking: any, excludeId?: string | num
 };
 
 const getDuplicateOpenBookingRequest = async (booking: any, excludeId?: string | number) => {
-  if (!booking?.faculty_name || !booking?.room_id || !booking?.date || !booking?.start_time || !booking?.end_time) return null;
+  if ((!booking?.requester_user_id && !booking?.faculty_name) || !booking?.room_id || !booking?.date || !booking?.start_time || !booking?.end_time) return null;
+  const requesterUserId = booking?.requester_user_id?.toString().trim();
+  if (requesterUserId) {
+    return await db.prepare(`
+      SELECT id FROM bookings
+      WHERE requester_user_id = ?
+      AND room_id = ?
+      AND date = ?
+      AND start_time = ?
+      AND end_time = ?
+      AND status IN (${openBookingStatuses.map(() => "?").join(", ")})
+      ${excludeId ? "AND id != ?" : ""}
+    `).get(
+      requesterUserId,
+      booking.room_id,
+      booking.date,
+      booking.start_time,
+      booking.end_time,
+      ...openBookingStatuses,
+      ...(excludeId ? [excludeId] : [])
+    ) as any;
+  }
   return await db.prepare(`
     SELECT id FROM bookings
-    WHERE faculty_name = ?
+    WHERE LOWER(TRIM(faculty_name)) = LOWER(TRIM(?))
     AND room_id = ?
     AND date = ?
     AND start_time = ?
@@ -4886,7 +4928,7 @@ const getBookingWorkflowItems = async (booking: any) => {
 const canAccessBookingWorkflow = async (booking: any, user: any) => {
   if (!booking || !user) return false;
   if (isDecisionRole(user.role)) return true;
-  if (booking.faculty_name === user.name) return true;
+  if (isBookingRequester(booking, user)) return true;
   if (user.role === "HOD" && booking.department_id != null) {
     const departmentIds = getAccessibleDepartmentIdSet(user);
     if (departmentIds.has(booking.department_id.toString())) return true;
@@ -5216,21 +5258,21 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
           if (scope.departmentIdsInSchool.length > 0) {
             const allowedDepartmentIds = new Set(scope.departmentIdsInSchool);
             return res.json(applyBookingQueryFilters(bookings.filter((booking: any) =>
-              booking.faculty_name === user.name ||
+              isBookingRequester(booking, user) ||
               (booking.department_id != null && allowedDepartmentIds.has(booking.department_id.toString()))
             ), req.query));
           }
-          return res.json(applyBookingQueryFilters(bookings.filter((booking: any) => booking.faculty_name === user.name), req.query));
+          return res.json(applyBookingQueryFilters(bookings.filter((booking: any) => isBookingRequester(booking, user)), req.query));
         }
         if (user.role === "HOD") {
           const accessibleDepartmentIds = getAccessibleDepartmentIdSet(user);
           return res.json(applyBookingQueryFilters(bookings.filter((booking: any) =>
-            booking.faculty_name === user.name
+            isBookingRequester(booking, user)
             || (booking?.department_id != null && accessibleDepartmentIds.has(booking.department_id.toString()))
             || (!!user.department && booking.department_name === user.department)
           ), req.query));
         }
-        return res.json(applyBookingQueryFilters(bookings.filter((booking: any) => booking.faculty_name === user.name), req.query));
+        return res.json(applyBookingQueryFilters(bookings.filter((booking: any) => isBookingRequester(booking, user)), req.query));
       }
 
       if (tableName === "batch_room_allocations") {
@@ -5773,6 +5815,8 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
 
       if (tableName === "bookings") {
         req.body.request_type = normalizeBookingRequestType(req.body.request_type);
+        req.body.faculty_name = (req as any).user?.name?.toString().trim() || req.body.faculty_name?.toString().trim() || "Unknown";
+        req.body.requester_user_id = (req as any).user?.id ?? null;
         const requiresAssignedRoom = !isAdditionalRoomBooking(req.body);
         if (!req.body.date || !req.body.start_time || !req.body.end_time) {
           return res.status(400).json({ error: "Date, start time, and end time are required." });
@@ -5842,6 +5886,18 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
           values.push(req.body.purpose_type);
         } else {
           values[fields.indexOf("purpose_type")] = req.body.purpose_type;
+        }
+        if (!fields.includes("faculty_name")) {
+          fields.push("faculty_name");
+          values.push(req.body.faculty_name);
+        } else {
+          values[fields.indexOf("faculty_name")] = req.body.faculty_name;
+        }
+        if (!fields.includes("requester_user_id")) {
+          fields.push("requester_user_id");
+          values.push(req.body.requester_user_id);
+        } else {
+          values[fields.indexOf("requester_user_id")] = req.body.requester_user_id;
         }
         if (!fields.includes("timing_override")) {
           fields.push("timing_override");
@@ -6040,7 +6096,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         req.body.purpose_type = nextBooking.purpose_type;
         const requestedStatus = req.body.status;
         const role = (req as any).user.role;
-        const isRequester = existingItem.faculty_name === (req as any).user.name;
+        const isRequester = isBookingRequester(existingItem, (req as any).user);
         const accessibleDepartmentIds = getAccessibleDepartmentIdSet((req as any).user);
         const isDepartmentHod = role === "HOD"
           && nextBooking?.department_id != null
@@ -6469,7 +6525,7 @@ app.post("/api/bookings/:id/alternatives/:alternativeId/respond", authenticate, 
     if (!booking) {
       return res.status(404).json({ error: "Booking not found." });
     }
-    if (booking.faculty_name !== actor?.name) {
+    if (!isBookingRequester(booking, actor)) {
       return res.status(403).json({ error: "Only the requester can respond to this alternative." });
     }
     const alternative = await db.prepare("SELECT * FROM booking_alternatives WHERE id = ?").get(req.params.alternativeId) as any;
@@ -6576,7 +6632,7 @@ app.post("/api/bookings/:id/revise", authenticate, async (req, res) => {
     if (!booking) {
       return res.status(404).json({ error: "Booking not found." });
     }
-    if (booking.faculty_name !== actor?.name) {
+    if (!isBookingRequester(booking, actor)) {
       return res.status(403).json({ error: "Only the requester can revise this request." });
     }
     if (!bookingRequesterRevisionStatuses.includes(booking.status)) {

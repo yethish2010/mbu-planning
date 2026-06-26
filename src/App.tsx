@@ -5261,7 +5261,7 @@ function DashboardHome() {
     [roleSchoolsById, userDepartment, userSchool],
   );
   const scopedDeanSchoolIds = useMemo(
-    () => new Set(
+    () => new Set<string>(
       (assignedSchoolIds.length > 0
         ? assignedSchoolIds
         : [deanSchool?.id?.toString?.() || '']
@@ -12069,7 +12069,7 @@ function BookingManagement() {
     const query = filteredParams.toString();
     const res = await fetch(`/api/bookings${query ? `?${query}` : ''}`, { credentials: 'include' });
     const data = await res.json();
-    setMyBookings(data.filter((b: any) => b.faculty_name === user?.name || canApproveBookings || canRecommendBookings || isSchoolDean));
+    setMyBookings(data.filter((b: any) => isBookingRequester(b) || canApproveBookings || canRecommendBookings || isSchoolDean));
   };
 
   useEffect(() => {
@@ -12475,7 +12475,13 @@ function BookingManagement() {
   const getBookingPolicyLabel = (booking: any) => booking.purpose_type || 'Non-Academic';
   const isTemporaryOverrideBookingRecord = (booking: any) => Number(booking.timing_override || 0) === 1;
   const getBookingAssignmentKey = (booking: any) => booking.request_group_id || booking.id?.toString?.() || '';
-  const canRequesterManageBooking = (booking: any) => booking.faculty_name === user?.name && !canApproveBookings;
+  const isBookingRequester = (booking: any) => {
+    const bookingRequesterUserId = booking?.requester_user_id?.toString?.().trim?.() || '';
+    const currentUserId = user?.id?.toString?.().trim?.() || '';
+    if (bookingRequesterUserId && currentUserId && bookingRequesterUserId === currentUserId) return true;
+    return normalizeLookupValue(booking?.faculty_name) === normalizeLookupValue(user?.name);
+  };
+  const canRequesterManageBooking = (booking: any) => isBookingRequester(booking) && !canApproveBookings;
   const getLatestPendingAlternative = (alternatives: any[]) =>
     (Array.isArray(alternatives) ? alternatives : []).find((item: any) => item?.status === 'Pending Response') || null;
   const formatAlternativeSummary = (alternative: any) => {
@@ -12975,7 +12981,7 @@ function BookingManagement() {
     setBookingMessage({
       type: 'success',
       text: status === 'Rejected'
-        ? (booking.faculty_name === user?.name ? 'Request cancelled.' : 'Request rejected.')
+        ? (isBookingRequester(booking) ? 'Request cancelled.' : 'Request rejected.')
         : status === 'Postponed'
           ? 'Postpone request sent to the requester.'
           : status === 'No Room Available'
@@ -13164,7 +13170,7 @@ function BookingManagement() {
     const actionLabel = status === 'Approved'
       ? 'Approve Booking'
       : status === 'Rejected'
-        ? (booking?.faculty_name === user?.name && !canApproveBookings ? 'Cancel Request' : 'Reject Request')
+        ? (isBookingRequester(booking) && !canApproveBookings ? 'Cancel Request' : 'Reject Request')
         : status === 'Postponed'
           ? 'Request Postpone'
           : status === 'HOD Recommended'
@@ -13181,7 +13187,7 @@ function BookingManagement() {
     const noteLabel = status === 'Approved'
       ? 'Approval note'
       : status === 'Rejected'
-        ? (booking?.faculty_name === user?.name && !canApproveBookings ? 'Cancellation note' : 'Rejection note')
+        ? (isBookingRequester(booking) && !canApproveBookings ? 'Cancellation note' : 'Rejection note')
       : status === 'Postponed'
         ? 'Postponement note'
         : status === 'HOD Recommended'
@@ -13945,10 +13951,10 @@ function BookingManagement() {
                           <button onClick={() => updateBookingStatus(booking, 'Rejected')} className="px-2 py-1 bg-rose-50 text-rose-700 rounded text-xs font-bold">Reject</button>
                         </>
                       )}
-                      {displayStatus !== 'Past' && displayStatus !== 'Rejected' && displayStatus !== 'Postponed' && booking.faculty_name === user?.name && !canApproveBookings && (
+                      {displayStatus !== 'Past' && displayStatus !== 'Rejected' && displayStatus !== 'Postponed' && isBookingRequester(booking) && !canApproveBookings && (
                         <button onClick={() => updateBookingStatus(booking, 'Rejected')} className="px-2 py-1 bg-slate-100 text-slate-600 rounded text-xs font-bold">Cancel Request</button>
                       )}
-                      {['Rejected', 'Postponed'].includes(displayStatus) && booking.faculty_name === user?.name && (
+                      {['Rejected', 'Postponed'].includes(displayStatus) && isBookingRequester(booking) && (
                         <button onClick={() => updateBookingStatus(booking, 'Pending')} className="px-2 py-1 bg-orange-50 text-orange-700 rounded text-xs font-bold">Reopen Request</button>
                       )}
                       {canRequesterManageBooking(booking) && ['No Room Available', 'Waitlisted', 'Clarification Required', 'Awaiting Alternative Response'].includes(displayStatus) && (
