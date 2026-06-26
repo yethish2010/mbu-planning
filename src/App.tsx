@@ -11179,12 +11179,6 @@ function DepartmentAllocationManagement() {
         return room ? { ...nextData, room_type: room.room_type, capacity: nextData.capacity || room.capacity } : nextData;
       },
     },
-    {
-      key: 'room_capacity',
-      label: 'Room Capacity',
-      tableOnly: true,
-      render: getRoomCapacity,
-    },
   ];
 
   const fields = isHodUser
@@ -11199,6 +11193,12 @@ function DepartmentAllocationManagement() {
             .map(d => ({ value: d.id, label: d.name })),
         },
         ...baseFields.slice(1),
+        {
+          key: 'room_capacity',
+          label: 'Room Capacity',
+          tableOnly: true,
+          render: getRoomCapacity,
+        },
         {
           key: 'room_type',
           label: 'Room Type',
@@ -11235,7 +11235,7 @@ function DepartmentAllocationManagement() {
           },
         },
         {
-          key: 'capacity',
+          key: 'room_capacity',
           label: 'Room Capacity',
           tableOnly: true,
           render: (item: any) => getRoomCapacity(item),
@@ -11679,9 +11679,13 @@ function DepartmentAllocationManagement() {
               {lookupResults.length === 0 && (
                 <tr>
                   <td colSpan={10} className="px-4 py-8 text-center text-sm text-slate-400 italic">
-                    {isHodUser
-                      ? `Select a school, department, or ${SEMESTER_TYPE_LABEL.toLowerCase()} to view department room mappings.`
-                      : `Select a school, HOD, or ${SEMESTER_TYPE_LABEL.toLowerCase()} to view HOD room allocations.`}
+                    {hasActiveLookupFilters
+                      ? isHodUser
+                        ? 'No department room mappings found for the selected filters.'
+                        : 'No HOD room allocations found for the selected filters.'
+                      : isHodUser
+                        ? `Select a school, department, or ${SEMESTER_TYPE_LABEL.toLowerCase()} to view department room mappings.`
+                        : `Select a school, HOD, or ${SEMESTER_TYPE_LABEL.toLowerCase()} to view HOD room allocations.`}
                   </td>
                 </tr>
               )}
