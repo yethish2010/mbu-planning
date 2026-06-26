@@ -3856,6 +3856,9 @@ const DEPENDENCY_TABLE_ROUTE_MAP: Record<string, string> = {
   rooms: '/rooms',
   schools: '/schools',
   departments: '/departments',
+  users: '/users',
+  hod_room_allocations: '/hod-room-allocation',
+  department_allocations: '/dept-allocation',
 };
 
 function DependencyGuard({ children, dependencies }: { children: React.ReactNode, dependencies: { table: string, label: string }[] }) {
@@ -3935,7 +3938,8 @@ function Sidebar() {
     { name: 'Department Management', icon: Layers, path: '/departments', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)'] },
     { name: 'Timing Profile Management', icon: Clock, path: '/timing-profiles', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)'] },
     { name: 'Academic Calendar', icon: Calendar, path: '/academic-calendars', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)'] },
-    { name: 'Department Room Mapping', icon: DoorOpen, path: '/dept-allocation', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)', 'HOD'] },
+    { name: 'HOD Room Allocation', icon: DoorOpen, path: '/hod-room-allocation', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)'] },
+    { name: 'Department Room Mapping', icon: DoorOpen, path: '/dept-allocation', roles: ['HOD'] },
     { name: 'Batch Room Allocation', icon: DoorOpen, path: '/batch-room-allocations', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)'] },
     { name: 'Equipment Management', icon: Wrench, path: '/equipment', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Maintenance Staff', 'Dean (P&M)'] },
     { name: 'Schedule Records', icon: Calendar, path: '/scheduling', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Timetable Coordinator'] },
@@ -4709,8 +4713,21 @@ export default function App() {
               </Layout>
             </ProtectedRoute>
           } />
+          <Route path="/hod-room-allocation" element={
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)']}>
+              <Layout title="HOD Room Allocation">
+                <DependencyGuard dependencies={[
+                  { table: 'schools', label: 'Schools' },
+                  { table: 'users', label: 'User Management' },
+                  { table: 'rooms', label: 'Rooms' }
+                ]}>
+                  <HODRoomAllocationManagement />
+                </DependencyGuard>
+              </Layout>
+            </ProtectedRoute>
+          } />
           <Route path="/dept-allocation" element={
-            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)', 'HOD']}>
+            <ProtectedRoute roles={['HOD']}>
               <Layout title="Department Room Mapping">
                 <DependencyGuard dependencies={[
                   { table: 'departments', label: 'Departments' },
@@ -10859,7 +10876,7 @@ function BatchRoomAllocationManagement() {
   );
 }
 
-function DepartmentAllocationManagement() {
+function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
   const { user } = useAuth();
   const [schools, setSchools] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
@@ -10875,7 +10892,7 @@ function DepartmentAllocationManagement() {
   const [lookupPageSize] = useState(25);
   const [lookupTotal, setLookupTotal] = useState(0);
   const semesterOptions = ['Odd', 'Even'];
-  const isHodUser = normalizeRoleValue(user?.role) === 'hod';
+  const isHodUser = mode === 'department';
   const assignedHodDepartmentIds = useMemo(
     () => isHodUser ? getAssignedDepartmentIdsForUser(user) : [],
     [isHodUser, user],
@@ -11413,7 +11430,7 @@ function DepartmentAllocationManagement() {
 
     if (validEntries.length === 0) {
       return {
-        message: `0 department room mappings imported.${skippedCount > 0 ? ` ${skippedCount} row(s) were skipped — see audit below for per-row details.` : ' Ensure the file has the correct column headers and data.'}`,
+        message: `0 ${mappingType.toLowerCase()} records imported.${skippedCount > 0 ? ` ${skippedCount} row(s) were skipped — see audit below for per-row details.` : ' Ensure the file has the correct column headers and data.'}`,
         auditTitle: `${mappingType} Import Results`,
         auditHeaders,
         auditRows,
@@ -11741,6 +11758,14 @@ function DepartmentAllocationManagement() {
       />
     </div>
   );
+}
+
+function HODRoomAllocationManagement() {
+  return <RoomMappingManagement mode="hod" />;
+}
+
+function DepartmentAllocationManagement() {
+  return <RoomMappingManagement mode="department" />;
 }
 
 function EquipmentManagement() {
