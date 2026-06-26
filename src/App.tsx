@@ -3896,15 +3896,15 @@ function Sidebar() {
     { name: 'Dashboard', icon: LayoutDashboard, path: '/', roles: ['Administrator', 'Admin', 'Master Admin', 'Faculty', 'HOD', 'Dean', 'Timetable Coordinator', 'Event Coordinator', 'Dean (P&M)', 'Deputy Dean (P&M)', 'Maintenance Staff', 'Infrastructure Manager', ...executiveMenuRoles] },
     { name: 'User Management', icon: Users, path: '/users', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)', 'HOD'] },
     { name: 'Campus Management', icon: Globe, path: '/campuses', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)'] },
-    { name: 'Building Management', icon: Building2, path: '/buildings', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)'] },
-    { name: 'Block Management', icon: Layers, path: '/blocks', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)'] },
-    { name: 'Floor Management', icon: Layers, path: '/floors', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)'] },
-    { name: 'Room Management', icon: DoorOpen, path: '/rooms', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)'] },
+    { name: 'Building Management', icon: Building2, path: '/buildings', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)'] },
+    { name: 'Block Management', icon: Layers, path: '/blocks', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)'] },
+    { name: 'Floor Management', icon: Layers, path: '/floors', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)'] },
+    { name: 'Room Management', icon: DoorOpen, path: '/rooms', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)'] },
     { name: 'School Management', icon: BookOpen, path: '/schools', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)'] },
     { name: 'Department Management', icon: Layers, path: '/departments', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)'] },
     { name: 'Timing Profile Management', icon: Clock, path: '/timing-profiles', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)'] },
     { name: 'Academic Calendar', icon: Calendar, path: '/academic-calendars', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)'] },
-    { name: 'Department Room Mapping', icon: DoorOpen, path: '/dept-allocation', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)'] },
+    { name: 'Department Room Mapping', icon: DoorOpen, path: '/dept-allocation', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)'] },
     { name: 'Batch Room Allocation', icon: DoorOpen, path: '/batch-room-allocations', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)'] },
     { name: 'Equipment Management', icon: Wrench, path: '/equipment', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Maintenance Staff', 'Dean (P&M)'] },
     { name: 'Schedule Records', icon: Calendar, path: '/scheduling', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Timetable Coordinator'] },
@@ -4595,7 +4595,7 @@ export default function App() {
           {/* CRUD Routes Placeholder */}
           <Route path="/campuses" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)']}><Layout title="Campus Management"><CampusManagement /></Layout></ProtectedRoute>} />
           <Route path="/buildings" element={
-            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)']}>
               <Layout title="Building Management">
                 <DependencyGuard dependencies={[{ table: 'campuses', label: 'Campuses' }]}>
                   <BuildingManagement />
@@ -4604,7 +4604,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/blocks" element={
-            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)']}>
               <Layout title="Block Management">
                 <DependencyGuard dependencies={[
                   { table: 'campuses', label: 'Campuses' },
@@ -4616,7 +4616,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/floors" element={
-            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)']}>
               <Layout title="Floor Management">
                 <DependencyGuard dependencies={[
                   { table: 'buildings', label: 'Buildings' }
@@ -4627,7 +4627,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/rooms" element={
-            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)']}>
               <Layout title="Room Management">
                 <DependencyGuard dependencies={[
                   { table: 'blocks', label: 'Blocks' },
@@ -4679,7 +4679,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/dept-allocation" element={
-            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)']}>
               <Layout title="Department Room Mapping">
                 <DependencyGuard dependencies={[
                   { table: 'departments', label: 'Departments' },
