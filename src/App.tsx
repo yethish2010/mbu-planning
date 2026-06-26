@@ -11322,7 +11322,20 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
           key: 'hod_user_id',
           label: 'HOD',
           type: 'select',
+          formOnly: true,
           options: (formData: any) => getHodOptionsForSchool(formData.school_id),
+        },
+        {
+          key: 'hod_user_id',
+          label: 'HOD',
+          tableOnly: true,
+          render: (item: any) => {
+            const hodUser = hodUsers.find((entry: any) => idsMatch(entry.id, item.hod_user_id));
+            if (!hodUser) return item?.hod_user_id || 'Unknown';
+            const name = hodUser.full_name || 'Unknown';
+            const employeeId = hodUser.employee_id ? ` (${hodUser.employee_id})` : '';
+            return `${name}${employeeId}`;
+          },
         },
         ...baseFields.slice(1),
         {
