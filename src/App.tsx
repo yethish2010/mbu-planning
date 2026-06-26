@@ -9865,6 +9865,10 @@ function BatchRoomAllocationManagement() {
   const [lookupPageSize] = useState(25);
   const [lookupTotal, setLookupTotal] = useState(0);
   const isHodUser = normalizeRoleValue(user?.role) === 'hod';
+  const assignedHodDepartmentIds = useMemo(
+    () => isHodUser ? getAssignedDepartmentIdsForUser(user) : [],
+    [isHodUser, user],
+  );
   const scopedDepartmentIds = useMemo(
     () => getScopedDepartmentIdsForUser(user, selectedHodDepartmentId),
     [selectedHodDepartmentId, user],
@@ -10011,7 +10015,7 @@ function BatchRoomAllocationManagement() {
   const hodDepartmentRoomMappings = useMemo(() => {
     if (!isHodUser) return [];
     return departmentAllocations
-      .filter((allocation: any) => scopedDepartmentIds.some((departmentId) => idsMatch(allocation?.department_id, departmentId)))
+      .filter((allocation: any) => assignedHodDepartmentIds.some((departmentId) => idsMatch(allocation?.department_id, departmentId)))
       .map((allocation: any) => {
         const room = rooms.find((item: any) => idsMatch(item.id, allocation.room_id));
         const department = departments.find((item: any) => idsMatch(item.id, allocation.department_id));
@@ -10039,7 +10043,7 @@ function BatchRoomAllocationManagement() {
         if (semesterCompare !== 0) return semesterCompare;
         return (a.room ? getRoomDisplayLabel(a.room, rooms) : '').localeCompare(b.room ? getRoomDisplayLabel(b.room, rooms) : '');
       });
-  }, [batchAllocations, departments, departmentAllocations, isHodUser, rooms, scopedDepartmentIds, floors, blocks, buildings]);
+  }, [assignedHodDepartmentIds, batchAllocations, departments, departmentAllocations, isHodUser, rooms, floors, blocks, buildings]);
   const hodDepartmentRoomSummary = useMemo(() => {
     if (!isHodUser) {
       return { departments: 0, mappedRows: 0, uniqueRooms: 0, roomsInUse: 0, roomsAvailable: 0 };
