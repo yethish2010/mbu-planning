@@ -2777,7 +2777,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   'Department Allocation': {
-    headers: ['School', 'Department', 'Semester Type', 'Building', 'Block', 'Floor', 'Room', 'Room Type', 'Required Capacity'],
+    headers: ['School', 'Department', 'Semester Type', 'Building', 'Block', 'Floor', 'Room', 'Room Type', 'Room Capacity', 'Required Capacity'],
     exampleRows: [
       {
         School: 'School of Engineering',
@@ -2788,12 +2788,19 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Floor: 'Ground Floor',
         Room: '101',
         'Room Type': 'Classroom',
+        'Room Capacity': 70,
         'Required Capacity': 60,
       },
     ],
+    instructions: [
+      'Use this template in the HOD-level Department Room Mapping module after the matching HOD Room Allocation rows are already created.',
+      'School, Department, Semester Type, Building, Block, Floor, and Room must identify a room already allocated to that HOD for the same semester.',
+      'Room Type and Room Capacity are included to match the on-screen fields; they can be left blank because the app auto-fills them from Room Management during create/edit and validates them during import.',
+      'Required Capacity is the department-usable capacity for that mapped room and cannot exceed the actual room capacity.',
+    ],
   },
   'HOD Room Allocation': {
-    headers: ['School', 'HOD', 'Semester Type', 'Building', 'Block', 'Floor', 'Room', 'Notes'],
+    headers: ['School', 'HOD', 'Semester Type', 'Building', 'Block', 'Floor', 'Room', 'Room Type', 'Room Capacity', 'Notes'],
     exampleRows: [
       {
         School: 'School of Paramedical Allied & HealthCare Sciences',
@@ -2803,6 +2810,8 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Block: 'Direct floors',
         Floor: 'Floor 4',
         Room: '4001 & 4002',
+        'Room Type': 'Seminar Hall',
+        'Room Capacity': 140,
         Notes: 'Dean (P&M) allocates this shared seminar hall to the HOD room pool first.',
       },
       {
@@ -2813,6 +2822,8 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Block: 'Direct floors',
         Floor: 'Floor 4',
         Room: '4003 & 4004',
+        'Room Type': 'Seminar Hall',
+        'Room Capacity': 140,
         Notes: 'HOD can later map this room to one department or multiple departments as shared.',
       },
     ],
@@ -2820,6 +2831,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       'Use this template in Dean (P&M) or infrastructure-level room mapping to allocate rooms to HOD users before any department mapping is created.',
       'HOD can match Full Name, Employee ID, or Email Address from User Management, but the selected user must have role = HOD.',
       'After these rows are created, the HOD can open Department Room Mapping and assign only these allocated rooms to one or more of their departments.',
+      'Room Type and Room Capacity are included to match the form fields; they can be left blank because the app auto-fills them from the selected room.',
       'Semester Type accepts only Odd or Even and helps keep HOD room pools aligned with department mappings and batch allocations.',
     ],
   },
@@ -11239,20 +11251,6 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
         },
         ...baseFields.slice(1),
         {
-          key: 'room_capacity',
-          label: 'Room Capacity',
-          formOnly: true,
-          readOnly: true,
-          required: false,
-          placeholder: 'Auto-filled after room selection',
-        },
-        {
-          key: 'room_capacity',
-          label: 'Room Capacity',
-          tableOnly: true,
-          render: getRoomCapacity,
-        },
-        {
           key: 'room_type',
           label: 'Room Type',
           formOnly: true,
@@ -11268,6 +11266,20 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
             const room = rooms.find(r => idsMatch(r.id, item.room_id));
             return room?.room_type || item?.room_type || 'Unknown';
           },
+        },
+        {
+          key: 'room_capacity',
+          label: 'Room Capacity',
+          formOnly: true,
+          readOnly: true,
+          required: false,
+          placeholder: 'Auto-filled after room selection',
+        },
+        {
+          key: 'room_capacity',
+          label: 'Room Capacity',
+          tableOnly: true,
+          render: getRoomCapacity,
         },
         { key: 'capacity', label: 'Required Capacity', type: 'number', formOnly: true },
         {
