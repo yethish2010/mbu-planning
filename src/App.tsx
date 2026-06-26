@@ -7710,15 +7710,27 @@ function UserManagement() {
     payload.school = primarySchool?.name || payload.school || '';
     payload.department = primaryDepartment?.name || payload.department || '';
     payload.assigned_departments = assignedDepartments.map((department: any) => department.name).join(', ');
-    if (isAdminRole(normalizedRole) || isExecutiveRole(normalizedRole) || ['dean (p&m)', 'deputy dean (p&m)'].includes(normalizedRole)) {
-      payload.access_type = 'Global';
-      payload.access_scope = 'All';
-    } else if (isSchoolScopedRole(normalizedRole)) {
-      payload.access_type = 'School';
-      payload.access_scope = payload.assigned_schools || payload.school || payload.access_scope || '';
-    } else if (isDepartmentScopedRole(normalizedRole)) {
-      payload.access_type = 'Department';
-      payload.access_scope = payload.assigned_departments || payload.department || payload.access_scope || '';
+    const requestedAccessType = payload.access_type?.toString().trim() || '';
+    const requestedAccessScope = payload.access_scope?.toString().trim() || '';
+    if (!requestedAccessType) {
+      if (isAdminRole(normalizedRole) || isExecutiveRole(normalizedRole) || ['dean (p&m)', 'deputy dean (p&m)'].includes(normalizedRole)) {
+        payload.access_type = 'Global';
+        payload.access_scope = requestedAccessScope || 'All';
+      } else if (isSchoolScopedRole(normalizedRole)) {
+        payload.access_type = 'School';
+        payload.access_scope = requestedAccessScope || payload.assigned_schools || payload.school || '';
+      } else if (isDepartmentScopedRole(normalizedRole)) {
+        payload.access_type = 'Department';
+        payload.access_scope = requestedAccessScope || payload.assigned_departments || payload.department || '';
+      }
+    } else if (!requestedAccessScope) {
+      if (requestedAccessType === 'Global') {
+        payload.access_scope = 'All';
+      } else if (requestedAccessType === 'School') {
+        payload.access_scope = payload.assigned_schools || payload.school || '';
+      } else if (requestedAccessType === 'Department') {
+        payload.access_scope = payload.assigned_departments || payload.department || '';
+      }
     }
     if (editingItem && !payload.password) delete payload.password;
     if (!editingItem && !payload.password) payload.password = 'Welcome123';

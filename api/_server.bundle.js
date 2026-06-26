@@ -2340,16 +2340,15 @@ var normalizeUserPayload = async (payload, existingItem) => {
   nextPayload.department = primaryDepartmentRecord?.name || null;
   let derivedAccessType = normalizedRequestedAccessType;
   let derivedAccessScope = requestedAccessScope;
-  if (GLOBAL_SCOPE_ROLE_VALUES.has(role) || isAdminRole(role) || isExecutiveViewRole(role)) {
+  if (normalizedRequestedAccessType === "Global") {
     derivedAccessType = "Global";
-    derivedAccessScope = "All";
-    nextPayload.school = nextPayload.school || null;
-  } else if (SCHOOL_SCOPE_ROLE_VALUES.has(role)) {
+    derivedAccessScope = requestedAccessScope || "All";
+  } else if (normalizedRequestedAccessType === "School") {
     derivedAccessType = "School";
-    derivedAccessScope = mergedSchoolRecords.map((school) => school.name).join(", ") || nextPayload.school || requestedAccessScope || "";
-  } else if (DEPARTMENT_SCOPE_ROLE_VALUES.has(role)) {
+    derivedAccessScope = requestedAccessScope || mergedSchoolRecords.map((school) => school.name).join(", ") || nextPayload.school || "";
+  } else if (normalizedRequestedAccessType === "Department") {
     derivedAccessType = "Department";
-    derivedAccessScope = resolvedDepartmentRecords.map((department) => department.name).join(", ") || nextPayload.department || requestedAccessScope || "";
+    derivedAccessScope = requestedAccessScope || resolvedDepartmentRecords.map((department) => department.name).join(", ") || nextPayload.department || "";
   } else if (!derivedAccessType) {
     if (resolvedDepartmentRecords.length > 0 || nextPayload.department) {
       derivedAccessType = "Department";
@@ -2359,7 +2358,7 @@ var normalizeUserPayload = async (payload, existingItem) => {
       derivedAccessScope = mergedSchoolRecords.map((school) => school.name).join(", ") || nextPayload.school || requestedAccessScope || "";
     } else {
       derivedAccessType = "Global";
-      derivedAccessScope = "All";
+      derivedAccessScope = requestedAccessScope || "All";
     }
   }
   nextPayload.access_type = derivedAccessType || null;

@@ -735,15 +735,15 @@ const normalizeUserPayload = async (payload: any, existingItem?: any) => {
 
   let derivedAccessType = normalizedRequestedAccessType;
   let derivedAccessScope = requestedAccessScope;
-  if (GLOBAL_SCOPE_ROLE_VALUES.has(role) || isAdminRole(role) || isExecutiveViewRole(role)) {
+  if (normalizedRequestedAccessType === "Global") {
     derivedAccessType = "Global";
-    derivedAccessScope = "All";
-  } else if (SCHOOL_SCOPE_ROLE_VALUES.has(role)) {
+    derivedAccessScope = requestedAccessScope || "All";
+  } else if (normalizedRequestedAccessType === "School") {
     derivedAccessType = "School";
-    derivedAccessScope = mergedSchoolRecords.map((school: any) => school.name).join(", ") || nextPayload.school || requestedAccessScope || "";
-  } else if (DEPARTMENT_SCOPE_ROLE_VALUES.has(role)) {
+    derivedAccessScope = requestedAccessScope || mergedSchoolRecords.map((school: any) => school.name).join(", ") || nextPayload.school || "";
+  } else if (normalizedRequestedAccessType === "Department") {
     derivedAccessType = "Department";
-    derivedAccessScope = resolvedDepartmentRecords.map((department: any) => department.name).join(", ") || nextPayload.department || requestedAccessScope || "";
+    derivedAccessScope = requestedAccessScope || resolvedDepartmentRecords.map((department: any) => department.name).join(", ") || nextPayload.department || "";
   } else if (!derivedAccessType) {
     if (resolvedDepartmentRecords.length > 0 || nextPayload.department) {
       derivedAccessType = "Department";
@@ -753,7 +753,7 @@ const normalizeUserPayload = async (payload: any, existingItem?: any) => {
       derivedAccessScope = mergedSchoolRecords.map((school: any) => school.name).join(", ") || nextPayload.school || requestedAccessScope || "";
     } else {
       derivedAccessType = "Global";
-      derivedAccessScope = "All";
+      derivedAccessScope = requestedAccessScope || "All";
     }
   }
 
