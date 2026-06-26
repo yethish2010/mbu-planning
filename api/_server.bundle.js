@@ -445,6 +445,20 @@ var getPrimarySchemaSql = (dialect) => {
       FOREIGN KEY(room_id) REFERENCES rooms(id)
     );
 
+    CREATE TABLE IF NOT EXISTS hod_room_allocations (
+      id ${idDefinition},
+      school_id INTEGER NOT NULL,
+      hod_user_id INTEGER NOT NULL,
+      room_id INTEGER NOT NULL,
+      semester TEXT,
+      room_type TEXT,
+      capacity INTEGER,
+      notes TEXT,
+      FOREIGN KEY(school_id) REFERENCES schools(id),
+      FOREIGN KEY(hod_user_id) REFERENCES users(id),
+      FOREIGN KEY(room_id) REFERENCES rooms(id)
+    );
+
     CREATE TABLE IF NOT EXISTS timing_profiles (
       id ${idDefinition},
       profile_id TEXT UNIQUE NOT NULL,
@@ -605,6 +619,8 @@ var getPrimarySchemaSql = (dialect) => {
     CREATE INDEX IF NOT EXISTS idx_batch_room_allocations_room_id ON batch_room_allocations(room_id);
     CREATE INDEX IF NOT EXISTS idx_department_allocations_room_id ON department_allocations(room_id);
     CREATE INDEX IF NOT EXISTS idx_department_allocations_department_id ON department_allocations(department_id);
+    CREATE INDEX IF NOT EXISTS idx_hod_room_allocations_hod_user_id ON hod_room_allocations(hod_user_id);
+    CREATE INDEX IF NOT EXISTS idx_hod_room_allocations_room_id ON hod_room_allocations(room_id);
     CREATE INDEX IF NOT EXISTS idx_bookings_room_id ON bookings(room_id);
     CREATE INDEX IF NOT EXISTS idx_bookings_date ON bookings(date);
   `;
@@ -674,6 +690,7 @@ await ensureColumn("buildings", "planned_floor_count", "INTEGER DEFAULT 0");
 await ensureColumn("buildings", "first_floor_number", "INTEGER DEFAULT 0");
 await ensureColumn("blocks", "planned_floor_count", "INTEGER DEFAULT 0");
 await ensureColumn("blocks", "first_floor_number", "INTEGER DEFAULT 0");
+await ensureColumn("department_allocations", "hod_user_id", "INTEGER");
 await ensureColumn("rooms", "parent_room_id", "INTEGER");
 await ensureColumn("rooms", "room_layout", "TEXT DEFAULT 'Normal'");
 await ensureColumn("rooms", "room_aliases", "TEXT");
@@ -1745,6 +1762,7 @@ var CACHEABLE_SERVER_TABLES = /* @__PURE__ */ new Set([
   "academic_calendars",
   "equipment",
   "department_allocations",
+  "hod_room_allocations",
   "batch_room_allocations",
   "campuses",
   "schedules"
@@ -1842,6 +1860,30 @@ var getDepartmentAllocationLinkError = async (roomId, departmentId, semester, co
   const semesterLabel = normalizeSemesterKey(semester) ? ` for ${semester}` : "";
   return `Room ${roomNumber || roomId} is not mapped to ${departmentName || "the selected department"}${semesterLabel} in Department Allocation. Create the department allocation first.`;
 };
+var getHodRoomAllocationLink = async (roomId, hodUserId, semester) => {
+  const numericRoomId = Number(roomId || 0) || null;
+  const numericHodUserId = Number(hodUserId || 0) || null;
+  if (!numericRoomId || !numericHodUserId) return null;
+  const matches = await db.prepare(`
+    SELECT id, semester
+    FROM hod_room_allocations
+    WHERE room_id = ? AND hod_user_id = ?
+    ORDER BY id DESC
+  `).all(numericRoomId, numericHodUserId);
+  const normalizedSemester = normalizeSemesterKey(semester);
+  if (!normalizedSemester) return matches[0] || null;
+  return matches.find((match) => normalizeSemesterKey(match?.semester) === normalizedSemester) || null;
+};
+var getHodRoomAllocationLinkError = async (roomId, hodUserId, semester) => {
+  if (!roomId || !hodUserId) return "Please select both HOD and room.";
+  const linkedAllocation = await getHodRoomAllocationLink(roomId, hodUserId, semester);
+  if (linkedAllocation) return null;
+  const room = await db.prepare("SELECT room_number FROM rooms WHERE id = ?").get(roomId);
+  const hodUser = await db.prepare("SELECT full_name, employee_id FROM users WHERE id = ?").get(hodUserId);
+  const hodLabel = hodUser?.full_name || hodUser?.employee_id || "the selected HOD";
+  const semesterLabel = normalizeSemesterKey(semester) ? ` for ${semester}` : "";
+  return `Room ${room?.room_number || roomId} is not allocated to ${hodLabel}${semesterLabel} in HOD Room Allocation. Allocate the room to this HOD first.`;
+};
 var countDependentBatchRoomAllocations = async (roomId, departmentId, semester) => {
   const numericRoomId = Number(roomId || 0) || null;
   const numericDepartmentId = Number(departmentId || 0) || null;
@@ -1851,6 +1893,28 @@ var countDependentBatchRoomAllocations = async (roomId, departmentId, semester) 
     FROM batch_room_allocations
     WHERE room_id = ? AND department_id = ?
   `).all(numericRoomId, numericDepartmentId);
+  const normalizedSemester = normalizeSemesterKey(semester);
+  if (!normalizedSemester) return matches.length;
+  return matches.filter((match) => normalizeSemesterKey(match?.semester) === normalizedSemester).length;
+};
+var countDependentDepartmentRoomMappingsForHodAllocation = async (roomId, hodUserId, semester) => {
+  const numericRoomId = Number(roomId || 0) || null;
+  const numericHodUserId = Number(hodUserId || 0) || null;
+  if (!numericRoomId || !numericHodUserId) return 0;
+  const assignments = await db.prepare(`
+    SELECT department_id
+    FROM user_department_assignments
+    WHERE user_id = ?
+  `).all(numericHodUserId);
+  const departmentIds = assignments.map((assignment) => assignment?.department_id?.toString?.()).filter(Boolean);
+  if (departmentIds.length === 0) return 0;
+  const placeholders = departmentIds.map(() => "?").join(", ");
+  const matches = await db.prepare(`
+    SELECT id, semester
+    FROM department_allocations
+    WHERE room_id = ?
+      AND department_id IN (${placeholders})
+  `).all(numericRoomId, ...departmentIds);
   const normalizedSemester = normalizeSemesterKey(semester);
   if (!normalizedSemester) return matches.length;
   return matches.filter((match) => normalizeSemesterKey(match?.semester) === normalizedSemester).length;
@@ -3278,6 +3342,9 @@ var duplicateRules = {
   department_allocations: [
     { fields: ["room_id", "department_id", "semester"], label: "Room allocation for this department and semester" }
   ],
+  hod_room_allocations: [
+    { fields: ["room_id", "hod_user_id", "semester"], label: "Room allocation for this HOD and semester" }
+  ],
   academic_calendars: [
     { fields: ["calendar_id"], label: "Calendar ID" },
     { fields: ["department_id", "program", "batch", "specialization", "year_of_study", "semester", "event_type", "title", "start_date", "end_date"], label: "Academic calendar period" }
@@ -3419,6 +3486,10 @@ var NUMERIC_DUPLICATE_COMPARE_FIELDS = /* @__PURE__ */ new Set([
   "department_allocations.school_id",
   "department_allocations.department_id",
   "department_allocations.room_id",
+  "department_allocations.hod_user_id",
+  "hod_room_allocations.school_id",
+  "hod_room_allocations.hod_user_id",
+  "hod_room_allocations.room_id",
   "timing_profiles.school_id",
   "timing_profiles.department_id",
   "academic_calendars.school_id",
@@ -3568,6 +3639,7 @@ var BULK_IMPORT_SUPPORTED_TABLES = /* @__PURE__ */ new Set([
   "schools",
   "departments",
   "department_allocations",
+  "hod_room_allocations",
   "timing_profiles",
   "academic_calendars",
   "batch_room_allocations",
@@ -3581,6 +3653,7 @@ var SERVER_PAGINATION_TABLES = /* @__PURE__ */ new Set([
   "rooms",
   "academic_calendars",
   "batch_room_allocations",
+  "hod_room_allocations",
   "department_allocations",
   "schedules"
 ]);
@@ -3726,6 +3799,18 @@ var validateBulkImportPayload = async (tableName, payload, existingItem, context
       throw new Error(`Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${nextRecord.capacity}.`);
     }
     payload.room_type = room.room_type;
+  }
+  if (tableName === "hod_room_allocations") {
+    const room = await db.prepare("SELECT room_number, capacity, room_type, is_bookable FROM rooms WHERE id = ?").get(nextRecord.room_id);
+    if (!room) throw new Error("Please select a valid room.");
+    const hodUser = await db.prepare("SELECT id, role FROM users WHERE id = ?").get(nextRecord.hod_user_id);
+    if (!hodUser || normalizeRoleLabel(hodUser.role) !== "hod") {
+      throw new Error("Please select a valid HOD user.");
+    }
+    const bookableError = await getBookableRoomError(nextRecord.room_id, context);
+    if (bookableError) throw new Error(bookableError);
+    payload.room_type = room.room_type;
+    payload.capacity = room.capacity;
   }
   if (tableName === "batch_room_allocations") {
     const bookableError = await getBookableRoomError(nextRecord.room_id, context);
@@ -4244,6 +4329,10 @@ var getAccessibleDepartmentIdSet = (user) => new Set(
 var getAccessibleSchoolIdSet = (user) => new Set(
   (Array.isArray(user?.assigned_school_ids) ? user.assigned_school_ids : []).map((schoolId) => schoolId?.toString()).filter(Boolean)
 );
+var canManageHodRoomAllocations = (role) => {
+  const normalizedRole = normalizeRoleLabel(role);
+  return isAdminRole(role) || ["dean (p&m)", "infrastructure manager"].includes(normalizedRole);
+};
 var getApprovedBookingConflict = async (booking, excludeId) => {
   if (!booking?.room_id || !booking?.date || !booking?.start_time || !booking?.end_time) return null;
   return await db.prepare(`
@@ -4780,6 +4869,12 @@ var createCrudRoutes = (tableName, idField = "id") => {
         }
         if (tableName === "department_allocations") {
           let allocationItems = await db.prepare(`SELECT * FROM ${tableName}`).all();
+          if (normalizeRoleLabel(req.user?.role) === "hod") {
+            const accessibleDepartmentIds = getAccessibleDepartmentIdSet(req.user);
+            allocationItems = allocationItems.filter(
+              (item) => item?.department_id != null && accessibleDepartmentIds.has(item.department_id.toString())
+            );
+          }
           const schoolId = req.query.school_id?.toString() || "";
           const departmentId = req.query.department_id?.toString() || "";
           const semester = req.query.semester?.toString().trim() || "";
@@ -4787,6 +4882,48 @@ var createCrudRoutes = (tableName, idField = "id") => {
             allocationItems = allocationItems.filter((item) => {
               if (schoolId && !idsEqual(item?.school_id, schoolId)) return false;
               if (departmentId && !idsEqual(item?.department_id, departmentId)) return false;
+              if (semester && item?.semester?.toString() !== semester) return false;
+              return true;
+            });
+          }
+          if (requestedSearch && allowedSearchFields.length > 0) {
+            const normalizedSearch = requestedSearch.toLowerCase();
+            allocationItems = allocationItems.filter(
+              (item) => allowedSearchFields.some(
+                (field) => item?.[field] != null && item[field].toString().toLowerCase().includes(normalizedSearch)
+              )
+            );
+          }
+          if (sortKey) {
+            allocationItems = allocationItems.slice().sort((left, right) => {
+              const comparison = compareServerSortValues(left?.[sortKey], right?.[sortKey]);
+              return requestedSortDir === "desc" ? -comparison : comparison;
+            });
+          }
+          if (!wantsPagination) {
+            return res.json(allocationItems);
+          }
+          const total2 = allocationItems.length;
+          const startIndex = (requestedPage - 1) * requestedPageSize;
+          return res.json({
+            items: allocationItems.slice(startIndex, startIndex + requestedPageSize),
+            total: total2,
+            page: requestedPage,
+            pageSize: requestedPageSize
+          });
+        }
+        if (tableName === "hod_room_allocations") {
+          let allocationItems = await db.prepare(`SELECT * FROM ${tableName}`).all();
+          if (normalizeRoleLabel(req.user?.role) === "hod") {
+            allocationItems = allocationItems.filter((item) => idsEqual(item?.hod_user_id, req.user?.id));
+          }
+          const schoolId = req.query.school_id?.toString() || "";
+          const hodUserId = req.query.hod_user_id?.toString() || "";
+          const semester = req.query.semester?.toString().trim() || "";
+          if (schoolId || hodUserId || semester) {
+            allocationItems = allocationItems.filter((item) => {
+              if (schoolId && !idsEqual(item?.school_id, schoolId)) return false;
+              if (hodUserId && !idsEqual(item?.hod_user_id, hodUserId)) return false;
               if (semester && item?.semester?.toString() !== semester) return false;
               return true;
             });
@@ -4976,6 +5113,9 @@ var createCrudRoutes = (tableName, idField = "id") => {
     if (tableName === "users" && !isAdminRole(req.user?.role)) {
       return res.status(403).json({ error: "Only Admin or Master Admin can manage users and passwords." });
     }
+    if (tableName === "hod_room_allocations" && !canManageHodRoomAllocations(req.user?.role)) {
+      return res.status(403).json({ error: "You do not have permission to import HOD room allocations." });
+    }
     try {
       const entries = Array.isArray(req.body?.entries) ? req.body.entries : [];
       if (entries.length === 0) {
@@ -5077,6 +5217,9 @@ var createCrudRoutes = (tableName, idField = "id") => {
     if (tableName === "users" && !getUserManagementPolicy(req.user)) {
       return res.status(403).json({ error: "You do not have permission to manage users." });
     }
+    if (tableName === "hod_room_allocations" && !canManageHodRoomAllocations(req.user?.role)) {
+      return res.status(403).json({ error: "You do not have permission to allocate rooms to HOD users." });
+    }
     if (tableName === "users" && !req.body.password) {
       req.body.password = "Welcome123";
     }
@@ -5160,6 +5303,14 @@ var createCrudRoutes = (tableName, idField = "id") => {
         if (restroomValidationError) return res.status(400).json({ error: restroomValidationError });
       }
       if (tableName === "department_allocations") {
+        if (normalizeRoleLabel(req.user?.role) === "hod") {
+          const accessibleDepartmentIds = getAccessibleDepartmentIdSet(req.user);
+          if (!req.body.department_id || !accessibleDepartmentIds.has(req.body.department_id.toString())) {
+            return res.status(403).json({ error: "You can map rooms only for your assigned departments." });
+          }
+          const hodRoomAllocationError = await getHodRoomAllocationLinkError(req.body.room_id, req.user?.id, req.body.semester);
+          if (hodRoomAllocationError) return res.status(400).json({ error: hodRoomAllocationError });
+        }
         const room = await db.prepare("SELECT room_number, capacity, room_type, is_bookable FROM rooms WHERE id = ?").get(req.body.room_id);
         if (!room) return res.status(400).json({ error: "Please select a valid room." });
         const bookableError = await getBookableRoomError(req.body.room_id);
@@ -5170,6 +5321,18 @@ var createCrudRoutes = (tableName, idField = "id") => {
         req.body.room_type = room.room_type;
         const roomTypeIndex = fields.indexOf("room_type");
         if (roomTypeIndex >= 0) values[roomTypeIndex] = req.body.room_type;
+      }
+      if (tableName === "hod_room_allocations") {
+        const room = await db.prepare("SELECT room_number, capacity, room_type, is_bookable FROM rooms WHERE id = ?").get(req.body.room_id);
+        if (!room) return res.status(400).json({ error: "Please select a valid room." });
+        const hodUser = await db.prepare("SELECT id, role FROM users WHERE id = ?").get(req.body.hod_user_id);
+        if (!hodUser || normalizeRoleLabel(hodUser.role) !== "hod") {
+          return res.status(400).json({ error: "Please select a valid HOD user." });
+        }
+        const bookableError = await getBookableRoomError(req.body.room_id);
+        if (bookableError) return res.status(400).json({ error: bookableError });
+        req.body.room_type = room.room_type;
+        req.body.capacity = room.capacity;
       }
       if (tableName === "batch_room_allocations") {
         const bookableError = await getBookableRoomError(req.body.room_id);
@@ -5328,6 +5491,9 @@ var createCrudRoutes = (tableName, idField = "id") => {
     if (tableName === "users" && !getUserManagementPolicy(req.user)) {
       return res.status(403).json({ error: "You do not have permission to manage users." });
     }
+    if (tableName === "hod_room_allocations" && !canManageHodRoomAllocations(req.user?.role)) {
+      return res.status(403).json({ error: "You do not have permission to allocate rooms to HOD users." });
+    }
     if (tableName === "users" && !req.body.password) {
       delete req.body.password;
     }
@@ -5412,6 +5578,14 @@ var createCrudRoutes = (tableName, idField = "id") => {
       }
       if (tableName === "department_allocations") {
         const nextAllocation = { ...existingItem, ...req.body };
+        if (normalizeRoleLabel(req.user?.role) === "hod") {
+          const accessibleDepartmentIds = getAccessibleDepartmentIdSet(req.user);
+          if (!nextAllocation.department_id || !accessibleDepartmentIds.has(nextAllocation.department_id.toString())) {
+            return res.status(403).json({ error: "You can map rooms only for your assigned departments." });
+          }
+          const hodRoomAllocationError = await getHodRoomAllocationLinkError(nextAllocation.room_id, req.user?.id, nextAllocation.semester);
+          if (hodRoomAllocationError) return res.status(400).json({ error: hodRoomAllocationError });
+        }
         const room = await db.prepare("SELECT room_number, capacity, room_type, is_bookable FROM rooms WHERE id = ?").get(nextAllocation.room_id);
         if (!room) return res.status(400).json({ error: "Please select a valid room." });
         const bookableError = await getBookableRoomError(nextAllocation.room_id);
@@ -5420,6 +5594,30 @@ var createCrudRoutes = (tableName, idField = "id") => {
           return res.status(400).json({ error: `Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${nextAllocation.capacity}.` });
         }
         req.body.room_type = room.room_type;
+      }
+      if (tableName === "hod_room_allocations") {
+        const nextAllocation = { ...existingItem, ...req.body };
+        const room = await db.prepare("SELECT room_number, capacity, room_type, is_bookable FROM rooms WHERE id = ?").get(nextAllocation.room_id);
+        if (!room) return res.status(400).json({ error: "Please select a valid room." });
+        const hodUser = await db.prepare("SELECT id, role FROM users WHERE id = ?").get(nextAllocation.hod_user_id);
+        if (!hodUser || normalizeRoleLabel(hodUser.role) !== "hod") {
+          return res.status(400).json({ error: "Please select a valid HOD user." });
+        }
+        const bookableError = await getBookableRoomError(nextAllocation.room_id);
+        if (bookableError) return res.status(400).json({ error: bookableError });
+        const changedScope = !idsEqual(existingItem?.room_id, nextAllocation.room_id) || !idsEqual(existingItem?.hod_user_id, nextAllocation.hod_user_id) || normalizeSemesterKey(existingItem?.semester) !== normalizeSemesterKey(nextAllocation.semester);
+        if (changedScope) {
+          const dependentMappings = await countDependentDepartmentRoomMappingsForHodAllocation(
+            existingItem?.room_id,
+            existingItem?.hod_user_id,
+            existingItem?.semester
+          );
+          if (dependentMappings > 0) {
+            return res.status(400).json({ error: "This HOD Room Allocation is already used by Department Room Mapping. Remove or reassign those department mappings first." });
+          }
+        }
+        req.body.room_type = room.room_type;
+        req.body.capacity = room.capacity;
       }
       if (tableName === "batch_room_allocations") {
         const nextAllocation = { ...existingItem, ...req.body };
@@ -5605,11 +5803,20 @@ var createCrudRoutes = (tableName, idField = "id") => {
     if (tableName === "users" && !isAdminRole(req.user?.role)) {
       return res.status(403).json({ error: "Only Admin or Master Admin can reset all users." });
     }
+    if (tableName === "hod_room_allocations" && !canManageHodRoomAllocations(req.user?.role)) {
+      return res.status(403).json({ error: "You do not have permission to reset HOD room allocations." });
+    }
     try {
       if (tableName === "department_allocations") {
         const dependentCount = await db.prepare("SELECT COUNT(*) as total FROM batch_room_allocations").get();
         if ((Number(dependentCount?.total) || 0) > 0) {
           return res.status(400).json({ error: "Batch Room Allocations still depend on Department Allocations. Remove batch allocations first." });
+        }
+      }
+      if (tableName === "hod_room_allocations") {
+        const dependentCount = await db.prepare("SELECT COUNT(*) as total FROM department_allocations").get();
+        if ((Number(dependentCount?.total) || 0) > 0) {
+          return res.status(400).json({ error: "Department Room Mappings still depend on HOD Room Allocations. Remove department mappings first." });
         }
       }
       if (tableName === "users") {
@@ -5626,6 +5833,9 @@ var createCrudRoutes = (tableName, idField = "id") => {
   app.delete(`/api/${tableName}/:id`, authenticate, async (req, res) => {
     if (tableName === "users" && !getUserManagementPolicy(req.user)) {
       return res.status(403).json({ error: "You do not have permission to remove users." });
+    }
+    if (tableName === "hod_room_allocations" && !canManageHodRoomAllocations(req.user?.role)) {
+      return res.status(403).json({ error: "You do not have permission to remove HOD room allocations." });
     }
     try {
       const existingItem = await db.prepare(`SELECT * FROM ${tableName} WHERE ${idField} = ?`).get(req.params.id);
@@ -5644,6 +5854,16 @@ var createCrudRoutes = (tableName, idField = "id") => {
         );
         if (dependentBatchAllocations > 0) {
           return res.status(400).json({ error: "This Department Allocation is still used by Batch Room Allocations. Remove or reassign those batch allocations first." });
+        }
+      }
+      if (tableName === "hod_room_allocations" && existingItem) {
+        const dependentMappings = await countDependentDepartmentRoomMappingsForHodAllocation(
+          existingItem.room_id,
+          existingItem.hod_user_id,
+          existingItem.semester
+        );
+        if (dependentMappings > 0) {
+          return res.status(400).json({ error: "This HOD Room Allocation is still used by Department Room Mapping. Remove or reassign those department mappings first." });
         }
       }
       await db.prepare(`DELETE FROM ${tableName} WHERE ${idField} = ?`).run(req.params.id);
@@ -6185,6 +6405,7 @@ createCrudRoutes("rooms");
 createCrudRoutes("schools");
 createCrudRoutes("departments");
 createCrudRoutes("department_allocations");
+createCrudRoutes("hod_room_allocations");
 createCrudRoutes("academic_calendars");
 createCrudRoutes("timing_profiles");
 createCrudRoutes("batch_room_allocations");
@@ -6213,7 +6434,7 @@ app.get("/api/timetable-bundle", authenticate, async (req, res) => {
       setInServerCache("schedules", deduped);
       return deduped;
     };
-    const [schedules, rooms, schools, departments, academic_calendars, timing_profiles, batch_room_allocations, department_allocations, temporary_room_allocations] = await Promise.all([
+    const [schedules, rooms, schools, departments, academic_calendars, timing_profiles, batch_room_allocations, department_allocations, hod_room_allocations, temporary_room_allocations] = await Promise.all([
       getSchedules(),
       getCached("rooms"),
       getCached("schools"),
@@ -6222,9 +6443,10 @@ app.get("/api/timetable-bundle", authenticate, async (req, res) => {
       getCached("timing_profiles"),
       getCached("batch_room_allocations"),
       getCached("department_allocations"),
+      getCached("hod_room_allocations"),
       db.prepare("SELECT * FROM temporary_room_allocations ORDER BY approved_date DESC, start_time DESC, id DESC").all()
     ]);
-    res.json({ schedules, rooms, schools, departments, academic_calendars, timing_profiles, batch_room_allocations, department_allocations, temporary_room_allocations });
+    res.json({ schedules, rooms, schools, departments, academic_calendars, timing_profiles, batch_room_allocations, department_allocations, hod_room_allocations, temporary_room_allocations });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
