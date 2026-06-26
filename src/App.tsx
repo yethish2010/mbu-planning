@@ -4730,6 +4730,7 @@ export default function App() {
             <ProtectedRoute roles={['HOD']}>
               <Layout title="Department Room Mapping">
                 <DependencyGuard dependencies={[
+                  { table: 'hod_room_allocations', label: 'HOD Room Allocation' },
                   { table: 'departments', label: 'Departments' },
                   { table: 'rooms', label: 'Rooms' }
                 ]}>
@@ -11639,13 +11640,23 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
           </div>
         </div>
       )}
+      {isHodUser && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5 shadow-sm">
+          <h3 className="text-base font-bold text-amber-900">Department mapping uses only your HOD-mapped rooms</h3>
+          <p className="mt-2 text-sm text-amber-800">
+            Dean (P&M) must first allocate rooms to you in <span className="font-semibold">HOD Room Allocation</span>.
+            In this module you can assign only those rooms to one or more of your departments, and
+            <span className="font-semibold"> Batch Room Allocation</span> will then use those department mappings.
+          </p>
+        </div>
+      )}
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-5">
           <div>
             <h3 className="text-lg font-bold text-slate-800">{isHodUser ? 'Find Department Room Mappings' : 'Find HOD Room Mappings'}</h3>
             <p className="text-sm text-slate-500">
               {isHodUser
-                ? 'Search your department-level room mappings by school, department, and semester.'
+                ? 'Search your department-level room mappings created from the rooms allocated to you in HOD Room Allocation.'
                 : 'Search school-level HOD room allocations by school, HOD, and semester.'}
             </p>
           </div>
