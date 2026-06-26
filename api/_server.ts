@@ -4369,7 +4369,7 @@ const validateBulkImportPayload = async (tableName: string, payload: any, existi
     const room = await db.prepare("SELECT room_number, capacity, room_type, is_bookable FROM rooms WHERE id = ?").get(nextRecord.room_id) as any;
     if (!room) throw new Error("Please select a valid room.");
     const hodUser = await db.prepare("SELECT id, role FROM users WHERE id = ?").get(nextRecord.hod_user_id) as any;
-    if (!hodUser || normalizeRoleLabel(hodUser.role) !== "hod") {
+    if (!hodUser || normalizeRoleLabel(hodUser.role) !== "HOD") {
       throw new Error("Please select a valid HOD user.");
     }
     const bookableError = await getBookableRoomError(nextRecord.room_id, context);
@@ -5620,7 +5620,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
 
         if (tableName === "department_allocations") {
           let allocationItems = await db.prepare(`SELECT * FROM ${tableName}`).all() as any[];
-          if (normalizeRoleLabel((req as any).user?.role) === "hod") {
+          if (normalizeRoleLabel((req as any).user?.role) === "HOD") {
             const accessibleDepartmentIds = getAccessibleDepartmentIdSet((req as any).user);
             allocationItems = allocationItems.filter((item: any) =>
               item?.department_id != null && accessibleDepartmentIds.has(item.department_id.toString())
@@ -5666,7 +5666,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
 
         if (tableName === "hod_room_allocations") {
           let allocationItems = await db.prepare(`SELECT * FROM ${tableName}`).all() as any[];
-          if (normalizeRoleLabel((req as any).user?.role) === "hod") {
+          if (normalizeRoleLabel((req as any).user?.role) === "HOD") {
             allocationItems = allocationItems.filter((item: any) => idsEqual(item?.hod_user_id, (req as any).user?.id));
           }
           const schoolId = req.query.school_id?.toString() || "";
@@ -6082,7 +6082,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       }
 
       if (tableName === "department_allocations") {
-        if (normalizeRoleLabel((req as any).user?.role) === "hod") {
+        if (normalizeRoleLabel((req as any).user?.role) === "HOD") {
           const accessibleDepartmentIds = getAccessibleDepartmentIdSet((req as any).user);
           if (!req.body.department_id || !accessibleDepartmentIds.has(req.body.department_id.toString())) {
             return res.status(403).json({ error: "You can map rooms only for your assigned departments." });
@@ -6106,7 +6106,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         const room = await db.prepare("SELECT room_number, capacity, room_type, is_bookable FROM rooms WHERE id = ?").get(req.body.room_id) as any;
         if (!room) return res.status(400).json({ error: "Please select a valid room." });
         const hodUser = await db.prepare("SELECT id, role FROM users WHERE id = ?").get(req.body.hod_user_id) as any;
-        if (!hodUser || normalizeRoleLabel(hodUser.role) !== "hod") {
+        if (!hodUser || normalizeRoleLabel(hodUser.role) !== "HOD") {
           return res.status(400).json({ error: "Please select a valid HOD user." });
         }
         const bookableError = await getBookableRoomError(req.body.room_id);
@@ -6372,7 +6372,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
 
       if (tableName === "department_allocations") {
         const nextAllocation = { ...existingItem, ...req.body };
-        if (normalizeRoleLabel((req as any).user?.role) === "hod") {
+        if (normalizeRoleLabel((req as any).user?.role) === "HOD") {
           const accessibleDepartmentIds = getAccessibleDepartmentIdSet((req as any).user);
           if (!nextAllocation.department_id || !accessibleDepartmentIds.has(nextAllocation.department_id.toString())) {
             return res.status(403).json({ error: "You can map rooms only for your assigned departments." });
@@ -6395,7 +6395,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         const room = await db.prepare("SELECT room_number, capacity, room_type, is_bookable FROM rooms WHERE id = ?").get(nextAllocation.room_id) as any;
         if (!room) return res.status(400).json({ error: "Please select a valid room." });
         const hodUser = await db.prepare("SELECT id, role FROM users WHERE id = ?").get(nextAllocation.hod_user_id) as any;
-        if (!hodUser || normalizeRoleLabel(hodUser.role) !== "hod") {
+        if (!hodUser || normalizeRoleLabel(hodUser.role) !== "HOD") {
           return res.status(400).json({ error: "Please select a valid HOD user." });
         }
         const bookableError = await getBookableRoomError(nextAllocation.room_id);
