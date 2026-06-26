@@ -267,6 +267,31 @@ const isAdminRole = (role: unknown) => ADMIN_ROLE_SET.has(normalizeRoleValue(rol
 const isExecutiveRole = (role: unknown) => EXECUTIVE_ROLE_SET.has(normalizeRoleValue(role));
 const isSchoolScopedRole = (role: unknown) => SCHOOL_SCOPED_ROLE_SET.has(normalizeRoleValue(role));
 const isDepartmentScopedRole = (role: unknown) => DEPARTMENT_SCOPED_ROLE_SET.has(normalizeRoleValue(role));
+const getAssignedDepartmentIdsForUser = (user: any) => {
+  const explicitIds = Array.isArray(user?.assigned_department_ids)
+    ? user.assigned_department_ids
+    : user?.assigned_department_ids?.toString?.().split(',') || [];
+  const assignmentIds = Array.isArray(user?.department_assignments)
+    ? user.department_assignments.map((assignment: any) => assignment?.department_id)
+    : [];
+  const primaryDepartmentId = user?.primary_department_id != null ? [user.primary_department_id] : [];
+  return Array.from(new Set(
+    [...explicitIds, ...assignmentIds, ...primaryDepartmentId]
+      .map((value: any) => value?.toString?.().trim() || '')
+      .filter(Boolean),
+  ));
+};
+const getScopedDepartmentIdsForUser = (user: any, selectedDepartmentId = '') => {
+  const assignedDepartmentIds = getAssignedDepartmentIdsForUser(user);
+  if (
+    normalizeRoleValue(user?.role) === 'hod' &&
+    selectedDepartmentId &&
+    assignedDepartmentIds.includes(selectedDepartmentId.toString())
+  ) {
+    return [selectedDepartmentId.toString()];
+  }
+  return assignedDepartmentIds;
+};
 const normalizeDashboardViewMode = (value: unknown): DashboardViewMode => {
   const normalized = normalizeLookupValue(value);
   if (normalized === 'text') return 'Text';
@@ -3860,12 +3885,12 @@ function Sidebar() {
     { name: 'Room Management', icon: DoorOpen, path: '/rooms', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager'] },
     { name: 'School Management', icon: BookOpen, path: '/schools', roles: ['Administrator', 'Admin', 'Master Admin'] },
     { name: 'Department Management', icon: Layers, path: '/departments', roles: ['Administrator', 'Admin', 'Master Admin'] },
-    { name: 'Timing Profile Management', icon: Clock, path: '/timing-profiles', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager'] },
-    { name: 'Academic Calendar', icon: Calendar, path: '/academic-calendars', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager'] },
-    { name: 'Department Room Mapping', icon: DoorOpen, path: '/dept-allocation', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager'] },
-    { name: 'Batch Room Allocation', icon: DoorOpen, path: '/batch-room-allocations', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager'] },
+    { name: 'Timing Profile Management', icon: Clock, path: '/timing-profiles', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD'] },
+    { name: 'Academic Calendar', icon: Calendar, path: '/academic-calendars', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD'] },
+    { name: 'Department Room Mapping', icon: DoorOpen, path: '/dept-allocation', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD'] },
+    { name: 'Batch Room Allocation', icon: DoorOpen, path: '/batch-room-allocations', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD'] },
     { name: 'Equipment Management', icon: Wrench, path: '/equipment', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Maintenance Staff'] },
-    { name: 'Schedule Records', icon: Calendar, path: '/scheduling', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)', 'Deputy Dean (P&M)'] },
+    { name: 'Schedule Records', icon: Calendar, path: '/scheduling', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD'] },
     { name: 'Timetable View', icon: Clock, path: '/timetable', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD'] },
     { name: 'Digital Twin', icon: Globe, path: '/digital-twin', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean', 'HOD', ...executiveMenuRoles] },
     { name: 'Live Availability', icon: MapIcon, path: '/live-availability', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Faculty', 'Event Coordinator', 'Infrastructure Manager', ...executiveMenuRoles] },
@@ -4553,7 +4578,7 @@ export default function App() {
           {/* CRUD Routes Placeholder */}
           <Route path="/campuses" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager']}><Layout title="Campus Management"><CampusManagement /></Layout></ProtectedRoute>} />
           <Route path="/buildings" element={
-            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD']}>
               <Layout title="Building Management">
                 <DependencyGuard dependencies={[{ table: 'campuses', label: 'Campuses' }]}>
                   <BuildingManagement />
@@ -4562,7 +4587,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/blocks" element={
-            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD']}>
               <Layout title="Block Management">
                 <DependencyGuard dependencies={[
                   { table: 'campuses', label: 'Campuses' },
@@ -4574,7 +4599,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/floors" element={
-            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD']}>
               <Layout title="Floor Management">
                 <DependencyGuard dependencies={[
                   { table: 'buildings', label: 'Buildings' }
@@ -4585,7 +4610,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/rooms" element={
-            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD']}>
               <Layout title="Room Management">
                 <DependencyGuard dependencies={[
                   { table: 'blocks', label: 'Blocks' },
@@ -4658,7 +4683,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/scheduling" element={
-            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)', 'Deputy Dean (P&M)']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD']}>
               <Layout title="Schedule Records">
                 <DependencyGuard dependencies={[
                   { table: 'rooms', label: 'Rooms' },
@@ -6722,6 +6747,7 @@ function GenericCRUD({
   serverSearchFields,
   serverSortKey,
   serverQueryParams,
+  allowReset = true,
 }: {
   type: string,
   fields: any[],
@@ -6740,6 +6766,7 @@ function GenericCRUD({
   serverSearchFields?: string[],
   serverSortKey?: string,
   serverQueryParams?: Record<string, string>,
+  allowReset?: boolean,
 }) {
   const [data, setData] = useState<any[]>([]);
   const [totalCount, setTotalCount] = useState(0);
@@ -7165,13 +7192,15 @@ function GenericCRUD({
               Download Audit
             </button>
           ) : null}
-          <button
-            onClick={handleReset}
-            className="flex items-center gap-2 bg-rose-50 text-rose-600 border border-rose-200 px-4 py-2 rounded-lg font-bold hover:bg-rose-100 transition-all"
-          >
-            <Trash2 size={18} />
-            Reset
-          </button>
+          {allowReset && (
+            <button
+              onClick={handleReset}
+              className="flex items-center gap-2 bg-rose-50 text-rose-600 border border-rose-200 px-4 py-2 rounded-lg font-bold hover:bg-rose-100 transition-all"
+            >
+              <Trash2 size={18} />
+              Reset
+            </button>
+          )}
           <button
             onClick={() => { setEditingItem(null); setFormData({}); setIsModalOpen(true); }}
             className="flex items-center gap-2 bg-slate-900 text-white px-4 py-2 rounded-lg font-bold hover:bg-slate-800 transition-all"
@@ -9272,8 +9301,18 @@ function DepartmentManagement() {
 }
 
 function TimingProfileManagement() {
+  const { user, selectedHodDepartmentId } = useAuth();
   const [schools, setSchools] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
+  const isHodUser = normalizeRoleValue(user?.role) === 'hod';
+  const scopedDepartmentIds = useMemo(
+    () => getScopedDepartmentIdsForUser(user, selectedHodDepartmentId),
+    [selectedHodDepartmentId, user],
+  );
+  const activeHodDepartmentId = isHodUser ? (scopedDepartmentIds[0] || '') : '';
+  const scheduleDepartments = isHodUser
+    ? departments.filter((department: any) => scopedDepartmentIds.some((departmentId) => idsMatch(department?.id, departmentId)))
+    : departments;
 
   const refreshLookups = async () => {
     const [schoolData, departmentData] = await fetchSharedLookupJsons([
@@ -9288,12 +9327,23 @@ function TimingProfileManagement() {
     refreshLookups();
   }, []);
 
-  const schoolOptions = schools
+  const scopedDepartments = isHodUser
+    ? departments.filter((department: any) => scopedDepartmentIds.some((departmentId) => idsMatch(department?.id, departmentId)))
+    : departments;
+  const scopedSchoolIds = Array.from(new Set(
+    scopedDepartments
+      .map((department: any) => department?.school_id?.toString?.())
+      .filter(Boolean),
+  ));
+  const scopedSchools = isHodUser
+    ? schools.filter((school: any) => scopedSchoolIds.some((schoolId) => idsMatch(school?.id, schoolId)))
+    : schools;
+  const schoolOptions = scopedSchools
     .slice()
     .sort((a, b) => a.name?.localeCompare(b.name || '') || 0)
     .map(school => ({ value: school.id, label: school.name }));
 
-  const sortedDepartments = departments
+  const sortedDepartments = scopedDepartments
     .slice()
     .sort((a, b) => a.name?.localeCompare(b.name || '') || 0);
 
@@ -9338,8 +9388,11 @@ function TimingProfileManagement() {
   ];
 
   const prepareSubmitData = (data: any) => {
+    if (isHodUser && !activeHodDepartmentId) {
+      throw new Error('Assign this HOD user to a department before managing timing profiles.');
+    }
     const nextSchoolId = data.school_id || '';
-    const nextDepartmentId = data.department_id || '';
+    const nextDepartmentId = isHodUser ? activeHodDepartmentId : (data.department_id || '');
     const matchingDepartment = departments.find(department => idsMatch(department.id, nextDepartmentId));
 
     return {
@@ -9375,8 +9428,10 @@ function TimingProfileManagement() {
       const payload = {
         profile_id: row['Profile ID']?.toString(),
         profile_name: row['Profile Name']?.toString() || row['Profile ID']?.toString(),
-        school_id: department?.school_id || school?.id || null,
-        department_id: department?.id || null,
+        school_id: isHodUser
+          ? (departments.find(item => idsMatch(item.id, activeHodDepartmentId))?.school_id || null)
+          : (department?.school_id || school?.id || null),
+        department_id: isHodUser ? (activeHodDepartmentId || null) : (department?.id || null),
         program: normalizeProgramValue(row['Program']),
         specialization: getImportValue(row, [SPECIALIZATION_BRANCH_LABEL, 'Specialization', 'Branch'])?.toString().trim() || null,
         academic_year: row['Academic Year']?.toString() || null,
@@ -9414,14 +9469,23 @@ function TimingProfileManagement() {
       onImport={handleImport}
       prepareSubmitData={prepareSubmitData}
       onDataChanged={refreshLookups}
+      dataFilter={(item: any) => !isHodUser || scopedDepartmentIds.some((departmentId) => idsMatch(item?.department_id, departmentId))}
+      allowReset={!isHodUser}
     />
   );
 }
 
 function AcademicCalendarManagement() {
+  const { user, selectedHodDepartmentId } = useAuth();
   const [schools, setSchools] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
   const [timingProfiles, setTimingProfiles] = useState<any[]>([]);
+  const isHodUser = normalizeRoleValue(user?.role) === 'hod';
+  const scopedDepartmentIds = useMemo(
+    () => getScopedDepartmentIdsForUser(user, selectedHodDepartmentId),
+    [selectedHodDepartmentId, user],
+  );
+  const activeHodDepartmentId = isHodUser ? (scopedDepartmentIds[0] || '') : '';
 
   const refreshLookups = async () => {
     const [schoolData, departmentData, timingProfileData] = await fetchSharedLookupJsons([
@@ -9438,12 +9502,26 @@ function AcademicCalendarManagement() {
     refreshLookups();
   }, []);
 
-  const schoolOptions = schools
+  const scopedDepartments = isHodUser
+    ? departments.filter((department: any) => scopedDepartmentIds.some((departmentId) => idsMatch(department?.id, departmentId)))
+    : departments;
+  const scopedSchoolIds = Array.from(new Set(
+    scopedDepartments
+      .map((department: any) => department?.school_id?.toString?.())
+      .filter(Boolean),
+  ));
+  const scopedSchools = isHodUser
+    ? schools.filter((school: any) => scopedSchoolIds.some((schoolId) => idsMatch(school?.id, schoolId)))
+    : schools;
+  const scopedTimingProfiles = isHodUser
+    ? timingProfiles.filter((profile: any) => !profile?.department_id || scopedDepartmentIds.some((departmentId) => idsMatch(profile?.department_id, departmentId)))
+    : timingProfiles;
+  const schoolOptions = scopedSchools
     .slice()
     .sort((a, b) => a.name?.localeCompare(b.name || '') || 0)
     .map(school => ({ value: school.id, label: school.name }));
 
-  const sortedDepartments = departments
+  const sortedDepartments = scopedDepartments
     .slice()
     .sort((a, b) => a.name?.localeCompare(b.name || '') || 0);
 
@@ -9476,14 +9554,14 @@ function AcademicCalendarManagement() {
       label: 'Timing Profile',
       type: 'select',
       required: false,
-      options: (formData: any) => timingProfiles
+      options: (formData: any) => scopedTimingProfiles
         .filter(profile =>
           (!formData.school_id || !profile.school_id || idsMatch(profile.school_id, formData.school_id)) &&
           (!formData.department_id || !profile.department_id || idsMatch(profile.department_id, formData.department_id)) &&
           (!profile.specialization || normalizeLookupValue(profile.specialization) === normalizeLookupValue(formData.specialization))
         )
         .map(profile => ({ value: profile.id, label: getTimingProfileDisplayLabel(profile) })),
-      render: (item: any) => getTimingProfileDisplayLabel(timingProfiles.find(profile => idsMatch(profile.id, item.timing_profile_id))) || '-',
+      render: (item: any) => getTimingProfileDisplayLabel(scopedTimingProfiles.find(profile => idsMatch(profile.id, item.timing_profile_id))) || '-',
     },
     {
       key: 'event_type',
@@ -9511,13 +9589,15 @@ function AcademicCalendarManagement() {
   ];
 
   const prepareSubmitData = (data: any) => {
-    const department = departments.find(item => idsMatch(item.id, data.department_id));
+    const targetDepartmentId = isHodUser ? activeHodDepartmentId : data.department_id;
+    const department = departments.find(item => idsMatch(item.id, targetDepartmentId));
     if (!department) throw new Error('Please select a valid department.');
     if (!data.start_date || !data.end_date) throw new Error('Start date and end date are required.');
     if (data.start_date > data.end_date) throw new Error('Start date cannot be after end date.');
 
     return {
       ...data,
+      department_id: department.id,
       school_id: department.school_id,
       program: normalizeProgramValue(data.program),
       year_of_study: normalizeYearOfStudyValue(data.year_of_study),
@@ -9601,8 +9681,10 @@ function AcademicCalendarManagement() {
 
       const payload = {
         calendar_id: calendarId,
-        school_id: school?.id || department?.school_id,
-        department_id: department?.id,
+        school_id: isHodUser
+          ? (departments.find(item => idsMatch(item.id, activeHodDepartmentId))?.school_id || null)
+          : (school?.id || department?.school_id),
+        department_id: isHodUser ? (activeHodDepartmentId || null) : department?.id,
         program: normalizeProgramValue(row['Program']),
         batch: row['Batch'],
         specialization: getImportValue(row, [SPECIALIZATION_BRANCH_LABEL, 'Specialization', 'Branch'])?.toString().trim() || null,
@@ -9700,14 +9782,17 @@ function AcademicCalendarManagement() {
       onDataChanged={refreshLookups}
       prepareSubmitData={prepareSubmitData}
       dataSorter={academicCalendarSorter}
-      enableServerPagination
+      enableServerPagination={!isHodUser}
       serverSearchFields={['calendar_id', 'program', 'batch', 'specialization', 'academic_year', 'year_of_study', 'semester', 'event_type', 'title', 'notes']}
       serverSortKey="start_date"
+      dataFilter={(item: any) => !isHodUser || scopedDepartmentIds.some((departmentId) => idsMatch(item?.department_id, departmentId))}
+      allowReset={!isHodUser}
     />
   );
 }
 
 function BatchRoomAllocationManagement() {
+  const { user, selectedHodDepartmentId } = useAuth();
   const [schools, setSchools] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
   const [rooms, setRooms] = useState<any[]>([]);
@@ -9721,6 +9806,12 @@ function BatchRoomAllocationManagement() {
   const [lookupPage, setLookupPage] = useState(1);
   const [lookupPageSize] = useState(25);
   const [lookupTotal, setLookupTotal] = useState(0);
+  const isHodUser = normalizeRoleValue(user?.role) === 'hod';
+  const scopedDepartmentIds = useMemo(
+    () => getScopedDepartmentIdsForUser(user, selectedHodDepartmentId),
+    [selectedHodDepartmentId, user],
+  );
+  const activeHodDepartmentId = isHodUser ? (scopedDepartmentIds[0] || '') : '';
 
   const refreshBatchAllocationLookups = async () => {
     const [
@@ -9842,12 +9933,26 @@ function BatchRoomAllocationManagement() {
     return room?.capacity ?? 'Unknown';
   };
 
-  const schoolOptions = schools
+  const scopedDepartments = isHodUser
+    ? departments.filter((department: any) => scopedDepartmentIds.some((departmentId) => idsMatch(department?.id, departmentId)))
+    : departments;
+  const scopedSchoolIds = Array.from(new Set(
+    scopedDepartments
+      .map((department: any) => department?.school_id?.toString?.())
+      .filter(Boolean),
+  ));
+  const scopedSchools = isHodUser
+    ? schools.filter((school: any) => scopedSchoolIds.some((schoolId) => idsMatch(school?.id, schoolId)))
+    : schools;
+  const scopedCalendars = isHodUser
+    ? calendars.filter((calendar: any) => scopedDepartmentIds.some((departmentId) => idsMatch(calendar?.department_id, departmentId)))
+    : calendars;
+  const schoolOptions = scopedSchools
     .slice()
     .sort((a, b) => a.name?.localeCompare(b.name || '') || 0)
     .map(school => ({ value: school.id, label: school.name }));
 
-  const sortedDepartments = departments
+  const sortedDepartments = scopedDepartments
     .slice()
     .sort((a, b) => a.name?.localeCompare(b.name || '') || 0);
 
@@ -9858,7 +9963,7 @@ function BatchRoomAllocationManagement() {
   };
 
   const filteredCalendarOptions = (formData: any) =>
-    calendars
+    scopedCalendars
       .filter(calendar => !formData.school_id || idsMatch(calendar.school_id, formData.school_id))
       .filter(calendar => !formData.department_id || idsMatch(calendar.department_id, formData.department_id))
       .sort((a, b) => (a.start_date || '').localeCompare(b.start_date || '') || (a.title || '').localeCompare(b.title || ''))
@@ -9884,7 +9989,7 @@ function BatchRoomAllocationManagement() {
       sortKey: 'start_date',
       sortDir: 'asc',
       school_id: lookupFilters.school_id,
-      department_id: lookupFilters.department_id,
+      department_id: isHodUser ? activeHodDepartmentId : lookupFilters.department_id,
       status: lookupFilters.status,
     });
     const data = await apiJson(`/api/batch_room_allocations?${params.toString()}`);
@@ -10220,7 +10325,16 @@ function BatchRoomAllocationManagement() {
       };
     }
 
-    const results = await upsertImportRecordsBulk('/api/batch_room_allocations', validEntries);
+    const results = await upsertImportRecordsBulk('/api/batch_room_allocations', validEntries.map((entry) => ({
+      ...entry,
+      payload: isHodUser
+        ? {
+            ...entry.payload,
+            department_id: activeHodDepartmentId || entry.payload.department_id,
+            school_id: departments.find(item => idsMatch(item.id, activeHodDepartmentId))?.school_id || entry.payload.school_id,
+          }
+        : entry.payload,
+    })));
     let created = 0, updated = 0, failed = 0;
     let pendingIndex = 0;
     auditRows.forEach((row) => {
@@ -10285,6 +10399,12 @@ function BatchRoomAllocationManagement() {
   const prepareSubmitData = (data: any) => {
     const payload = { ...data };
     const room = rooms.find(r => idsMatch(r.id, payload.room_id));
+    if (isHodUser && !activeHodDepartmentId) {
+      throw new Error('Assign this HOD user to a department before managing batch room allocations.');
+    }
+    if (isHodUser) {
+      payload.department_id = activeHodDepartmentId;
+    }
     const department = departments.find(item => idsMatch(item.id, payload.department_id));
     const calendar = calendars.find(item => idsMatch(item.id, payload.academic_calendar_id));
 
@@ -10485,12 +10605,15 @@ function BatchRoomAllocationManagement() {
         enableServerPagination
         serverSearchFields={['allocation_id', 'program', 'batch', 'specialization', 'academic_year', 'year_of_study', 'semester', 'allocation_mode', 'allocation_pattern', 'split_group_id', 'room_type', 'notes']}
         serverSortKey="start_date"
+        serverQueryParams={isHodUser && activeHodDepartmentId ? { department_id: activeHodDepartmentId } : {}}
+        allowReset={!isHodUser}
       />
     </div>
   );
 }
 
 function DepartmentAllocationManagement() {
+  const { user, selectedHodDepartmentId } = useAuth();
   const [schools, setSchools] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
   const [rooms, setRooms] = useState<any[]>([]);
@@ -10504,6 +10627,12 @@ function DepartmentAllocationManagement() {
   const [lookupPageSize] = useState(25);
   const [lookupTotal, setLookupTotal] = useState(0);
   const semesterOptions = ['Odd', 'Even'];
+  const isHodUser = normalizeRoleValue(user?.role) === 'hod';
+  const scopedDepartmentIds = useMemo(
+    () => getScopedDepartmentIdsForUser(user, selectedHodDepartmentId),
+    [selectedHodDepartmentId, user],
+  );
+  const activeHodDepartmentId = isHodUser ? (scopedDepartmentIds[0] || '') : '';
 
   const normalizeSemester = (value: unknown) => {
     const normalized = normalizeLookupValue(value);
@@ -10529,7 +10658,7 @@ function DepartmentAllocationManagement() {
       sortKey: 'semester',
       sortDir: 'asc',
       school_id: lookupFilters.school_id,
-      department_id: lookupFilters.department_id,
+      department_id: isHodUser ? activeHodDepartmentId : lookupFilters.department_id,
       semester: lookupFilters.semester,
     });
     const data = await apiJson(`/api/department_allocations?${params.toString()}`);
@@ -10662,11 +10791,22 @@ function DepartmentAllocationManagement() {
     return room?.capacity ?? 'Unknown';
   };
 
-  const schoolOptions = schools
+  const scopedDepartments = isHodUser
+    ? departments.filter((department: any) => scopedDepartmentIds.some((departmentId) => idsMatch(department?.id, departmentId)))
+    : departments;
+  const scopedSchoolIds = Array.from(new Set(
+    scopedDepartments
+      .map((department: any) => department?.school_id?.toString?.())
+      .filter(Boolean),
+  ));
+  const scopedSchools = isHodUser
+    ? schools.filter((school: any) => scopedSchoolIds.some((schoolId) => idsMatch(school?.id, schoolId)))
+    : schools;
+  const schoolOptions = scopedSchools
     .slice()
     .sort((a, b) => a.name?.localeCompare(b.name || '') || 0)
     .map(school => ({ value: school.id, label: school.name }));
-  const sortedDepartments = departments
+  const sortedDepartments = scopedDepartments
     .slice()
     .sort((a, b) => a.name?.localeCompare(b.name || '') || 0);
   const lookupDepartments = sortedDepartments.filter(department =>
@@ -10897,7 +11037,16 @@ function DepartmentAllocationManagement() {
       };
     }
 
-    const results = await upsertImportRecordsBulk('/api/department_allocations', validEntries);
+    const results = await upsertImportRecordsBulk('/api/department_allocations', validEntries.map((entry) => ({
+      ...entry,
+      payload: isHodUser
+        ? {
+            ...entry.payload,
+            department_id: activeHodDepartmentId || entry.payload.department_id,
+            school_id: departments.find(item => idsMatch(item.id, activeHodDepartmentId))?.school_id || entry.payload.school_id,
+          }
+        : entry.payload,
+    })));
     let created = 0, updated = 0, failed = 0;
     let pendingIndex = 0;
     auditRows.forEach((row) => {
@@ -10953,6 +11102,13 @@ function DepartmentAllocationManagement() {
   const prepareSubmitData = (data: any) => {
     const payload = { ...data };
     const room = rooms.find(r => r.id?.toString() === payload.room_id?.toString());
+    if (isHodUser && !activeHodDepartmentId) {
+      throw new Error('Assign this HOD user to a department before managing department room mappings.');
+    }
+    if (isHodUser) {
+      payload.department_id = activeHodDepartmentId;
+      payload.school_id = departments.find(item => idsMatch(item.id, activeHodDepartmentId))?.school_id || payload.school_id;
+    }
     const requiredCapacity = parseInt(payload.capacity, 10) || 0;
 
     if (!payload.semester) throw new Error(`${SEMESTER_TYPE_LABEL} is required.`);
@@ -10977,13 +11133,15 @@ function DepartmentAllocationManagement() {
             <p className="text-sm text-slate-500">Search by school and department to see every mapped room.</p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            <button
-              onClick={handleDeleteOddSemesterMappings}
-              disabled={isDeletingOddSemesterMappings}
-              className="px-4 py-2 bg-rose-50 text-rose-700 border border-rose-200 rounded-lg font-bold hover:bg-rose-100 disabled:opacity-60 disabled:cursor-not-allowed"
-            >
-              {isDeletingOddSemesterMappings ? `Deleting Odd ${SEMESTER_TYPE_LABEL}s...` : `Delete Odd ${SEMESTER_TYPE_LABEL}s`}
-            </button>
+            {!isHodUser && (
+              <button
+                onClick={handleDeleteOddSemesterMappings}
+                disabled={isDeletingOddSemesterMappings}
+                className="px-4 py-2 bg-rose-50 text-rose-700 border border-rose-200 rounded-lg font-bold hover:bg-rose-100 disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {isDeletingOddSemesterMappings ? `Deleting Odd ${SEMESTER_TYPE_LABEL}s...` : `Delete Odd ${SEMESTER_TYPE_LABEL}s`}
+              </button>
+            )}
             <button
               onClick={() => setLookupFilters({ school_id: '', department_id: '', semester: '' })}
               className="px-4 py-2 bg-slate-50 text-slate-600 border border-slate-200 rounded-lg font-bold hover:bg-slate-100"
@@ -11116,6 +11274,8 @@ function DepartmentAllocationManagement() {
         enableServerPagination
         serverSearchFields={['semester', 'room_type', 'capacity']}
         serverSortKey="semester"
+        serverQueryParams={isHodUser && activeHodDepartmentId ? { department_id: activeHodDepartmentId } : {}}
+        allowReset={!isHodUser}
       />
     </div>
   );
@@ -11170,6 +11330,7 @@ function EquipmentManagement() {
 }
 
 function SchedulingManagement() {
+  const { user, selectedHodDepartmentId } = useAuth();
   const [campuses, setCampuses] = useState<any[]>([]);
   const [buildings, setBuildings] = useState<any[]>([]);
   const [blocks, setBlocks] = useState<any[]>([]);
@@ -11192,6 +11353,12 @@ function SchedulingManagement() {
     room_id: '',
     day_of_week: '',
   });
+  const isHodUser = normalizeRoleValue(user?.role) === 'hod';
+  const scopedDepartmentIds = useMemo(
+    () => getScopedDepartmentIdsForUser(user, selectedHodDepartmentId),
+    [selectedHodDepartmentId, user],
+  );
+  const activeHodDepartmentId = isHodUser ? (scopedDepartmentIds[0] || '') : '';
 
   const refreshSchedulingLookups = async () => {
     const [campusData, buildingData, blockData, floorData, roomData, departmentData, allocationData] = await fetchSharedLookupJsons([
@@ -11286,9 +11453,12 @@ function SchedulingManagement() {
     });
 
   const hasActiveScheduleFilters = Object.values(scheduleFilters).some(Boolean);
-  const scheduleServerQueryParams = Object.fromEntries(
-    Object.entries(scheduleFilters).filter(([, value]) => !!value)
-  ) as Record<string, string>;
+  const scheduleServerQueryParams = {
+    ...(Object.fromEntries(
+      Object.entries(scheduleFilters).filter(([, value]) => !!value)
+    ) as Record<string, string>),
+    ...(isHodUser && activeHodDepartmentId ? { department_id: activeHodDepartmentId } : {}),
+  };
   const scheduleFilterControls = (
     <div className="grid grid-cols-1 md:grid-cols-4 xl:grid-cols-8 gap-3 items-end">
       <div>
@@ -11374,7 +11544,7 @@ function SchedulingManagement() {
           className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
         >
           <option value="">All departments</option>
-          {departments
+          {scheduleDepartments
             .slice()
             .sort((a, b) => a.name?.localeCompare(b.name || '') || 0)
             .map(department => <option key={department.id} value={department.id}>{department.name}</option>)}
@@ -11453,7 +11623,7 @@ function SchedulingManagement() {
 
   const fields = [
     { key: 'schedule_id', label: 'Schedule ID', render: (schedule: any) => schedule?.schedule_code || schedule?.schedule_id || '-' },
-    { key: 'department_id', label: 'Department', type: 'select', options: departments.map(d => ({ value: d.id, label: d.name })) },
+    { key: 'department_id', label: 'Department', type: 'select', options: scheduleDepartments.map(d => ({ value: d.id, label: d.name })) },
     { key: 'program', label: 'Program', type: 'select', options: PROGRAM_OPTIONS, render: (schedule: any) => schedule?.program || '-' },
     {
       key: 'year_of_study',
@@ -11508,7 +11678,7 @@ function SchedulingManagement() {
   ];
 
   const findDepartmentForSchedule = (value: unknown) =>
-    departments.find(department =>
+    scheduleDepartments.find(department =>
       normalizeLookupValue(department.name) === normalizeLookupValue(value) ||
       normalizeLookupValue(department.department_id) === normalizeLookupValue(value)
     );
@@ -11552,6 +11722,7 @@ function SchedulingManagement() {
 
     return {
       ...normalizedPayload,
+      department_id: isHodUser ? (activeHodDepartmentId || normalizedPayload.department_id || null) : (normalizedPayload.department_id || null),
       room_id: data.room_id || null,
       session_group_id: data.session_group_id?.toString().trim() || buildScheduleSessionGroupId(normalizedPayload),
       import_status: normalizeScheduleImportStatus(data.import_status) || inferredImportStatus,
@@ -11631,7 +11802,9 @@ function SchedulingManagement() {
 
       const roomResolution = resolveCachedRoomSet(roomLabel);
       const resolvedRooms = roomResolution.rooms;
-      const dept = (departmentLookup.get(normalizeLookupValue(row['Department'])) || [])[0] || findDepartmentForSchedule(row['Department']);
+      const dept = isHodUser
+        ? departments.find((department: any) => idsMatch(department?.id, activeHodDepartmentId))
+        : ((departmentLookup.get(normalizeLookupValue(row['Department'])) || [])[0] || findDepartmentForSchedule(row['Department']));
       const inferredImportStatus = resolvedRooms.length > 0
         ? 'Linked'
         : roomLabel
@@ -11787,7 +11960,9 @@ function SchedulingManagement() {
         for (const schedule of validSchedules) {
           const roomResolution = resolveRoomSetForImport(rooms, schedule.room);
           const resolvedRooms = roomResolution.rooms;
-          const dept = findDepartmentForSchedule(schedule.department);
+          const dept = isHodUser
+            ? departments.find((department: any) => idsMatch(department?.id, activeHodDepartmentId))
+            : findDepartmentForSchedule(schedule.department);
           const reviewNote = resolvedRooms.length > 0
             ? null
             : roomResolution.note || 'Room label from AI import did not match a unique room in Room Management.';
@@ -11985,6 +12160,7 @@ function SchedulingManagement() {
         serverSearchFields={['schedule_code', 'schedule_id', 'program', 'specialization', 'section', 'course_code', 'course_name', 'faculty', 'room_label', 'day_of_week', 'start_time', 'end_time']}
         serverSortKey="day_of_week"
         serverQueryParams={scheduleServerQueryParams}
+        allowReset={!isHodUser}
       />
     </div>
   );
