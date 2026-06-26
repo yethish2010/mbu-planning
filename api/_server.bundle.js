@@ -739,7 +739,7 @@ var ensureUserSchoolAssignments = async (user) => {
   const school = await db.prepare(`
     SELECT id, name, school_id
     FROM schools
-    WHERE id = ?
+    WHERE CAST(id AS TEXT) = ?
        OR LOWER(TRIM(school_id)) = LOWER(TRIM(?))
        OR LOWER(TRIM(name)) = LOWER(TRIM(?))
   `).get(legacySchool, legacySchool, legacySchool);
@@ -808,7 +808,7 @@ var resolveSchoolRecordsFromValues = async (values) => {
     const school = await db.prepare(`
       SELECT id, name, school_id
       FROM schools
-      WHERE id = ?
+      WHERE CAST(id AS TEXT) = ?
          OR LOWER(TRIM(school_id)) = LOWER(TRIM(?))
          OR LOWER(TRIM(name)) = LOWER(TRIM(?))
     `).get(value, value, value);
@@ -827,7 +827,7 @@ var resolveDepartmentRecordsFromValues = async (values) => {
     const department = await db.prepare(`
       SELECT id, name, department_id, school_id
       FROM departments
-      WHERE id = ?
+      WHERE CAST(id AS TEXT) = ?
          OR LOWER(TRIM(department_id)) = LOWER(TRIM(?))
          OR LOWER(TRIM(name)) = LOWER(TRIM(?))
     `).get(value, value, value);
