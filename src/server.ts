@@ -515,6 +515,26 @@ const resolveSchoolRecordsFromValues = async (values: string[]) => {
   return resolvedSchools;
 };
 
+const resolveDepartmentRecordsFromValues = async (values: string[]) => {
+  const resolvedDepartments: any[] = [];
+  for (const value of values) {
+    const department = await db.prepare(`
+      SELECT id, name, department_id, school_id
+      FROM departments
+      WHERE CAST(id AS TEXT) = ?
+         OR LOWER(TRIM(department_id)) = LOWER(TRIM(?))
+         OR LOWER(TRIM(name)) = LOWER(TRIM(?))
+    `).get(value, value, value) as any;
+    if (!department) {
+      throw new Error(`Could not match department assignment "${value}".`);
+    }
+    if (!resolvedDepartments.some((item) => item.id === department.id)) {
+      resolvedDepartments.push(department);
+    }
+  }
+  return resolvedDepartments;
+};
+
 const syncUserSchoolAssignments = async (userId: string | number, payload: any) => {
   const explicitIds = parseDelimitedValues(payload.assigned_school_ids);
   const explicitNames = parseDelimitedValues(payload.assigned_schools);
@@ -612,6 +632,134 @@ const syncUserDepartmentAssignments = async (userId: string | number, payload: a
   }
 
   return getDepartmentAssignmentsForUser(userId);
+};
+
+const normalizeUserPayload = async (payload: any, existingItem?: any) => {
+  const nextPayload = { ...(existingItem || {}), ...(payload || {}) };
+  nextPayload.full_name = nextPayload.full_name?.toString().trim() || "";
+  nextPayload.employee_id = nextPayload.employee_id?.toString().trim() || "";
+  nextPayload.role = normalizeRoleLabel(nextPayload.role);
+  nextPayload.email = nextPayload.email?.toString().trim().toLowerCase() || "";
+  nextPayload.school = nextPayload.school?.toString().trim() || "";
+  nextPayload.department = nextPayload.department?.toString().trim() || "";
+  nextPayload.designation = nextPayload.designation?.toString().trim() || null;
+  nextPayload.mobile_number = nextPayload.mobile_number?.toString().trim() || null;
+  nextPayload.responsibilities = nextPayload.responsibilities?.toString().trim() || null;
+  nextPayload.access_limits = nextPayload.access_limits?.toString().trim() || null;
+  nextPayload.access_paths = nextPayload.access_paths?.toString().trim() || null;
+
+  if (!nextPayload.full_name) throw new Error("Full name is required.");
+  if (!nextPayload.employee_id) throw new Error("Employee ID is required.");
+  if (!nextPayload.role) throw new Error("Role is required.");
+  if (!nextPayload.email) throw new Error("Email address is required.");
+
+  const role = normalizeRoleLabel(nextPayload.role);
+  const normalizedRequestedAccessType = normalizeUserAccessTypeValue(nextPayload.access_type);
+  const requestedAccessScope = nextPayload.access_scope?.toString().trim() || "";
+  const requestedSchoolValues = Array.from(new Set([
+    ...parseDelimitedValues(nextPayload.assigned_school_ids),
+    ...parseDelimitedValues(nextPayload.assigned_schools),
+    ...(nextPayload.school ? [nextPayload.school] : []),
+  ]));
+  const requestedDepartmentValues = Array.from(new Set([
+    ...parseDelimitedValues(nextPayload.assigned_department_ids),
+    ...parseDelimitedValues(nextPayload.assigned_departments),
+    ...(nextPayload.department ? [nextPayload.department] : []),
+  ]));
+
+  const resolvedSchoolRecords = await resolveSchoolRecordsFromValues(requestedSchoolValues);
+  const resolvedDepartmentRecords = await resolveDepartmentRecordsFromValues(requestedDepartmentValues);
+  const inferredSchoolIdsFromDepartments = Array.from(new Set(
+    resolvedDepartmentRecords
+      .map((department: any) => department?.school_id?.toString())
+      .filter(Boolean),
+  ));
+  const inferredSchoolRecords = inferredSchoolIdsFromDepartments.length === 0
+    ? []
+    : (await Promise.all(
+      inferredSchoolIdsFromDepartments.map(async (schoolId) =>
+        await db.prepare("SELECT id, name, school_id FROM schools WHERE id = ?").get(schoolId) as any
+      ),
+    )).filter(Boolean);
+  const mergedSchoolRecords = [...resolvedSchoolRecords];
+  inferredSchoolRecords.forEach((school) => {
+    if (!mergedSchoolRecords.some((item) => item.id === school.id)) {
+      mergedSchoolRecords.push(school);
+    }
+  });
+
+  if (resolvedSchoolRecords.length > 0 && resolvedDepartmentRecords.some((department: any) =>
+    !resolvedSchoolRecords.some((school: any) => idsEqual(school.id, department.school_id))
+  )) {
+    throw new Error("One or more selected departments do not belong to the selected schools.");
+  }
+
+  if (DEPARTMENT_SCOPE_ROLE_VALUES.has(role) && resolvedDepartmentRecords.length === 0 && !nextPayload.department) {
+    throw new Error(`${role} users must be linked to a department.`);
+  }
+  if (SCHOOL_SCOPE_ROLE_VALUES.has(role) && mergedSchoolRecords.length === 0 && !nextPayload.school) {
+    throw new Error(`${role} users must be linked to a school.`);
+  }
+
+  const primarySchoolCandidate = nextPayload.primary_school_id?.toString().trim()
+    || nextPayload.primary_school?.toString().trim()
+    || nextPayload.school?.toString().trim()
+    || "";
+  const primaryDepartmentCandidate = nextPayload.primary_department_id?.toString().trim()
+    || nextPayload.primary_department?.toString().trim()
+    || nextPayload.department?.toString().trim()
+    || "";
+  const normalizedPrimarySchoolCandidate = primarySchoolCandidate.toLowerCase();
+  const normalizedPrimaryDepartmentCandidate = primaryDepartmentCandidate.toLowerCase();
+  const primarySchoolRecord = mergedSchoolRecords.find((school: any) =>
+    school.id?.toString() === primarySchoolCandidate
+    || school.school_id?.toString().trim().toLowerCase() === normalizedPrimarySchoolCandidate
+    || school.name?.toString().trim().toLowerCase() === normalizedPrimarySchoolCandidate
+  ) || mergedSchoolRecords[0] || null;
+  const primaryDepartmentRecord = resolvedDepartmentRecords.find((department: any) =>
+    department.id?.toString() === primaryDepartmentCandidate
+    || department.department_id?.toString().trim().toLowerCase() === normalizedPrimaryDepartmentCandidate
+    || department.name?.toString().trim().toLowerCase() === normalizedPrimaryDepartmentCandidate
+  ) || resolvedDepartmentRecords[0] || null;
+
+  nextPayload.assigned_school_ids = mergedSchoolRecords.map((school: any) => school.id?.toString()).filter(Boolean).join(",");
+  nextPayload.assigned_schools = mergedSchoolRecords.map((school: any) => school.name).filter(Boolean).join(", ");
+  nextPayload.primary_school_id = primarySchoolRecord?.id?.toString() || null;
+  nextPayload.primary_school = primarySchoolRecord?.name || null;
+  nextPayload.assigned_department_ids = resolvedDepartmentRecords.map((department: any) => department.id?.toString()).filter(Boolean).join(",");
+  nextPayload.assigned_departments = resolvedDepartmentRecords.map((department: any) => department.name).filter(Boolean).join(", ");
+  nextPayload.primary_department_id = primaryDepartmentRecord?.id?.toString() || null;
+  nextPayload.primary_department = primaryDepartmentRecord?.name || null;
+  nextPayload.school = primarySchoolRecord?.name || null;
+  nextPayload.department = primaryDepartmentRecord?.name || null;
+
+  let derivedAccessType = normalizedRequestedAccessType;
+  let derivedAccessScope = requestedAccessScope;
+  if (GLOBAL_SCOPE_ROLE_VALUES.has(role) || isAdminRole(role) || isExecutiveViewRole(role)) {
+    derivedAccessType = "Global";
+    derivedAccessScope = "All";
+  } else if (SCHOOL_SCOPE_ROLE_VALUES.has(role)) {
+    derivedAccessType = "School";
+    derivedAccessScope = mergedSchoolRecords.map((school: any) => school.name).join(", ") || nextPayload.school || requestedAccessScope || "";
+  } else if (DEPARTMENT_SCOPE_ROLE_VALUES.has(role)) {
+    derivedAccessType = "Department";
+    derivedAccessScope = resolvedDepartmentRecords.map((department: any) => department.name).join(", ") || nextPayload.department || requestedAccessScope || "";
+  } else if (!derivedAccessType) {
+    if (resolvedDepartmentRecords.length > 0 || nextPayload.department) {
+      derivedAccessType = "Department";
+      derivedAccessScope = resolvedDepartmentRecords.map((department: any) => department.name).join(", ") || nextPayload.department || requestedAccessScope || "";
+    } else if (mergedSchoolRecords.length > 0 || nextPayload.school) {
+      derivedAccessType = "School";
+      derivedAccessScope = mergedSchoolRecords.map((school: any) => school.name).join(", ") || nextPayload.school || requestedAccessScope || "";
+    } else {
+      derivedAccessType = "Global";
+      derivedAccessScope = "All";
+    }
+  }
+
+  nextPayload.access_type = derivedAccessType || null;
+  nextPayload.access_scope = derivedAccessScope || null;
+  return nextPayload;
 };
 
 const normalizeRoomTypeValue = (value: any) => {
@@ -1280,8 +1428,56 @@ const parseAIJsonResponse = (text: string) => {
   return JSON.parse(cleanText);
 };
 
-const normalizeRoleLabel = (value: any) =>
+const normalizeRoleKey = (value: any) =>
   value?.toString().trim().toLowerCase().replace(/\s+/g, " ").replace("p & m", "p&m") || "";
+const ROLE_CANONICAL_LABELS = new Map<string, string>([
+  ["administrator", "Administrator"],
+  ["admin", "Administrator"],
+  ["master admin", "Administrator"],
+  ["vice chancellor", "Vice Chancellor"],
+  ["pro chancellor", "Pro-Chancellor"],
+  ["pro-chancellor", "Pro-Chancellor"],
+  ["dean", "Dean"],
+  ["dean (p&m)", "Dean (P&M)"],
+  ["dean (p & m)", "Dean (P&M)"],
+  ["deputy dean (p&m)", "Deputy Dean (P&M)"],
+  ["deputy dean (p & m)", "Deputy Dean (P&M)"],
+  ["hod", "HOD"],
+  ["event coordinator", "Event Coordinator"],
+  ["faculty", "Faculty"],
+  ["maintenance staff", "Maintenance Staff"],
+  ["infrastructure manager", "Infrastructure Manager"],
+]);
+const normalizeRoleLabel = (value: any) => {
+  const trimmed = value?.toString().trim() || "";
+  if (!trimmed) return "";
+  return ROLE_CANONICAL_LABELS.get(normalizeRoleKey(trimmed)) || trimmed;
+};
+const buildRoleSet = (roles: string[]) => new Set(roles.map(role => normalizeRoleLabel(role)));
+const ADMIN_ROLE_VALUES = buildRoleSet(["Administrator", "Admin", "Master Admin"]);
+const EXECUTIVE_VIEW_ROLE_VALUES = buildRoleSet(["Vice Chancellor", "Pro-Chancellor"]);
+const GLOBAL_SCOPE_ROLE_VALUES = buildRoleSet([
+  "Administrator",
+  "Admin",
+  "Master Admin",
+  "Vice Chancellor",
+  "Pro-Chancellor",
+  "Dean (P&M)",
+  "Deputy Dean (P&M)",
+]);
+const SCHOOL_SCOPE_ROLE_VALUES = buildRoleSet(["Dean"]);
+const DEPARTMENT_SCOPE_ROLE_VALUES = buildRoleSet(["HOD", "Faculty", "Event Coordinator"]);
+const isAdminRole = (role: any) => ADMIN_ROLE_VALUES.has(normalizeRoleLabel(role));
+const isExecutiveViewRole = (role: any) => EXECUTIVE_VIEW_ROLE_VALUES.has(normalizeRoleLabel(role));
+const normalizeUserAccessTypeValue = (value: any) => {
+  const normalized = value?.toString().trim().toLowerCase() || "";
+  if (!normalized) return "";
+  if (normalized === "global") return "Global";
+  if (normalized === "school") return "School";
+  if (normalized === "department") return "Department";
+  if (normalized === "custom") return "Custom";
+  return value?.toString().trim() || "";
+};
 
 // --- AUTH ROUTES ---
 
@@ -2187,30 +2383,44 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
           department: req.body.department,
         }
       : null;
-    if (tableName === "users") {
-      delete req.body.assigned_schools;
-      delete req.body.assigned_school_ids;
-      delete req.body.primary_school_id;
-      delete req.body.primary_school;
-      delete req.body.assigned_departments;
-      delete req.body.assigned_department_ids;
-      delete req.body.primary_department_id;
-      delete req.body.primary_department;
-    }
     if (tableName === "rooms") {
       req.body = normalizeRoomPayload(req.body);
     }
-    req.body = await normalizeHierarchyReferencePayload(tableName, req.body);
-    const fields = Object.keys(req.body);
-    const placeholders = fields.map(() => "?").join(", ");
-    const values = Object.values(req.body);
-
-    if (tableName === "users" && req.body.password) {
-      const passIdx = fields.indexOf("password");
-      values[passIdx] = bcrypt.hashSync(req.body.password, 10);
-    }
 
     try {
+      if (tableName === "users") {
+        req.body = await normalizeUserPayload(req.body);
+        if (userAssignmentPayload) Object.assign(userAssignmentPayload, {
+          assigned_schools: req.body.assigned_schools,
+          assigned_school_ids: req.body.assigned_school_ids,
+          primary_school_id: req.body.primary_school_id,
+          primary_school: req.body.primary_school,
+          school: req.body.school,
+          assigned_departments: req.body.assigned_departments,
+          assigned_department_ids: req.body.assigned_department_ids,
+          primary_department_id: req.body.primary_department_id,
+          primary_department: req.body.primary_department,
+          department: req.body.department,
+        });
+        delete req.body.assigned_schools;
+        delete req.body.assigned_school_ids;
+        delete req.body.primary_school_id;
+        delete req.body.primary_school;
+        delete req.body.assigned_departments;
+        delete req.body.assigned_department_ids;
+        delete req.body.primary_department_id;
+        delete req.body.primary_department;
+      }
+      req.body = await normalizeHierarchyReferencePayload(tableName, req.body);
+      const fields = Object.keys(req.body);
+      const placeholders = fields.map(() => "?").join(", ");
+      const values = Object.values(req.body);
+
+      if (tableName === "users" && req.body.password) {
+        const passIdx = fields.indexOf("password");
+        values[passIdx] = bcrypt.hashSync(req.body.password, 10);
+      }
+
       const duplicateError = await checkDuplicateRecord(tableName, req.body);
       if (duplicateError) {
         return res.status(400).json({ error: duplicateError });
@@ -2396,26 +2606,42 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
           department: req.body.department,
         }
       : null;
-    if (tableName === "users") {
-      delete req.body.assigned_schools;
-      delete req.body.assigned_school_ids;
-      delete req.body.primary_school_id;
-      delete req.body.primary_school;
-      delete req.body.assigned_departments;
-      delete req.body.assigned_department_ids;
-      delete req.body.primary_department_id;
-      delete req.body.primary_department;
-    }
     if (tableName === "rooms") {
       req.body = normalizeRoomPayload(req.body);
     }
-    req.body = await normalizeHierarchyReferencePayload(tableName, req.body);
-    let fields = Object.keys(req.body);
-    let setClause = fields.map(f => `${f} = ?`).join(", ");
-    let values = [...Object.values(req.body), req.params.id];
 
     try {
       const existingItem = await db.prepare(`SELECT * FROM ${tableName} WHERE ${idField} = ?`).get(req.params.id) as any;
+      if (!existingItem) {
+        return res.status(404).json({ error: `${tableName} record not found.` });
+      }
+      if (tableName === "users") {
+        req.body = await normalizeUserPayload(req.body, existingItem);
+        if (userAssignmentPayload) Object.assign(userAssignmentPayload, {
+          assigned_schools: req.body.assigned_schools,
+          assigned_school_ids: req.body.assigned_school_ids,
+          primary_school_id: req.body.primary_school_id,
+          primary_school: req.body.primary_school,
+          school: req.body.school,
+          assigned_departments: req.body.assigned_departments,
+          assigned_department_ids: req.body.assigned_department_ids,
+          primary_department_id: req.body.primary_department_id,
+          primary_department: req.body.primary_department,
+          department: req.body.department,
+        });
+        delete req.body.assigned_schools;
+        delete req.body.assigned_school_ids;
+        delete req.body.primary_school_id;
+        delete req.body.primary_school;
+        delete req.body.assigned_departments;
+        delete req.body.assigned_department_ids;
+        delete req.body.primary_department_id;
+        delete req.body.primary_department;
+      }
+      req.body = await normalizeHierarchyReferencePayload(tableName, req.body);
+      let fields = Object.keys(req.body);
+      let setClause = fields.map(f => `${f} = ?`).join(", ");
+      let values = [...Object.values(req.body), req.params.id];
       const duplicateError = await checkDuplicateRecord(tableName, { ...existingItem, ...req.body }, req.params.id);
       if (duplicateError) {
         return res.status(400).json({ error: duplicateError });

@@ -7491,6 +7491,29 @@ function UserManagement() {
   const parseSelectionValues = (value: any) =>
     value?.toString().split(',').map((item: string) => item.trim()).filter(Boolean) || [];
 
+  const resolveLookupIdsFromValues = (
+    value: any,
+    items: any[],
+    options: { idKey?: string; codeKey?: string; nameKey?: string } = {},
+  ) => {
+    const { idKey = 'id', codeKey = '', nameKey = 'name' } = options;
+    const rawValues = Array.isArray(value)
+      ? value
+      : parseSelectionValues(value);
+    const resolvedIds = rawValues
+      .map((rawValue: any) => {
+        const normalizedRawValue = normalizeLookupValue(rawValue);
+        const matchedItem = items.find((item: any) =>
+          idsMatch(item?.[idKey], rawValue)
+          || (codeKey ? normalizeLookupValue(item?.[codeKey]) === normalizedRawValue : false)
+          || normalizeLookupValue(item?.[nameKey]) === normalizedRawValue
+        );
+        return matchedItem?.[idKey]?.toString?.() || '';
+      })
+      .filter(Boolean);
+    return Array.from(new Set(resolvedIds));
+  };
+
   const resolveSelectedSchoolIds = (formState: any) => {
     const explicitIds = parseSelectionValues(formState?.assigned_school_ids);
     if (explicitIds.length > 0) return explicitIds;
@@ -7596,21 +7619,35 @@ function UserManagement() {
     { key: 'password', label: 'Password / Admin Reset', type: 'password', formOnly: true, required: false },
   ];
 
-  const prepareFormData = (item: any) => ({
-    ...item,
-    assigned_school_ids: Array.isArray(item?.assigned_school_ids)
-      ? item.assigned_school_ids.join(',')
-      : (item?.assigned_school_ids
-        || schools.find((school: any) => normalizeLookupValue(school?.name) === normalizeLookupValue(item?.school))?.id?.toString?.()
-        || ''),
-    primary_school_id: item?.primary_school_id
-      || schools.find((school: any) => normalizeLookupValue(school?.name) === normalizeLookupValue(item?.school))?.id?.toString?.()
-      || '',
-    assigned_department_ids: Array.isArray(item?.assigned_department_ids)
-      ? item.assigned_department_ids.join(',')
-      : (item?.assigned_department_ids || ''),
-    password: '',
-  });
+  const prepareFormData = (item: any) => {
+    const assignedSchoolIds = resolveLookupIdsFromValues(
+      item?.assigned_school_ids || item?.assigned_schools || item?.school,
+      schools,
+      { codeKey: 'school_id' },
+    );
+    const primarySchoolId = item?.primary_school_id?.toString?.()
+      || resolveLookupIdsFromValues(item?.primary_school || item?.school, schools, { codeKey: 'school_id' })[0]
+      || assignedSchoolIds[0]
+      || '';
+    const assignedDepartmentIds = resolveLookupIdsFromValues(
+      item?.assigned_department_ids || item?.assigned_departments || item?.department,
+      departments,
+      { codeKey: 'department_id' },
+    );
+    const primaryDepartmentId = item?.primary_department_id?.toString?.()
+      || resolveLookupIdsFromValues(item?.primary_department || item?.department, departments, { codeKey: 'department_id' })[0]
+      || assignedDepartmentIds[0]
+      || '';
+
+    return {
+      ...item,
+      assigned_school_ids: assignedSchoolIds.join(','),
+      primary_school_id: primarySchoolId,
+      assigned_department_ids: assignedDepartmentIds.join(','),
+      primary_department_id: primaryDepartmentId,
+      password: '',
+    };
+  };
   const prepareSubmitData = (data: any, editingItem: any) => {
     const payload = { ...data };
     payload.role = canonicalizeRoleLabel(payload.role);
@@ -7635,9 +7672,12 @@ function UserManagement() {
       || assignedDepartments[0]
       || null;
 
+    payload.assigned_school_ids = assignedSchools.map((school: any) => school.id?.toString?.()).filter(Boolean).join(',');
     payload.primary_school_id = primarySchool?.id?.toString?.() || '';
     payload.primary_school = primarySchool?.name || '';
     payload.assigned_schools = assignedSchools.map((school: any) => school.name).join(', ');
+    payload.assigned_department_ids = assignedDepartments.map((department: any) => department.id?.toString?.()).filter(Boolean).join(',');
+    payload.primary_department_id = primaryDepartment?.id?.toString?.() || '';
     payload.school = primarySchool?.name || payload.school || '';
     payload.department = primaryDepartment?.name || payload.department || '';
     payload.assigned_departments = assignedDepartments.map((department: any) => department.name).join(', ');
