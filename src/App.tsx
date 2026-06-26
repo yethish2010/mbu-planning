@@ -10820,7 +10820,7 @@ function DepartmentAllocationManagement() {
   const getAvailableRoomOptions = (formData: any) => {
     return rooms
       .filter(room => {
-        if (!isRoomReservable(room)) return false;
+        if (!isRoomAllocatable(room)) return false;
 
         const { floor, block, building } = getRoomPath(room);
         if (!floor || !block || !building) return false;
@@ -10836,9 +10836,10 @@ function DepartmentAllocationManagement() {
         const fitLabel = requestedCapacity
           ? room.capacity >= requestedCapacity ? `Good fit, ${room.capacity} seats` : `Under capacity, ${room.capacity} seats`
           : `${room.capacity} seats`;
+        const statusLabel = room?.status && room.status !== 'Available' ? ` - ${room.status}` : '';
         return {
           value: room.id,
-          label: `${getRoomDisplayLabel(room, rooms)} - ${fitLabel} - ${getFloorDisplayLabel(floor, blocks, buildings)}`,
+          label: `${getRoomDisplayLabel(room, rooms)} - ${fitLabel} - ${getFloorDisplayLabel(floor, blocks, buildings)}${statusLabel}`,
         };
       });
   };
