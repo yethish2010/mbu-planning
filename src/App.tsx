@@ -12485,6 +12485,15 @@ function BookingManagement() {
   const getBookingPolicyLabel = (booking: any) => booking.purpose_type || 'Non-Academic';
   const isTemporaryOverrideBookingRecord = (booking: any) => Number(booking.timing_override || 0) === 1;
   const getBookingAssignmentKey = (booking: any) => booking.request_group_id || booking.id?.toString?.() || '';
+  const isPastBookingWindow = (booking: any) => {
+    const bookingDates = (booking.booking_dates || [booking.date])
+      .map((date: string) => normalizeComparableDateValue(date))
+      .filter(Boolean);
+    const lastDate = [...bookingDates].sort().at(-1) || normalizeComparableDateValue(booking.date);
+    if (!lastDate) return false;
+    const bookingEnd = new Date(`${lastDate}T${booking.end_time || booking.start_time || '00:00'}`);
+    return !Number.isNaN(bookingEnd.getTime()) && bookingEnd.getTime() < Date.now();
+  };
   const isBookingRequester = (booking: any) => {
     const bookingRequesterUserId = booking?.requester_user_id?.toString?.().trim?.() || '';
     const currentUserId = user?.id?.toString?.().trim?.() || '';
@@ -12714,12 +12723,14 @@ function BookingManagement() {
     });
   };
   const getDisplayStatus = (booking: any) => {
-    const bookingDates = (booking.booking_dates || [booking.date])
-      .map((date: string) => normalizeComparableDateValue(date))
-      .filter(Boolean);
-    const lastDate = [...bookingDates].sort().at(-1) || normalizeComparableDateValue(booking.date);
-    const bookingEnd = new Date(`${lastDate}T${booking.end_time || booking.start_time || '00:00'}`);
-    return booking.status === 'Approved' && bookingEnd.getTime() < Date.now() ? 'Past' : booking.status || 'Pending';
+    const baseStatus = booking.status || 'Pending';
+    if (
+      isPastBookingWindow(booking) &&
+      ['Pending', 'HOD Recommended', 'Approved', 'No Room Available', 'Waitlisted', 'Clarification Required', 'Awaiting Alternative Response'].includes(baseStatus)
+    ) {
+      return 'Past';
+    }
+    return baseStatus;
   };
   const filteredBookings = groupedBookings.filter(booking => {
     const displayStatus = getDisplayStatus(booking);
@@ -13248,6 +13259,10 @@ function BookingManagement() {
 
   const loadAssignableRoomsForBooking = async (booking: any) => {
     const assignmentKey = getBookingAssignmentKey(booking);
+    if (isPastBookingWindow(booking)) {
+      setBookingMessage({ type: 'error', text: 'This room request is already in the past, so vacant-room search is no longer available. Use Book Again if you want to recreate it for a future slot.' });
+      return;
+    }
     setBookingRoomCandidateLoading(prev => ({ ...prev, [assignmentKey]: true }));
     try {
       const bookingItems = getBookingItems(booking);
