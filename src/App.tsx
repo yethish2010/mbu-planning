@@ -229,6 +229,8 @@ const ROLE_CANONICAL_LABELS = new Map<string, string>([
   ['deputy dean (p&m)', 'Deputy Dean (P&M)'],
   ['deputy dean (p & m)', 'Deputy Dean (P&M)'],
   ['hod', 'HOD'],
+  ['timetable coordinator', 'Timetable Coordinator'],
+  ['time table coordinator', 'Timetable Coordinator'],
   ['event coordinator', 'Event Coordinator'],
   ['faculty', 'Faculty'],
   ['maintenance staff', 'Maintenance Staff'],
@@ -244,7 +246,7 @@ const canonicalizeRoleLabel = (value: unknown) => {
 const ADMIN_ROLE_OPTIONS = ['Administrator', 'Admin', 'Master Admin'];
 const EXECUTIVE_ROLE_OPTIONS = ['Vice Chancellor', 'Pro-Chancellor'];
 const SCHOOL_SCOPED_ROLE_OPTIONS = ['Dean'];
-const DEPARTMENT_SCOPED_ROLE_OPTIONS = ['HOD', 'Faculty', 'Event Coordinator'];
+const DEPARTMENT_SCOPED_ROLE_OPTIONS = ['HOD', 'Timetable Coordinator', 'Faculty', 'Event Coordinator'];
 const USER_ROLE_OPTIONS = [
   ...ADMIN_ROLE_OPTIONS,
   ...EXECUTIVE_ROLE_OPTIONS,
@@ -252,6 +254,7 @@ const USER_ROLE_OPTIONS = [
   'Dean (P&M)',
   'Deputy Dean (P&M)',
   'HOD',
+  'Timetable Coordinator',
   'Event Coordinator',
   'Faculty',
   'Maintenance Staff',
@@ -267,6 +270,20 @@ const isAdminRole = (role: unknown) => ADMIN_ROLE_SET.has(normalizeRoleValue(rol
 const isExecutiveRole = (role: unknown) => EXECUTIVE_ROLE_SET.has(normalizeRoleValue(role));
 const isSchoolScopedRole = (role: unknown) => SCHOOL_SCOPED_ROLE_SET.has(normalizeRoleValue(role));
 const isDepartmentScopedRole = (role: unknown) => DEPARTMENT_SCOPED_ROLE_SET.has(normalizeRoleValue(role));
+const USER_MANAGEMENT_ROLE_MATRIX: Record<string, { creatableRoles: string[]; scopedToDepartment: boolean }> = {
+  'Master Admin': { creatableRoles: USER_ROLE_OPTIONS, scopedToDepartment: false },
+  'Admin': { creatableRoles: USER_ROLE_OPTIONS.filter(role => role !== 'Master Admin'), scopedToDepartment: false },
+  'Administrator': { creatableRoles: USER_ROLE_OPTIONS.filter(role => role !== 'Master Admin'), scopedToDepartment: false },
+  'Dean (P&M)': {
+    creatableRoles: ['Dean', 'Deputy Dean (P&M)', 'HOD', 'Timetable Coordinator', 'Event Coordinator', 'Faculty', 'Maintenance Staff', 'Infrastructure Manager'],
+    scopedToDepartment: false,
+  },
+  'HOD': {
+    creatableRoles: ['Timetable Coordinator', 'Event Coordinator'],
+    scopedToDepartment: true,
+  },
+};
+const getUserManagementPolicy = (role: unknown) => USER_MANAGEMENT_ROLE_MATRIX[canonicalizeRoleLabel(role)] || null;
 const getAssignedDepartmentIdsForUser = (user: any) => {
   const explicitIds = Array.isArray(user?.assigned_department_ids)
     ? user.assigned_department_ids
@@ -2434,9 +2451,9 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       'Use Primary School only when Assigned Schools has one or more schools. The primary value should also be present in Assigned Schools.',
       'Use Primary Department only when Assigned Departments has one or more departments. The primary value should also be present in Assigned Departments.',
       'For Dean users, fill Assigned Schools and optionally Primary School. Assigned Departments and Primary Department can stay blank unless you want to provide extra context.',
-      'For HOD, Faculty, and Event Coordinator users, fill Assigned Departments and Primary Department. The system will infer Assigned Schools from the selected departments when possible.',
+      'For HOD, Timetable Coordinator, Faculty, and Event Coordinator users, fill Assigned Departments and Primary Department. The system will infer Assigned Schools from the selected departments when possible.',
       'Global roles like Admin, Master Admin, Vice Chancellor, Pro-Chancellor, Dean (P&M), and Deputy Dean (P&M) can keep school and department assignment columns blank.',
-      'Access Type and Access Scope are imported for clarity, but standard roles still derive their final scope automatically: Global for admin/executive roles, School for Dean, and Department for HOD/Faculty/Event Coordinator.',
+      'Access Type and Access Scope are imported for clarity, but standard roles still derive their final scope automatically: Global for admin/executive roles, School for Dean, and Department for HOD/Timetable Coordinator/Faculty/Event Coordinator.',
     ],
   },
   Campus: {
@@ -3876,8 +3893,8 @@ function Sidebar() {
 
   const customAccessPaths = user?.access_paths?.split(',').map((path: string) => path.trim()).filter(Boolean) || [];
   const menuItems = [
-    { name: 'Dashboard', icon: LayoutDashboard, path: '/', roles: ['Administrator', 'Admin', 'Master Admin', 'Faculty', 'HOD', 'Dean', 'Event Coordinator', 'Dean (P&M)', 'Deputy Dean (P&M)', 'Maintenance Staff', 'Infrastructure Manager', ...executiveMenuRoles] },
-    { name: 'User Management', icon: Users, path: '/users', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)'] },
+    { name: 'Dashboard', icon: LayoutDashboard, path: '/', roles: ['Administrator', 'Admin', 'Master Admin', 'Faculty', 'HOD', 'Dean', 'Timetable Coordinator', 'Event Coordinator', 'Dean (P&M)', 'Deputy Dean (P&M)', 'Maintenance Staff', 'Infrastructure Manager', ...executiveMenuRoles] },
+    { name: 'User Management', icon: Users, path: '/users', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)', 'HOD'] },
     { name: 'Campus Management', icon: Globe, path: '/campuses', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)'] },
     { name: 'Building Management', icon: Building2, path: '/buildings', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)'] },
     { name: 'Block Management', icon: Layers, path: '/blocks', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)'] },
@@ -3890,10 +3907,10 @@ function Sidebar() {
     { name: 'Department Room Mapping', icon: DoorOpen, path: '/dept-allocation', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)'] },
     { name: 'Batch Room Allocation', icon: DoorOpen, path: '/batch-room-allocations', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)'] },
     { name: 'Equipment Management', icon: Wrench, path: '/equipment', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Maintenance Staff', 'Dean (P&M)'] },
-    { name: 'Schedule Records', icon: Calendar, path: '/scheduling', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD'] },
-    { name: 'Timetable View', icon: Clock, path: '/timetable', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD'] },
+    { name: 'Schedule Records', icon: Calendar, path: '/scheduling', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Timetable Coordinator'] },
+    { name: 'Timetable View', icon: Clock, path: '/timetable', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Timetable Coordinator'] },
     { name: 'Digital Twin', icon: Globe, path: '/digital-twin', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean', 'HOD', ...executiveMenuRoles] },
-    { name: 'Live Availability', icon: MapIcon, path: '/live-availability', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Faculty', 'Event Coordinator', 'Infrastructure Manager', ...executiveMenuRoles] },
+    { name: 'Live Availability', icon: MapIcon, path: '/live-availability', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Timetable Coordinator', 'Faculty', 'Event Coordinator', 'Infrastructure Manager', ...executiveMenuRoles] },
     { name: 'Room Bookings', icon: BookOpen, path: '/bookings', roles: [...approvalRoles, 'Dean'] },
     { name: 'Room Requests', icon: BookOpen, path: '/bookings', roles: ['Faculty', 'HOD', 'Event Coordinator'] },
     { name: 'AI Room Recommendation', icon: BrainCircuit, path: '/ai-allocation', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)', 'Deputy Dean (P&M)'] },
@@ -4573,7 +4590,7 @@ export default function App() {
             </ProtectedRoute>
           } />
 
-          <Route path="/users" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)']}><Layout title="User Management"><UserManagement /></Layout></ProtectedRoute>} />
+          <Route path="/users" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)', 'HOD']}><Layout title="User Management"><UserManagement /></Layout></ProtectedRoute>} />
 
           {/* CRUD Routes Placeholder */}
           <Route path="/campuses" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)']}><Layout title="Campus Management"><CampusManagement /></Layout></ProtectedRoute>} />
@@ -4683,7 +4700,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/scheduling" element={
-            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Timetable Coordinator']}>
               <Layout title="Schedule Records">
                 <DependencyGuard dependencies={[
                   { table: 'rooms', label: 'Rooms' },
@@ -4725,7 +4742,7 @@ export default function App() {
           <Route path="/reports" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)', 'Vice Chancellor', 'Pro-Chancellor']}><Layout title="Utilization Reports"><ReportGeneration /></Layout></ProtectedRoute>} />
           <Route path="/performance-insights" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Vice Chancellor', 'Pro-Chancellor']}><Layout title="Performance Insights"><PerformanceInsights /></Layout></ProtectedRoute>} />
           <Route path="/timetable" element={
-            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Timetable Coordinator']}>
               <Layout title="Timetable View">
                 <DependencyGuard dependencies={[{ table: 'rooms', label: 'Rooms' }]}>
                   <TimetableBuilder />
@@ -4743,7 +4760,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/live-availability" element={
-            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Faculty', 'Event Coordinator', 'Infrastructure Manager', 'Vice Chancellor', 'Pro-Chancellor']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Timetable Coordinator', 'Faculty', 'Event Coordinator', 'Infrastructure Manager', 'Vice Chancellor', 'Pro-Chancellor']}>
               <Layout title="Live Room Availability">
                 <DependencyGuard dependencies={[{ table: 'rooms', label: 'Rooms' }]}>
                   <LiveRoomAvailability />
@@ -7503,6 +7520,7 @@ function GenericCRUD({
 // --- SPECIFIC MODULES ---
 
 function UserManagement() {
+  const { user } = useAuth();
   const [schools, setSchools] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
   useEffect(() => {
@@ -7519,6 +7537,22 @@ function UserManagement() {
 
   const parseSelectionValues = (value: any) =>
     value?.toString().split(',').map((item: string) => item.trim()).filter(Boolean) || [];
+  const userManagementPolicy = getUserManagementPolicy(user?.role);
+  const manageableRoleOptions = userManagementPolicy?.creatableRoles || [];
+  const actorDepartmentIds = getAssignedDepartmentIdsForUser(user)
+    .map((departmentId: any) => departmentId?.toString?.() || '')
+    .filter(Boolean);
+  const canManageUserRecord = (item: any) => {
+    if (!userManagementPolicy) return false;
+    const targetRole = canonicalizeRoleLabel(item?.role);
+    if (!manageableRoleOptions.includes(targetRole)) return false;
+    if (!userManagementPolicy.scopedToDepartment) return true;
+    const targetDepartmentIds = Array.from(new Set([
+      ...parseSelectionValues(item?.assigned_department_ids),
+      item?.primary_department_id?.toString?.() || '',
+    ].filter(Boolean)));
+    return targetDepartmentIds.length > 0 && targetDepartmentIds.some((departmentId: string) => actorDepartmentIds.includes(departmentId));
+  };
 
   const resolveLookupIdsFromValues = (
     value: any,
@@ -7579,7 +7613,7 @@ function UserManagement() {
   const fields = [
     { key: 'full_name', label: 'Full Name' },
     { key: 'employee_id', label: 'Employee ID' },
-    { key: 'role', label: 'Role', type: 'select', options: USER_ROLE_OPTIONS },
+    { key: 'role', label: 'Role', type: 'select', options: manageableRoleOptions },
     { key: 'email', label: 'Email Address' },
     {
       key: 'assigned_school_ids',
@@ -7765,7 +7799,18 @@ function UserManagement() {
     await upsertImportRecordsBulk('/api/users', entries);
   };
 
-  return <GenericCRUD type="User" fields={fields} apiPath="/api/users" onImport={handleImport} prepareFormData={prepareFormData} prepareSubmitData={prepareSubmitData} />;
+  return (
+    <GenericCRUD
+      type="User"
+      fields={fields}
+      apiPath="/api/users"
+      onImport={isAdminRole(user?.role) ? handleImport : undefined}
+      prepareFormData={prepareFormData}
+      prepareSubmitData={prepareSubmitData}
+      dataFilter={canManageUserRecord}
+      allowReset={isAdminRole(user?.role)}
+    />
+  );
 }
 
 function CampusManagement() {

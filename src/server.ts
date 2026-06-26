@@ -495,6 +495,51 @@ const parseDelimitedValues = (value: any) => {
   return value?.toString().split(/[;,]/).map((item: string) => item.trim()).filter(Boolean) || [];
 };
 
+const getTargetDepartmentIdsFromPayload = (payload: any) => Array.from(new Set([
+  ...parseDelimitedValues(payload?.assigned_department_ids),
+  payload?.primary_department_id?.toString?.() || "",
+  payload?.department_id?.toString?.() || "",
+].filter(Boolean)));
+
+const getTargetDepartmentIdsFromUserRecord = async (user: any) => {
+  const context = await buildUserDepartmentContext(user);
+  return Array.from(new Set([
+    ...context.assignedDepartmentIds,
+    context.primaryDepartmentId || "",
+  ].filter(Boolean)));
+};
+
+const getScopedActorDepartmentIds = (user: any) =>
+  Array.from(getAccessibleDepartmentIdSet(user)).map((departmentId) => departmentId?.toString?.() || "").filter(Boolean);
+
+const canActorManageExistingUser = async (actor: any, targetUser: any) => {
+  const policy = getUserManagementPolicy(actor);
+  if (!policy || !targetUser) return false;
+  const targetRole = normalizeRoleLabel(targetUser.role);
+  if (!policy.creatableRoleSet.has(targetRole)) return false;
+  if (!policy.scopedToDepartment) return true;
+  const actorDepartmentIds = getScopedActorDepartmentIds(actor);
+  const targetDepartmentIds = await getTargetDepartmentIdsFromUserRecord(targetUser);
+  return targetDepartmentIds.length > 0 && targetDepartmentIds.some((departmentId) => actorDepartmentIds.includes(departmentId));
+};
+
+const assertActorCanManageUserPayload = async (actor: any, payload: any, existingUser?: any) => {
+  const policy = getUserManagementPolicy(actor);
+  if (!policy) {
+    throw new Error("You do not have permission to manage users.");
+  }
+  const targetRole = normalizeRoleLabel(payload?.role || existingUser?.role);
+  if (!policy.creatableRoleSet.has(targetRole)) {
+    throw new Error("You can only create or manage subordinate roles allowed for your account.");
+  }
+  if (!policy.scopedToDepartment) return;
+  const actorDepartmentIds = getScopedActorDepartmentIds(actor);
+  const targetDepartmentIds = getTargetDepartmentIdsFromPayload(payload);
+  if (targetDepartmentIds.length === 0 || !targetDepartmentIds.some((departmentId) => actorDepartmentIds.includes(departmentId))) {
+    throw new Error("You can manage users only inside your assigned department.");
+  }
+};
+
 const resolveSchoolRecordsFromValues = async (values: string[]) => {
   const resolvedSchools: any[] = [];
   for (const value of values) {
@@ -1443,6 +1488,8 @@ const ROLE_CANONICAL_LABELS = new Map<string, string>([
   ["deputy dean (p&m)", "Deputy Dean (P&M)"],
   ["deputy dean (p & m)", "Deputy Dean (P&M)"],
   ["hod", "HOD"],
+  ["timetable coordinator", "Timetable Coordinator"],
+  ["time table coordinator", "Timetable Coordinator"],
   ["event coordinator", "Event Coordinator"],
   ["faculty", "Faculty"],
   ["maintenance staff", "Maintenance Staff"],
@@ -1466,9 +1513,36 @@ const GLOBAL_SCOPE_ROLE_VALUES = buildRoleSet([
   "Deputy Dean (P&M)",
 ]);
 const SCHOOL_SCOPE_ROLE_VALUES = buildRoleSet(["Dean"]);
-const DEPARTMENT_SCOPE_ROLE_VALUES = buildRoleSet(["HOD", "Faculty", "Event Coordinator"]);
+const DEPARTMENT_SCOPE_ROLE_VALUES = buildRoleSet(["HOD", "Timetable Coordinator", "Faculty", "Event Coordinator"]);
 const isAdminRole = (role: any) => ADMIN_ROLE_VALUES.has(normalizeRoleLabel(role));
 const isExecutiveViewRole = (role: any) => EXECUTIVE_VIEW_ROLE_VALUES.has(normalizeRoleLabel(role));
+const USER_ROLE_OPTIONS = [
+  "Administrator",
+  "Admin",
+  "Master Admin",
+  "Vice Chancellor",
+  "Pro-Chancellor",
+  "Dean",
+  "Dean (P&M)",
+  "Deputy Dean (P&M)",
+  "HOD",
+  "Timetable Coordinator",
+  "Event Coordinator",
+  "Faculty",
+  "Maintenance Staff",
+  "Infrastructure Manager",
+];
+const USER_MANAGEMENT_ROLE_MATRIX: Record<string, { creatableRoleSet: Set<string>; scopedToDepartment: boolean }> = {
+  "Master Admin": { creatableRoleSet: buildRoleSet(USER_ROLE_OPTIONS), scopedToDepartment: false },
+  "Admin": { creatableRoleSet: buildRoleSet(USER_ROLE_OPTIONS.filter((role) => role !== "Master Admin")), scopedToDepartment: false },
+  "Administrator": { creatableRoleSet: buildRoleSet(USER_ROLE_OPTIONS.filter((role) => role !== "Master Admin")), scopedToDepartment: false },
+  "Dean (P&M)": {
+    creatableRoleSet: buildRoleSet(["Dean", "Deputy Dean (P&M)", "HOD", "Timetable Coordinator", "Event Coordinator", "Faculty", "Maintenance Staff", "Infrastructure Manager"]),
+    scopedToDepartment: false,
+  },
+  "HOD": { creatableRoleSet: buildRoleSet(["Timetable Coordinator", "Event Coordinator"]), scopedToDepartment: true },
+};
+const getUserManagementPolicy = (user: any) => USER_MANAGEMENT_ROLE_MATRIX[normalizeRoleLabel(user?.role)] || null;
 const normalizeUserAccessTypeValue = (value: any) => {
   const normalized = value?.toString().trim().toLowerCase() || "";
   if (!normalized) return "";
@@ -2305,6 +2379,10 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
   app.get(`/api/${tableName}`, authenticate, async (req, res) => {
     try {
       if (tableName === "users") {
+        const policy = getUserManagementPolicy((req as any).user);
+        if (!policy) {
+          return res.status(403).json({ error: "You do not have permission to view users." });
+        }
         const users = await db.prepare(`SELECT * FROM users`).all() as any[];
         const enrichedUsers = await Promise.all(users.map(async (user: any) => {
           const schoolContext = await buildUserSchoolContext(user);
@@ -2323,7 +2401,13 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
             assigned_departments: context.assignedDepartmentNames.join(", "),
           };
         }));
-        return res.json(enrichedUsers);
+        const visibleUsers = [];
+        for (const userRow of enrichedUsers) {
+          if (await canActorManageExistingUser((req as any).user, userRow)) {
+            visibleUsers.push(userRow);
+          }
+        }
+        return res.json(visibleUsers);
       }
 
       if (tableName === "bookings") {
@@ -2354,8 +2438,8 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
   });
 
   app.post(`/api/${tableName}`, authenticate, async (req, res) => {
-    if (tableName === "users" && (req as any).user?.role !== "Administrator") {
-      return res.status(403).json({ error: "Only Administrator can manage users and passwords." });
+    if (tableName === "users" && !getUserManagementPolicy((req as any).user)) {
+      return res.status(403).json({ error: "You do not have permission to manage users." });
     }
     if (tableName === "users" && !req.body.password) {
       req.body.password = "Welcome123";
@@ -2390,6 +2474,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     try {
       if (tableName === "users") {
         req.body = await normalizeUserPayload(req.body);
+        await assertActorCanManageUserPayload((req as any).user, req.body);
         if (userAssignmentPayload) Object.assign(userAssignmentPayload, {
           assigned_schools: req.body.assigned_schools,
           assigned_school_ids: req.body.assigned_school_ids,
@@ -2580,8 +2665,8 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
   });
 
   app.put(`/api/${tableName}/:id`, authenticate, async (req, res) => {
-    if (tableName === "users" && (req as any).user?.role !== "Administrator") {
-      return res.status(403).json({ error: "Only Administrator can manage users and passwords." });
+    if (tableName === "users" && !getUserManagementPolicy((req as any).user)) {
+      return res.status(403).json({ error: "You do not have permission to manage users." });
     }
     if (tableName === "users" && !req.body.password) {
       delete req.body.password;
@@ -2616,7 +2701,11 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         return res.status(404).json({ error: `${tableName} record not found.` });
       }
       if (tableName === "users") {
+        if (!(await canActorManageExistingUser((req as any).user, existingItem))) {
+          return res.status(403).json({ error: "You can manage only subordinate users allowed for your account." });
+        }
         req.body = await normalizeUserPayload(req.body, existingItem);
+        await assertActorCanManageUserPayload((req as any).user, req.body, existingItem);
         if (userAssignmentPayload) Object.assign(userAssignmentPayload, {
           assigned_schools: req.body.assigned_schools,
           assigned_school_ids: req.body.assigned_school_ids,
@@ -2841,8 +2930,8 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
   });
 
   app.delete(`/api/${tableName}/reset`, authenticate, async (req, res) => {
-    if (tableName === "users" && (req as any).user?.role !== "Administrator") {
-      return res.status(403).json({ error: "Only Administrator can remove users." });
+    if (tableName === "users" && !isAdminRole((req as any).user?.role)) {
+      return res.status(403).json({ error: "Only Admin or Master Admin can reset all users." });
     }
     try {
       if (tableName === "users") {
@@ -2857,11 +2946,14 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
   });
 
   app.delete(`/api/${tableName}/:id`, authenticate, async (req, res) => {
-    if (tableName === "users" && (req as any).user?.role !== "Administrator") {
-      return res.status(403).json({ error: "Only Administrator can remove users." });
+    if (tableName === "users" && !getUserManagementPolicy((req as any).user)) {
+      return res.status(403).json({ error: "You do not have permission to remove users." });
     }
     try {
       const existingItem = await db.prepare(`SELECT * FROM ${tableName} WHERE ${idField} = ?`).get(req.params.id) as any;
+      if (tableName === "users" && !(await canActorManageExistingUser((req as any).user, existingItem))) {
+        return res.status(403).json({ error: "You can remove only subordinate users allowed for your account." });
+      }
       if (tableName === "users") {
         await db.prepare(`DELETE FROM user_school_assignments WHERE user_id = ?`).run(req.params.id);
         await db.prepare(`DELETE FROM user_department_assignments WHERE user_id = ?`).run(req.params.id);
