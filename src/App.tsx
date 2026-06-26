@@ -9858,6 +9858,7 @@ function BatchRoomAllocationManagement() {
   const [buildings, setBuildings] = useState<any[]>([]);
   const [calendars, setCalendars] = useState<any[]>([]);
   const [departmentAllocations, setDepartmentAllocations] = useState<any[]>([]);
+  const [batchAllocations, setBatchAllocations] = useState<any[]>([]);
   const [lookupFilters, setLookupFilters] = useState({ school_id: '', department_id: '', status: '' });
   const [lookupResults, setLookupResults] = useState<any[]>([]);
   const [lookupPage, setLookupPage] = useState(1);
@@ -9880,6 +9881,7 @@ function BatchRoomAllocationManagement() {
       buildingData,
       calendarData,
       departmentAllocationData,
+      batchAllocationData,
     ] = await fetchSharedLookupJsons([
       '/api/schools',
       '/api/departments',
@@ -9889,6 +9891,7 @@ function BatchRoomAllocationManagement() {
       '/api/buildings',
       '/api/academic_calendars',
       '/api/department_allocations',
+      '/api/batch_room_allocations',
     ]);
 
     setSchools(Array.isArray(schoolData) ? schoolData : []);
@@ -9899,6 +9902,7 @@ function BatchRoomAllocationManagement() {
     setBuildings(Array.isArray(buildingData) ? buildingData : []);
     setCalendars(Array.isArray(calendarData) ? calendarData : []);
     setDepartmentAllocations(Array.isArray(departmentAllocationData) ? departmentAllocationData : []);
+    setBatchAllocations(Array.isArray(batchAllocationData) ? batchAllocationData : []);
   };
 
   useEffect(() => {
@@ -10004,6 +10008,60 @@ function BatchRoomAllocationManagement() {
   const scopedCalendars = isHodUser
     ? calendars.filter((calendar: any) => scopedDepartmentIds.some((departmentId) => idsMatch(calendar?.department_id, departmentId)))
     : calendars;
+  const hodDepartmentRoomMappings = useMemo(() => {
+    if (!isHodUser) return [];
+    return departmentAllocations
+      .filter((allocation: any) => scopedDepartmentIds.some((departmentId) => idsMatch(allocation?.department_id, departmentId)))
+      .map((allocation: any) => {
+        const room = rooms.find((item: any) => idsMatch(item.id, allocation.room_id));
+        const department = departments.find((item: any) => idsMatch(item.id, allocation.department_id));
+        const { floor, block, building } = getRoomPath(room);
+        const normalizedSemester = normalizeSemesterValue(allocation.semester, '');
+        const linkedBatchAllocations = batchAllocations.filter((item: any) =>
+          idsMatch(item.department_id, allocation.department_id) &&
+          idsMatch(item.room_id, allocation.room_id) &&
+          normalizeSemesterValue(item.semester, '') === normalizedSemester
+        );
+        return {
+          allocation,
+          room,
+          department,
+          floor,
+          block,
+          building,
+          linkedBatchAllocations,
+        };
+      })
+      .sort((a: any, b: any) => {
+        const departmentCompare = (a.department?.name || '').localeCompare(b.department?.name || '');
+        if (departmentCompare !== 0) return departmentCompare;
+        const semesterCompare = (a.allocation?.semester || '').localeCompare(b.allocation?.semester || '');
+        if (semesterCompare !== 0) return semesterCompare;
+        return (a.room ? getRoomDisplayLabel(a.room, rooms) : '').localeCompare(b.room ? getRoomDisplayLabel(b.room, rooms) : '');
+      });
+  }, [batchAllocations, departments, departmentAllocations, isHodUser, rooms, scopedDepartmentIds, floors, blocks, buildings]);
+  const hodDepartmentRoomSummary = useMemo(() => {
+    if (!isHodUser) {
+      return { departments: 0, mappedRows: 0, uniqueRooms: 0, roomsInUse: 0, roomsAvailable: 0 };
+    }
+    const departmentIds = new Set<string>();
+    const roomIds = new Set<string>();
+    const roomIdsInUse = new Set<string>();
+    hodDepartmentRoomMappings.forEach((entry: any) => {
+      const departmentId = entry.allocation?.department_id?.toString?.();
+      const roomId = entry.allocation?.room_id?.toString?.();
+      if (departmentId) departmentIds.add(departmentId);
+      if (roomId) roomIds.add(roomId);
+      if (roomId && entry.linkedBatchAllocations.length > 0) roomIdsInUse.add(roomId);
+    });
+    return {
+      departments: departmentIds.size,
+      mappedRows: hodDepartmentRoomMappings.length,
+      uniqueRooms: roomIds.size,
+      roomsInUse: roomIdsInUse.size,
+      roomsAvailable: Math.max(0, roomIds.size - roomIdsInUse.size),
+    };
+  }, [hodDepartmentRoomMappings, isHodUser]);
   const schoolOptions = scopedSchools
     .slice()
     .sort((a, b) => a.name?.localeCompare(b.name || '') || 0)
@@ -10518,6 +10576,99 @@ function BatchRoomAllocationManagement() {
 
   return (
     <div className="space-y-6">
+      {isHodUser && (
+        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+          <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 mb-5">
+            <div>
+              <h3 className="text-lg font-bold text-slate-800">My Department Rooms</h3>
+              <p className="text-sm text-slate-500">
+                These rooms are mapped by Dean (P&amp;M) for your department scope and are the only rooms available for batch allocation.
+              </p>
+            </div>
+            <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+              Use this room pool below when creating or updating batch room allocations.
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4 mb-6">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-4">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Departments</p>
+              <p className="mt-2 text-2xl font-bold text-slate-900">{hodDepartmentRoomSummary.departments}</p>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-4">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Mapped Rows</p>
+              <p className="mt-2 text-2xl font-bold text-slate-900">{hodDepartmentRoomSummary.mappedRows}</p>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-4">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Unique Rooms</p>
+              <p className="mt-2 text-2xl font-bold text-slate-900">{hodDepartmentRoomSummary.uniqueRooms}</p>
+            </div>
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-4">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-amber-700">Rooms In Use</p>
+              <p className="mt-2 text-2xl font-bold text-amber-800">{hodDepartmentRoomSummary.roomsInUse}</p>
+            </div>
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-4">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-700">Rooms Available</p>
+              <p className="mt-2 text-2xl font-bold text-emerald-800">{hodDepartmentRoomSummary.roomsAvailable}</p>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto border border-slate-100 rounded-xl">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-100">
+                  {['Department', SEMESTER_TYPE_LABEL, 'Room', 'Capacity', 'Type', 'Building', 'Block', 'Floor', 'Usage', 'Open'].map((header) => (
+                    <th key={header} className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{header}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {hodDepartmentRoomMappings.map((entry: any) => {
+                  const usageCount = entry.linkedBatchAllocations.length;
+                  const usageLabel = usageCount > 0
+                    ? `${usageCount} batch allocation${usageCount === 1 ? '' : 's'} linked`
+                    : 'Mapped only';
+                  return (
+                    <tr key={entry.allocation.id} className="hover:bg-slate-50">
+                      <td className="px-4 py-3 text-sm font-medium text-slate-700">{entry.department?.name || 'Unknown'}</td>
+                      <td className="px-4 py-3 text-sm text-slate-600">{entry.allocation?.semester || '-'}</td>
+                      <td className="px-4 py-3 text-sm font-bold text-slate-800">{entry.room ? getRoomDisplayLabel(entry.room, rooms) : 'Room not linked'}</td>
+                      <td className="px-4 py-3 text-sm text-slate-600">{entry.room?.capacity ?? 'Unknown'}</td>
+                      <td className="px-4 py-3 text-sm text-slate-600">{entry.room?.room_type || 'Unknown'}</td>
+                      <td className="px-4 py-3 text-sm text-slate-600">{entry.building?.name || 'Unknown'}</td>
+                      <td className="px-4 py-3 text-sm text-slate-600">{getBlockDisplayLabel(entry.block, entry.building)}</td>
+                      <td className="px-4 py-3 text-sm text-slate-600">{entry.floor ? getFloorName(entry.floor.floor_number) : 'Unknown'}</td>
+                      <td className="px-4 py-3 text-sm">
+                        <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${usageCount > 0 ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-700'}`}>
+                          {usageLabel}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        {entry.room ? (
+                          <div className="flex flex-wrap gap-2">
+                            <Link to={`/timetable${getRoomDeepLinkSearch(entry.room)}`} className="px-2 py-1 bg-blue-50 text-blue-700 rounded text-xs font-bold">Timetable</Link>
+                            <Link to={`/bookings${getRoomDeepLinkSearch(entry.room)}`} className="px-2 py-1 bg-emerald-50 text-emerald-700 rounded text-xs font-bold">Bookings</Link>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-slate-400">No linked room</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {hodDepartmentRoomMappings.length === 0 && (
+                  <tr>
+                    <td colSpan={10} className="px-4 py-8 text-center text-sm text-slate-400 italic">
+                      No rooms have been mapped yet by Dean (P&amp;M) for your department scope.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-5">
           <div>
