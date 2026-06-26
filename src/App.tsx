@@ -11371,6 +11371,9 @@ function SchedulingManagement() {
     [selectedHodDepartmentId, user],
   );
   const activeHodDepartmentId = isHodUser ? (scopedDepartmentIds[0] || '') : '';
+  const scheduleDepartments = isHodUser
+    ? departments.filter((department: any) => scopedDepartmentIds.some((departmentId) => idsMatch(department?.id, departmentId)))
+    : departments;
 
   const refreshSchedulingLookups = async () => {
     const [campusData, buildingData, blockData, floorData, roomData, departmentData, allocationData] = await fetchSharedLookupJsons([
