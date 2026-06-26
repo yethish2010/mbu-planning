@@ -3201,6 +3201,14 @@ const normalizeComparableDateValue = (value?: string | Date | null) => {
   return text;
 };
 
+const getBookingDisplayDateValue = (value?: string | Date | null) => {
+  const normalized = normalizeComparableDateValue(value);
+  if (!normalized) return '';
+  const isoLikeMatch = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoLikeMatch) return `${isoLikeMatch[3]}-${isoLikeMatch[2]}-${isoLikeMatch[1]}`;
+  return normalized;
+};
+
 const isDateRangeInvalid = (start?: string | Date | null, end?: string | Date | null) => {
   const normalizedStart = normalizeComparableDateValue(start);
   const normalizedEnd = normalizeComparableDateValue(end);
@@ -12453,9 +12461,11 @@ function BookingManagement() {
     });
   }, [myBookings]);
   const getBookingDateLabel = (booking: any) => {
-    const dates = booking.booking_dates || [booking.date];
+    const dates = (booking.booking_dates || [booking.date])
+      .map((date: string) => normalizeComparableDateValue(date))
+      .filter(Boolean);
     if (!dates.length) return 'Date not set';
-    if (dates.length === 1) return dates[0];
+    if (dates.length === 1) return getBookingDisplayDateValue(dates[0]);
 
     const sortedDates = [...dates].sort();
     const isConsecutive = sortedDates.every((date: string, index: number) => {
@@ -12466,10 +12476,10 @@ function BookingManagement() {
     });
 
     if (isConsecutive) {
-      return `${sortedDates[0]} to ${sortedDates[sortedDates.length - 1]}`;
+      return `${getBookingDisplayDateValue(sortedDates[0])} to ${getBookingDisplayDateValue(sortedDates[sortedDates.length - 1])}`;
     }
 
-    return `${sortedDates[0]} +${sortedDates.length - 1} more date${sortedDates.length > 2 ? 's' : ''}`;
+    return `${getBookingDisplayDateValue(sortedDates[0])} +${sortedDates.length - 1} more date${sortedDates.length > 2 ? 's' : ''}`;
   };
   const getBookingTimeLabel = (booking: any) => `${booking.start_time} - ${booking.end_time}`;
   const getBookingPolicyLabel = (booking: any) => booking.purpose_type || 'Non-Academic';
@@ -12704,8 +12714,10 @@ function BookingManagement() {
     });
   };
   const getDisplayStatus = (booking: any) => {
-    const bookingDates = booking.booking_dates || [booking.date];
-    const lastDate = [...bookingDates].filter(Boolean).sort().at(-1) || booking.date;
+    const bookingDates = (booking.booking_dates || [booking.date])
+      .map((date: string) => normalizeComparableDateValue(date))
+      .filter(Boolean);
+    const lastDate = [...bookingDates].sort().at(-1) || normalizeComparableDateValue(booking.date);
     const bookingEnd = new Date(`${lastDate}T${booking.end_time || booking.start_time || '00:00'}`);
     return booking.status === 'Approved' && bookingEnd.getTime() < Date.now() ? 'Past' : booking.status || 'Pending';
   };
