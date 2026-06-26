@@ -3951,7 +3951,7 @@ function Sidebar() {
     { name: 'Timing Profile Management', icon: Clock, path: '/timing-profiles', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)'] },
     { name: 'Academic Calendar', icon: Calendar, path: '/academic-calendars', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)'] },
     { name: 'HOD Room Allocation', icon: DoorOpen, path: '/hod-room-allocation', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)'] },
-    { name: 'Department Room Mapping', icon: DoorOpen, path: '/dept-allocation', roles: ['HOD'] },
+    { name: 'Department Room Mapping', icon: DoorOpen, path: '/dept-allocation', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)'] },
     { name: 'Batch Room Allocation', icon: DoorOpen, path: '/batch-room-allocations', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)'] },
     { name: 'Equipment Management', icon: Wrench, path: '/equipment', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Maintenance Staff', 'Dean (P&M)'] },
     { name: 'Schedule Records', icon: Calendar, path: '/scheduling', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Timetable Coordinator'] },
@@ -4739,7 +4739,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/dept-allocation" element={
-            <ProtectedRoute roles={['HOD']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)']}>
               <Layout title="Department Room Mapping">
                 <DependencyGuard dependencies={[
                   { table: 'hod_room_allocations', label: 'HOD Room Allocation' },
@@ -10929,12 +10929,13 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
   const [lookupPageSize] = useState(25);
   const [lookupTotal, setLookupTotal] = useState(0);
   const semesterOptions = ['Odd', 'Even'];
-  const isHodUser = mode === 'department';
+  const isDepartmentMappingMode = mode === 'department';
+  const isScopedHodUser = isDepartmentMappingMode && normalizeRoleValue(user?.role) === 'hod';
   const assignedHodDepartmentIds = useMemo(
-    () => isHodUser ? getAssignedDepartmentIdsForUser(user) : [],
-    [isHodUser, user],
+    () => isScopedHodUser ? getAssignedDepartmentIdsForUser(user) : [],
+    [isScopedHodUser, user],
   );
-  const mappingType = isHodUser ? 'Department Allocation' : 'HOD Room Allocation';
+  const mappingType = isDepartmentMappingMode ? 'Department Allocation' : 'HOD Room Allocation';
 
   const normalizeSemester = (value: unknown) => {
     const normalized = normalizeLookupValue(value);
@@ -10965,7 +10966,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
       fetchSharedLookupJson('/api/blocks'),
       fetchSharedLookupJson('/api/buildings'),
       fetchSharedLookupJson('/api/users'),
-      isHodUser
+      isScopedHodUser
         ? apiJson(`/api/hod_room_allocations?paginate=1&page=1&pageSize=500&hod_user_id=${user?.id}`)
         : fetchSharedLookupJson('/api/hod_room_allocations'),
     ]);
@@ -11000,18 +11001,18 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
       sortDir: 'asc',
       school_id: lookupFilters.school_id,
       semester: lookupFilters.semester,
-      ...(isHodUser
+      ...(isDepartmentMappingMode
         ? { department_id: lookupFilters.department_id }
         : { hod_user_id: lookupFilters.hod_user_id }),
     });
-    const endpoint = isHodUser ? '/api/department_allocations' : '/api/hod_room_allocations';
+    const endpoint = isDepartmentMappingMode ? '/api/department_allocations' : '/api/hod_room_allocations';
     const data = await apiJson(`${endpoint}?${params.toString()}`);
     setLookupResults(Array.isArray(data?.items) ? data.items : []);
     setLookupTotal(Number(data?.total || 0));
   };
   useEffect(() => {
     refreshRoomMappingLookups();
-  }, [isHodUser, user?.id]);
+  }, [isScopedHodUser, user?.id]);
 
   const getRoomPath = (room: any) => {
     const floor = floors.find(f => idsMatch(f.id, room?.floor_id));
@@ -11052,11 +11053,12 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
   };
 
   const getAvailableRoomOptions = (formData: any) => {
-    const allocatedRoomIds = isHodUser
+    const allocatedRoomIds = isDepartmentMappingMode
       ? new Set(
           hodRoomAllocations
             .filter((allocation: any) =>
-              idsMatch(allocation?.hod_user_id, user?.id) &&
+              (!isScopedHodUser || idsMatch(allocation?.hod_user_id, user?.id)) &&
+              (!formData.school_id || idsMatch(allocation?.school_id, formData.school_id)) &&
               (!formData.semester || normalizeSemesterValue(allocation?.semester, '') === normalizeSemesterValue(formData.semester, ''))
             )
             .map((allocation: any) => allocation?.room_id?.toString?.())
@@ -11095,7 +11097,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
     return room?.capacity ?? item?.capacity ?? 'Unknown';
   };
 
-  const scopedDepartments = isHodUser
+  const scopedDepartments = isScopedHodUser
     ? departments.filter((department: any) => assignedHodDepartmentIds.some((departmentId) => idsMatch(department?.id, departmentId)))
     : departments;
   const scopedSchoolIds = Array.from(new Set(
@@ -11103,7 +11105,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
       .map((department: any) => department?.school_id?.toString?.())
       .filter(Boolean),
   ));
-  const scopedSchools = isHodUser
+  const scopedSchools = isScopedHodUser
     ? schools.filter((school: any) => scopedSchoolIds.some((schoolId) => idsMatch(school?.id, schoolId)))
     : schools;
   const schoolOptions = scopedSchools
@@ -11131,7 +11133,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
       value: hodUser.id,
       label: `${hodUser.full_name || hodUser.employee_id || 'HOD'}${hodUser.employee_id ? ` (${hodUser.employee_id})` : ''}`,
     }));
-  const myAllocatedRooms = isHodUser
+  const myAllocatedRooms = isScopedHodUser
     ? hodRoomAllocations
         .filter((allocation: any) => idsMatch(allocation?.hod_user_id, user?.id))
         .map((allocation: any) => {
@@ -11155,7 +11157,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
 
   useEffect(() => {
     refreshLookupResults();
-  }, [lookupPage, lookupFilters.school_id, lookupFilters.department_id, lookupFilters.semester, lookupFilters.hod_user_id, isHodUser]);
+  }, [lookupPage, lookupFilters.school_id, lookupFilters.department_id, lookupFilters.semester, lookupFilters.hod_user_id, isDepartmentMappingMode]);
 
   useEffect(() => {
     if (lookupPage > lookupTotalPages) {
@@ -11177,7 +11179,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
       key: 'school_id',
       label: 'School',
       type: 'select',
-      resetKeys: isHodUser ? ['department_id'] : ['hod_user_id'],
+      resetKeys: isDepartmentMappingMode ? ['department_id'] : ['hod_user_id'],
       options: schoolOptions,
     },
     { key: 'semester', label: SEMESTER_TYPE_LABEL, type: 'select', resetKeys: ['room_id'], options: semesterOptions },
@@ -11231,14 +11233,14 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
       onChange: (nextData: any, roomId: string) => {
         const room = rooms.find(r => r.id?.toString() === roomId?.toString());
         if (!room) return nextData;
-        return isHodUser
+        return isDepartmentMappingMode
           ? { ...nextData, room_type: room.room_type, room_capacity: room.capacity, capacity: nextData.capacity || room.capacity }
           : { ...nextData, room_type: room.room_type, room_capacity: room.capacity };
       },
     },
   ];
 
-  const fields = isHodUser
+  const fields = isDepartmentMappingMode
     ? [
         baseFields[0],
         {
@@ -11413,7 +11415,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
         Room: rawRoomValue || '',
         [SEMESTER_TYPE_LABEL]: getImportValue(row, [SEMESTER_TYPE_LABEL, 'Semester']) || '',
       };
-      if (isHodUser) {
+      if (isDepartmentMappingMode) {
         auditBase.Department = row['Department'] || '';
       } else {
         auditBase.HOD = getImportValue(row, ['HOD', 'Assigned HOD', 'Employee ID', 'Email']) || '';
@@ -11434,22 +11436,29 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
         return;
       }
 
-      if (isHodUser) {
+      if (isDepartmentMappingMode) {
         if (!department) {
           auditRows.push({ ...auditBase, Status: 'Skipped', Reason: `Department "${row['Department'] || ''}" not found in school` });
           return;
         }
-        if (!assignedHodDepartmentIds.some((departmentId) => idsMatch(departmentId, department.id))) {
+        if (isScopedHodUser && !assignedHodDepartmentIds.some((departmentId) => idsMatch(departmentId, department.id))) {
           auditRows.push({ ...auditBase, Status: 'Skipped', Reason: `Department "${department.name}" is not assigned to this HOD` });
           return;
         }
         const linkedHodRoom = hodRoomAllocations.find((allocation: any) =>
-          idsMatch(allocation.hod_user_id, user?.id) &&
+          (!isScopedHodUser || idsMatch(allocation.hod_user_id, user?.id)) &&
+          idsMatch(allocation.school_id, school.id) &&
           idsMatch(allocation.room_id, room.id) &&
           normalizeSemesterValue(allocation.semester, '') === normalizeSemesterValue(semester, '')
         );
         if (!linkedHodRoom) {
-          auditRows.push({ ...auditBase, Status: 'Skipped', Reason: `Room "${rawRoomValue || ''}" is not allocated to this HOD for ${semester}` });
+          auditRows.push({
+            ...auditBase,
+            Status: 'Skipped',
+            Reason: isScopedHodUser
+              ? `Room "${rawRoomValue || ''}" is not allocated to this HOD for ${semester}`
+              : `Room "${rawRoomValue || ''}" is not mapped in HOD Room Allocation for ${semester}`,
+          });
           return;
         }
         const capacity = parseInt(getImportValue(row, ['Required Capacity', 'Capacity'])?.toString() || '0', 10) || 0;
@@ -11495,8 +11504,8 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
     });
 
     const skippedCount = auditRows.filter(r => r['Status'] === 'Skipped').length;
-    const apiPath = isHodUser ? '/api/department_allocations' : '/api/hod_room_allocations';
-    const auditHeaders = isHodUser
+    const apiPath = isDepartmentMappingMode ? '/api/department_allocations' : '/api/hod_room_allocations';
+    const auditHeaders = isDepartmentMappingMode
       ? ['Row', 'School', 'Department', 'Room', SEMESTER_TYPE_LABEL, 'Status', 'Reason']
       : ['Row', 'School', 'HOD', 'Room', SEMESTER_TYPE_LABEL, 'Status', 'Reason'];
 
@@ -11571,20 +11580,25 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
     if (!payload.semester) throw new Error(`${SEMESTER_TYPE_LABEL} is required.`);
     if (!room) throw new Error('Please select a valid room.');
 
-    if (isHodUser) {
+    if (isDepartmentMappingMode) {
       if (!payload.department_id) throw new Error('Department is required.');
       const department = departments.find(item => idsMatch(item.id, payload.department_id));
       if (!department) throw new Error('Please select a valid department.');
-      if (!assignedHodDepartmentIds.some((departmentId) => idsMatch(departmentId, department.id))) {
+      if (isScopedHodUser && !assignedHodDepartmentIds.some((departmentId) => idsMatch(departmentId, department.id))) {
         throw new Error('This HOD can only map rooms for assigned departments.');
       }
       const linkedHodRoom = hodRoomAllocations.find((allocation: any) =>
-        idsMatch(allocation.hod_user_id, user?.id) &&
+        (!isScopedHodUser || idsMatch(allocation.hod_user_id, user?.id)) &&
+        idsMatch(allocation.school_id, department.school_id) &&
         idsMatch(allocation.room_id, payload.room_id) &&
         normalizeSemesterValue(allocation.semester, '') === normalizeSemesterValue(payload.semester, '')
       );
       if (!linkedHodRoom) {
-        throw new Error(`This room is not allocated to you for ${payload.semester}.`);
+        throw new Error(
+          isScopedHodUser
+            ? `This room is not allocated to you for ${payload.semester}.`
+            : `This room is not mapped in HOD Room Allocation for ${payload.semester}.`
+        );
       }
       const requiredCapacity = parseInt(payload.capacity, 10) || 0;
       if (requiredCapacity <= 0) throw new Error('Required capacity must be greater than zero.');
@@ -11612,7 +11626,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
 
   return (
     <div className="space-y-6">
-      {isHodUser && (
+      {isScopedHodUser && (
         <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
           <div className="mb-5">
             <h3 className="text-lg font-bold text-slate-800">Rooms Allocated To You</h3>
@@ -11652,7 +11666,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
           </div>
         </div>
       )}
-      {isHodUser && (
+      {isScopedHodUser && (
         <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5 shadow-sm">
           <h3 className="text-base font-bold text-amber-900">Department mapping uses only your HOD-mapped rooms</h3>
           <p className="mt-2 text-sm text-amber-800">
@@ -11665,10 +11679,12 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-5">
           <div>
-            <h3 className="text-lg font-bold text-slate-800">{isHodUser ? 'Find Department Room Mappings' : 'Find HOD Room Mappings'}</h3>
+            <h3 className="text-lg font-bold text-slate-800">{isDepartmentMappingMode ? 'Find Department Room Mappings' : 'Find HOD Room Mappings'}</h3>
             <p className="text-sm text-slate-500">
-              {isHodUser
-                ? 'Search your department-level room mappings created from the rooms allocated to you in HOD Room Allocation.'
+              {isDepartmentMappingMode
+                ? (isScopedHodUser
+                    ? 'Search your department-level room mappings created from the rooms allocated to you in HOD Room Allocation.'
+                    : 'Search and manage department room mappings across schools and departments. Rooms remain constrained to HOD Room Allocation records for the selected semester.')
                 : 'Search school-level HOD room allocations by school, HOD, and semester.'}
             </p>
           </div>
@@ -11694,7 +11710,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
               {schoolOptions.map(school => <option key={school.value} value={school.value}>{school.label}</option>)}
             </select>
           </div>
-          {isHodUser ? (
+          {isDepartmentMappingMode ? (
             <div className="space-y-1">
               <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Department</label>
               <select
@@ -11741,7 +11757,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-100">
-                {(isHodUser
+                {(isDepartmentMappingMode
                   ? ['School', 'Department', 'Building', 'Block', 'Floor', 'Room', 'Type', 'Required Capacity', SEMESTER_TYPE_LABEL, 'Open']
                   : ['School', 'HOD', 'Building', 'Block', 'Floor', 'Room', 'Type', 'Capacity', SEMESTER_TYPE_LABEL, 'Open']
                 ).map(header => (
@@ -11756,14 +11772,14 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
                   <tr key={allocation.id} className="hover:bg-slate-50">
                     <td className="px-4 py-3 text-sm font-medium text-slate-700">{school?.name || 'Unknown'}</td>
                     <td className="px-4 py-3 text-sm font-medium text-slate-700">
-                      {isHodUser ? (department?.name || 'Unknown') : (hodUser?.full_name || hodUser?.employee_id || 'Unknown')}
+                      {isDepartmentMappingMode ? (department?.name || 'Unknown') : (hodUser?.full_name || hodUser?.employee_id || 'Unknown')}
                     </td>
                     <td className="px-4 py-3 text-sm text-slate-600">{building?.name || 'Unknown'}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{getBlockDisplayLabel(block, building)}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{floor ? getFloorName(floor.floor_number) : 'Unknown'}</td>
                     <td className="px-4 py-3 text-sm font-bold text-slate-800">{room ? getRoomDisplayLabel(room, rooms) : 'Unknown'}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{room?.room_type || allocation.room_type || 'Unknown'}</td>
-                    <td className="px-4 py-3 text-sm text-slate-600">{isHodUser ? (allocation.capacity || 'Unknown') : (room?.capacity ?? allocation.capacity ?? 'Unknown')}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{isDepartmentMappingMode ? (allocation.capacity || 'Unknown') : (room?.capacity ?? allocation.capacity ?? 'Unknown')}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{allocation.semester}</td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-2">
@@ -11781,10 +11797,10 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
                 <tr>
                   <td colSpan={10} className="px-4 py-8 text-center text-sm text-slate-400 italic">
                     {hasActiveLookupFilters
-                      ? isHodUser
+                      ? isDepartmentMappingMode
                         ? 'No department room mappings found for the selected filters.'
                         : 'No HOD room allocations found for the selected filters.'
-                      : isHodUser
+                      : isDepartmentMappingMode
                         ? `Select a school, department, or ${SEMESTER_TYPE_LABEL.toLowerCase()} to view department room mappings.`
                         : `Select a school, HOD, or ${SEMESTER_TYPE_LABEL.toLowerCase()} to view HOD room allocations.`}
                   </td>
@@ -11827,7 +11843,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
       <GenericCRUD
         type={mappingType}
         fields={fields}
-        apiPath={isHodUser ? '/api/department_allocations' : '/api/hod_room_allocations'}
+        apiPath={isDepartmentMappingMode ? '/api/department_allocations' : '/api/hod_room_allocations'}
         onImport={handleImport}
         onDataChanged={async () => {
           await refreshRoomMappingLookups();
@@ -11838,7 +11854,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
         enableServerPagination
         serverSearchFields={['semester', 'room_type', 'capacity', 'notes']}
         serverSortKey="semester"
-        allowReset={!isHodUser}
+        allowReset={!isScopedHodUser}
       />
     </div>
   );
