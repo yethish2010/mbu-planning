@@ -70,6 +70,14 @@ const ALLOCATED_ROOM_MAPPING_STATUS_STYLES = {
   full: 'bg-amber-100 text-amber-800',
 } as const;
 
+const DEPARTMENT_MAPPING_SUMMARY_ROLES = new Set([
+  'administrator',
+  'admin',
+  'master admin',
+  'infrastructure manager',
+  'dean (p&m)',
+]);
+
 const DIGITAL_TWIN_STATUS_STYLES: Record<(typeof DIGITAL_TWIN_STATUS_ORDER)[number], {
   card: string;
   badge: string;
@@ -10995,9 +11003,14 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
   const [allocatedRoomCategoryFilter, setAllocatedRoomCategoryFilter] = useState('All');
   const [expandedAllocatedCategory, setExpandedAllocatedCategory] = useState('All');
   const [showAllocatedRoomDetails, setShowAllocatedRoomDetails] = useState(false);
+  const [schoolSummarySemesterFilter, setSchoolSummarySemesterFilter] = useState<'All' | 'Odd' | 'Even'>('All');
+  const [schoolSummarySchoolFilter, setSchoolSummarySchoolFilter] = useState('All');
+  const [expandedSchoolSummary, setExpandedSchoolSummary] = useState('All');
+  const [showSchoolSummaryDetails, setShowSchoolSummaryDetails] = useState(false);
   const semesterOptions = ['Odd', 'Even'];
   const isDepartmentMappingMode = mode === 'department';
   const isScopedHodUser = isDepartmentMappingMode && normalizeRoleValue(user?.role) === 'hod';
+  const isSchoolHodSummaryUser = isDepartmentMappingMode && DEPARTMENT_MAPPING_SUMMARY_ROLES.has(normalizeRoleValue(user?.role));
   const assignedHodDepartmentIds = useMemo(
     () => isScopedHodUser ? getAssignedDepartmentIdsForUser(user) : [],
     [isScopedHodUser, user],
@@ -11260,7 +11273,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
     })),
     [myAllocatedRooms],
   );
-  const getAllocatedRoomMappingStatus = (entry: any) => {
+  const getAllocatedRoomMappingMeta = (entry: any) => {
     const roomCapacity = Number(entry.room?.capacity ?? entry.allocation?.capacity ?? 0) || 0;
     const matchingAllocations = departmentAllocations.filter((allocation: any) =>
       idsMatch(allocation?.room_id, entry.allocation?.room_id)
@@ -11277,44 +11290,69 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
 
     if (matchingAllocations.length === 0) {
       return {
-        tone: 'ready' as const,
-        label: 'Ready to map',
-        detail: 'No department mapping yet',
-        capacityText: roomCapacity > 0 ? `0 / ${roomCapacity} seats assigned` : 'No capacity assigned yet',
-        departmentNames: [] as string[],
+        matchingAllocations,
+        mappedDepartmentNames,
+        assignedCapacity,
+        roomCapacity,
+        status: {
+          tone: 'ready' as const,
+          label: 'Ready to map',
+          detail: 'No department mapping yet',
+          capacityText: roomCapacity > 0 ? `0 / ${roomCapacity} seats assigned` : 'No capacity assigned yet',
+          departmentNames: [] as string[],
+        },
       };
     }
 
     if (roomCapacity > 0 && assignedCapacity >= roomCapacity) {
       return {
-        tone: 'full' as const,
-        label: 'Fully allocated',
-        detail: matchingAllocations.length === 1
-          ? `Mapped to ${mappedDepartmentNames[0] || '1 department'}`
-          : `Mapped to ${matchingAllocations.length} departments`,
-        capacityText: `${assignedCapacity} / ${roomCapacity} seats assigned`,
-        departmentNames: mappedDepartmentNames,
+        matchingAllocations,
+        mappedDepartmentNames,
+        assignedCapacity,
+        roomCapacity,
+        status: {
+          tone: 'full' as const,
+          label: 'Fully allocated',
+          detail: matchingAllocations.length === 1
+            ? `Mapped to ${mappedDepartmentNames[0] || '1 department'}`
+            : `Mapped to ${matchingAllocations.length} departments`,
+          capacityText: `${assignedCapacity} / ${roomCapacity} seats assigned`,
+          departmentNames: mappedDepartmentNames,
+        },
       };
     }
 
     if (matchingAllocations.length === 1) {
       return {
-        tone: 'mapped' as const,
-        label: 'Mapped',
-        detail: `Mapped to ${mappedDepartmentNames[0] || '1 department'}`,
-        capacityText: roomCapacity > 0 ? `${assignedCapacity} / ${roomCapacity} seats assigned` : `${assignedCapacity} seats assigned`,
-        departmentNames: mappedDepartmentNames,
+        matchingAllocations,
+        mappedDepartmentNames,
+        assignedCapacity,
+        roomCapacity,
+        status: {
+          tone: 'mapped' as const,
+          label: 'Mapped',
+          detail: `Mapped to ${mappedDepartmentNames[0] || '1 department'}`,
+          capacityText: roomCapacity > 0 ? `${assignedCapacity} / ${roomCapacity} seats assigned` : `${assignedCapacity} seats assigned`,
+          departmentNames: mappedDepartmentNames,
+        },
       };
     }
 
     return {
-      tone: 'shared' as const,
-      label: `Mapped to ${matchingAllocations.length} depts`,
-      detail: 'Mapped department names',
-      capacityText: roomCapacity > 0 ? `${assignedCapacity} / ${roomCapacity} seats assigned` : `${assignedCapacity} seats assigned`,
-      departmentNames: mappedDepartmentNames,
+      matchingAllocations,
+      mappedDepartmentNames,
+      assignedCapacity,
+      roomCapacity,
+      status: {
+        tone: 'shared' as const,
+        label: `Mapped to ${matchingAllocations.length} depts`,
+        detail: 'Mapped department names',
+        capacityText: roomCapacity > 0 ? `${assignedCapacity} / ${roomCapacity} seats assigned` : `${assignedCapacity} seats assigned`,
+        departmentNames: mappedDepartmentNames,
+      },
     };
   };
+  const getAllocatedRoomMappingStatus = (entry: any) => getAllocatedRoomMappingMeta(entry).status;
   const allocatedRoomSummaryByCategory = useMemo(() => {
     const summaryMap = new Map<string, { category: string; count: number; capacity: number; odd: number; even: number }>();
     myAllocatedRoomsWithCategory.forEach((entry: any) => {
@@ -11362,6 +11400,135 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
     capacity: allocatedRoomVisibleRows.reduce((total: number, entry: any) => total + (Number(entry.room?.capacity ?? entry.allocation?.capacity ?? 0) || 0), 0),
     buildings: new Set(allocatedRoomVisibleRows.map((entry: any) => entry.building?.id?.toString?.()).filter(Boolean)).size,
   }), [allocatedRoomVisibleRows]);
+  const schoolHodAllocationRows = useMemo(
+    () => isSchoolHodSummaryUser
+      ? hodRoomAllocations
+          .map((allocation: any) => {
+            const room = rooms.find((item: any) => idsMatch(item.id, allocation.room_id));
+            const school = schools.find((item: any) => idsMatch(item.id, allocation.school_id));
+            const hodUser = hodUsers.find((item: any) => idsMatch(item.id, allocation.hod_user_id));
+            if (!room || !school || !hodUser) return null;
+            const { floor, block, building } = getRoomPath(room);
+            return {
+              allocation,
+              room,
+              school,
+              hodUser,
+              floor,
+              block,
+              building,
+              category: getAllocatedRoomCategory(room.room_type || allocation.room_type),
+            };
+          })
+          .filter(Boolean)
+          .sort((a: any, b: any) =>
+            (a.school?.name || '').localeCompare(b.school?.name || '')
+            || (a.hodUser?.full_name || a.hodUser?.employee_id || '').localeCompare(b.hodUser?.full_name || b.hodUser?.employee_id || '')
+            || (a.allocation?.semester || '').localeCompare(b.allocation?.semester || '')
+            || (a.room ? getRoomDisplayLabel(a.room, rooms) : '').localeCompare(b.room ? getRoomDisplayLabel(b.room, rooms) : '', undefined, { numeric: true }),
+          )
+      : [],
+    [getRoomPath, getAllocatedRoomCategory, hodRoomAllocations, hodUsers, isSchoolHodSummaryUser, rooms, schools],
+  );
+  const schoolHodVisibleRows = useMemo(
+    () => schoolHodAllocationRows.filter((entry: any) => {
+      const semesterMatches = schoolSummarySemesterFilter === 'All'
+        || normalizeSemesterValue(entry.allocation?.semester, '') === schoolSummarySemesterFilter;
+      const schoolMatches = schoolSummarySchoolFilter === 'All' || idsMatch(entry.school?.id, schoolSummarySchoolFilter);
+      return semesterMatches && schoolMatches;
+    }),
+    [schoolHodAllocationRows, schoolSummarySchoolFilter, schoolSummarySemesterFilter],
+  );
+  const schoolHodOverview = useMemo(() => ({
+    schools: new Set(schoolHodVisibleRows.map((entry: any) => entry.school?.id?.toString?.()).filter(Boolean)).size,
+    hods: new Set(schoolHodVisibleRows.map((entry: any) => entry.hodUser?.id?.toString?.()).filter(Boolean)).size,
+    rooms: schoolHodVisibleRows.length,
+    departments: new Set(
+      schoolHodVisibleRows.flatMap((entry: any) => getAllocatedRoomMappingMeta(entry).mappedDepartmentNames || [])
+    ).size,
+  }), [schoolHodVisibleRows]);
+  const schoolHodGroups = useMemo(() => {
+    const schoolMap = new Map<string, any>();
+    schoolHodVisibleRows.forEach((entry: any) => {
+      const schoolKey = entry.school.id?.toString?.() || 'unknown-school';
+      const hodKey = entry.hodUser.id?.toString?.() || 'unknown-hod';
+      const meta = getAllocatedRoomMappingMeta(entry);
+      const schoolGroup = schoolMap.get(schoolKey) || {
+        school: entry.school,
+        roomCount: 0,
+        totalCapacity: 0,
+        assignedCapacity: 0,
+        readyCount: 0,
+        mappedCount: 0,
+        fullCount: 0,
+        sharedCount: 0,
+        departmentNames: new Set<string>(),
+        hodMap: new Map<string, any>(),
+      };
+      schoolGroup.roomCount += 1;
+      schoolGroup.totalCapacity += meta.roomCapacity;
+      schoolGroup.assignedCapacity += meta.assignedCapacity;
+      if (meta.status.tone === 'ready') schoolGroup.readyCount += 1;
+      if (meta.status.tone === 'mapped') schoolGroup.mappedCount += 1;
+      if (meta.status.tone === 'full') schoolGroup.fullCount += 1;
+      if (meta.status.tone === 'shared') schoolGroup.sharedCount += 1;
+      meta.mappedDepartmentNames.forEach((name: string) => schoolGroup.departmentNames.add(name));
+
+      const hodSummary = schoolGroup.hodMap.get(hodKey) || {
+        hodUser: entry.hodUser,
+        roomCount: 0,
+        totalCapacity: 0,
+        assignedCapacity: 0,
+        readyCount: 0,
+        mappedCount: 0,
+        fullCount: 0,
+        sharedCount: 0,
+        departmentNames: new Set<string>(),
+        semesterNames: new Set<string>(),
+        buildingNames: new Set<string>(),
+        categoryCounts: new Map<string, number>(),
+        roomLabels: [] as string[],
+      };
+      hodSummary.roomCount += 1;
+      hodSummary.totalCapacity += meta.roomCapacity;
+      hodSummary.assignedCapacity += meta.assignedCapacity;
+      if (meta.status.tone === 'ready') hodSummary.readyCount += 1;
+      if (meta.status.tone === 'mapped') hodSummary.mappedCount += 1;
+      if (meta.status.tone === 'full') hodSummary.fullCount += 1;
+      if (meta.status.tone === 'shared') hodSummary.sharedCount += 1;
+      meta.mappedDepartmentNames.forEach((name: string) => hodSummary.departmentNames.add(name));
+      const normalizedSemester = normalizeSemesterValue(entry.allocation?.semester, '');
+      if (normalizedSemester) hodSummary.semesterNames.add(normalizedSemester);
+      if (entry.building?.name) hodSummary.buildingNames.add(entry.building.name);
+      hodSummary.categoryCounts.set(entry.category, (hodSummary.categoryCounts.get(entry.category) || 0) + 1);
+      hodSummary.roomLabels.push(entry.room ? getRoomDisplayLabel(entry.room, rooms) : 'Unknown');
+      schoolGroup.hodMap.set(hodKey, hodSummary);
+      schoolMap.set(schoolKey, schoolGroup);
+    });
+
+    return Array.from(schoolMap.values())
+      .map((group: any) => ({
+        ...group,
+        departmentNames: Array.from(group.departmentNames as Set<string>).sort((a, b) => a.localeCompare(b)),
+        hods: Array.from(group.hodMap.values())
+          .map((hodSummary: any) => {
+            const dominantCategoryEntry = Array.from(hodSummary.categoryCounts.entries() as Iterable<[string, number]>)
+              .sort((left: any, right: any) => right[1] - left[1] || left[0].localeCompare(right[0]))[0];
+            return {
+              ...hodSummary,
+              departmentNames: Array.from(hodSummary.departmentNames as Set<string>).sort((a, b) => a.localeCompare(b)),
+              semesterNames: Array.from(hodSummary.semesterNames as Set<string>).sort((a, b) => a.localeCompare(b)),
+              buildingNames: Array.from(hodSummary.buildingNames as Set<string>).sort((a, b) => a.localeCompare(b)),
+              roomLabels: hodSummary.roomLabels
+                .slice()
+                .sort((a: string, b: string) => a.localeCompare(b, undefined, { numeric: true })),
+              dominantCategory: (dominantCategoryEntry?.[0] as string | undefined) || 'Special Rooms',
+            };
+          })
+          .sort((a: any, b: any) => (a.hodUser?.full_name || a.hodUser?.employee_id || '').localeCompare(b.hodUser?.full_name || b.hodUser?.employee_id || '')),
+      }))
+      .sort((a: any, b: any) => (a.school?.name || '').localeCompare(b.school?.name || ''));
+  }, [getAllocatedRoomMappingMeta, rooms, schoolHodVisibleRows]);
 
   useEffect(() => {
     const firstVisibleCategory = allocatedRoomGroups[0]?.category || 'All';
@@ -11374,6 +11541,18 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
     }
     setExpandedAllocatedCategory(firstVisibleCategory);
   }, [allocatedRoomCategoryFilter, allocatedRoomGroups, expandedAllocatedCategory]);
+
+  useEffect(() => {
+    const firstVisibleSchool = schoolHodGroups[0]?.school?.id?.toString?.() || 'All';
+    if (schoolSummarySchoolFilter !== 'All' && schoolHodGroups.some((group: any) => idsMatch(group.school?.id, schoolSummarySchoolFilter))) {
+      setExpandedSchoolSummary(schoolSummarySchoolFilter);
+      return;
+    }
+    if (expandedSchoolSummary !== 'All' && schoolHodGroups.some((group: any) => idsMatch(group.school?.id, expandedSchoolSummary))) {
+      return;
+    }
+    setExpandedSchoolSummary(firstVisibleSchool);
+  }, [expandedSchoolSummary, schoolHodGroups, schoolSummarySchoolFilter]);
 
   useEffect(() => {
     setLookupPage(1);
@@ -12128,6 +12307,286 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
                       </td>
                     </tr>
                   )})}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+      {isSchoolHodSummaryUser && (
+        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between mb-5">
+            <div>
+              <h3 className="text-lg font-bold text-slate-800">School &amp; HOD Mapping Summary</h3>
+              <p className="text-sm text-slate-500">
+                This view rolls up HOD Room Allocation and Department Room Mapping together, so infrastructure-level roles can see each school, each HOD, and how far the downstream department mapping has progressed.
+              </p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 min-w-[280px]">
+              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Live Overview</p>
+              <div className="mt-3 grid grid-cols-2 gap-3">
+                <div>
+                  <p className="text-2xl font-black text-slate-900">{schoolHodOverview.schools}</p>
+                  <p className="text-xs text-slate-500">schools</p>
+                </div>
+                <div>
+                  <p className="text-2xl font-black text-slate-900">{schoolHodOverview.hods}</p>
+                  <p className="text-xs text-slate-500">HODs</p>
+                </div>
+                <div>
+                  <p className="text-2xl font-black text-slate-900">{schoolHodOverview.rooms}</p>
+                  <p className="text-xs text-slate-500">allocated rooms</p>
+                </div>
+                <div>
+                  <p className="text-2xl font-black text-slate-900">{schoolHodOverview.departments}</p>
+                  <p className="text-xs text-slate-500">mapped departments</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5">
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">School Focus</label>
+              <select
+                value={schoolSummarySchoolFilter}
+                onChange={e => setSchoolSummarySchoolFilter(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+              >
+                <option value="All">All Schools</option>
+                {schoolOptions.map(school => <option key={school.value} value={school.value}>{school.label}</option>)}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{SEMESTER_TYPE_LABEL} Focus</label>
+              <select
+                value={schoolSummarySemesterFilter}
+                onChange={e => setSchoolSummarySemesterFilter(e.target.value as 'All' | 'Odd' | 'Even')}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+              >
+                <option value="All">{`All ${SEMESTER_TYPE_LABEL}s`}</option>
+                {semesterOptions.map(semester => <option key={semester} value={semester}>{semester}</option>)}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Quick Guide</label>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                Expand any school to inspect HOD-wise room pools, mapped departments, ready rooms, and overall mapping progress.
+              </div>
+            </div>
+          </div>
+
+          {schoolHodGroups.length > 0 ? (
+            <div className="space-y-5">
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                {schoolHodGroups.map((group: any) => {
+                  const isActiveSchool = idsMatch(group.school?.id, schoolSummarySchoolFilter);
+                  return (
+                    <button
+                      key={group.school.id}
+                      type="button"
+                      onClick={() => setSchoolSummarySchoolFilter((current) => idsMatch(current, group.school.id) ? 'All' : group.school.id?.toString?.() || 'All')}
+                      className={cn(
+                        'rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-emerald-50/40 p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-md',
+                        isActiveSchool && 'ring-2 ring-emerald-200 border-emerald-200 shadow-md',
+                      )}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-900 text-white shadow-sm">
+                          <BookOpen size={18} />
+                        </div>
+                        <span className="inline-flex items-center rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-700">
+                          {group.hods.length} HOD{group.hods.length === 1 ? '' : 's'}
+                        </span>
+                      </div>
+                      <p className="mt-4 text-sm font-bold uppercase tracking-[0.14em] text-slate-500">{group.school.name}</p>
+                      <p className="mt-3 text-3xl font-black text-slate-950">{group.roomCount}</p>
+                      <p className="text-xs text-slate-500">rooms allocated in current view</p>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-emerald-700">{group.readyCount} ready</span>
+                        <span className="rounded-full bg-sky-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-sky-700">{group.mappedCount} mapped</span>
+                        <span className="rounded-full bg-violet-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-violet-700">{group.sharedCount} shared</span>
+                        <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-amber-800">{group.fullCount} full</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="space-y-4">
+                {schoolHodGroups.map((group: any) => {
+                  const isExpanded = schoolHodGroups.length === 1 || idsMatch(expandedSchoolSummary, group.school?.id);
+                  return (
+                    <div key={`summary-${group.school.id}`} className="rounded-2xl border border-slate-200 bg-slate-50/70 overflow-hidden">
+                      <button
+                        type="button"
+                        onClick={() => setExpandedSchoolSummary((current) => idsMatch(current, group.school?.id) ? 'All' : group.school.id?.toString?.() || 'All')}
+                        className="w-full px-5 py-4 text-left hover:bg-white/70"
+                      >
+                        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                          <div>
+                            <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-500">School Scope</p>
+                            <h4 className="mt-1 text-xl font-black text-slate-900">{group.school.name}</h4>
+                            <p className="mt-2 text-sm text-slate-500">
+                              {group.hods.length} HODs, {group.roomCount} rooms, {group.departmentNames.length} mapped departments
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="rounded-full bg-white px-3 py-1.5 text-xs font-bold text-slate-700 shadow-sm">{group.assignedCapacity} / {group.totalCapacity} seats mapped</span>
+                            <span className="rounded-full bg-emerald-100 px-3 py-1.5 text-xs font-bold text-emerald-700">{group.readyCount} ready</span>
+                            <span className="rounded-full bg-sky-100 px-3 py-1.5 text-xs font-bold text-sky-700">{group.mappedCount} mapped</span>
+                            <span className="rounded-full bg-violet-100 px-3 py-1.5 text-xs font-bold text-violet-700">{group.sharedCount} shared</span>
+                            <span className="rounded-full bg-amber-100 px-3 py-1.5 text-xs font-bold text-amber-800">{group.fullCount} full</span>
+                            {isExpanded ? <ChevronDown size={18} className="text-slate-500" /> : <ChevronRight size={18} className="text-slate-500" />}
+                          </div>
+                        </div>
+                      </button>
+
+                      {isExpanded && (
+                        <div className="border-t border-slate-200 px-5 py-5">
+                          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                            {group.hods.map((hodSummary: any) => {
+                              const dominantStyles = ALLOCATED_ROOM_CATEGORY_STYLES[hodSummary.dominantCategory as keyof typeof ALLOCATED_ROOM_CATEGORY_STYLES] || ALLOCATED_ROOM_CATEGORY_STYLES['Special Rooms'];
+                              return (
+                                <div key={`${group.school.id}-${hodSummary.hodUser.id}`} className={cn('rounded-2xl border p-5 shadow-sm', dominantStyles.card)}>
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                      <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500">{group.school.name}</p>
+                                      <h5 className="mt-2 text-xl font-black text-slate-950">{hodSummary.hodUser.full_name || hodSummary.hodUser.employee_id || 'HOD'}</h5>
+                                      <p className="mt-1 text-sm text-slate-500">
+                                        {hodSummary.buildingNames.length > 0 ? hodSummary.buildingNames.join(', ') : 'Building not available'}
+                                      </p>
+                                    </div>
+                                    <div className="flex flex-col items-end gap-2">
+                                      <span className={cn('inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.16em]', dominantStyles.badge)}>
+                                        {hodSummary.dominantCategory}
+                                      </span>
+                                      <div className="flex flex-wrap justify-end gap-1.5">
+                                        {hodSummary.semesterNames.map((semesterName: string) => (
+                                          <span key={`${hodSummary.hodUser.id}-${semesterName}`} className="rounded-full bg-white/90 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-600">
+                                            {semesterName}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div className="mt-5 grid grid-cols-2 gap-3">
+                                    <div className="rounded-2xl bg-white/80 px-4 py-3">
+                                      <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">Allocated Rooms</p>
+                                      <p className="mt-2 text-2xl font-black text-slate-950">{hodSummary.roomCount}</p>
+                                    </div>
+                                    <div className="rounded-2xl bg-white/80 px-4 py-3">
+                                      <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">Seat Usage</p>
+                                      <p className="mt-2 text-xl font-black text-slate-950">{hodSummary.assignedCapacity} / {hodSummary.totalCapacity}</p>
+                                    </div>
+                                    <div className="rounded-2xl bg-white/80 px-4 py-3">
+                                      <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">Mapped Departments</p>
+                                      <p className="mt-2 text-2xl font-black text-slate-950">{hodSummary.departmentNames.length}</p>
+                                    </div>
+                                    <div className="rounded-2xl bg-white/80 px-4 py-3">
+                                      <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">Progress Mix</p>
+                                      <p className="mt-2 text-sm font-bold text-slate-800">{hodSummary.readyCount} ready, {hodSummary.mappedCount + hodSummary.sharedCount + hodSummary.fullCount} active</p>
+                                    </div>
+                                  </div>
+
+                                  <div className="mt-4 flex flex-wrap gap-2">
+                                    <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-emerald-700">{hodSummary.readyCount} ready</span>
+                                    <span className="rounded-full bg-sky-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-sky-700">{hodSummary.mappedCount} mapped</span>
+                                    <span className="rounded-full bg-violet-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-violet-700">{hodSummary.sharedCount} shared</span>
+                                    <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-amber-800">{hodSummary.fullCount} full</span>
+                                  </div>
+
+                                  <div className="mt-4 rounded-2xl border border-white/80 bg-white/70 px-4 py-3">
+                                    <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">Mapped Departments</p>
+                                    {hodSummary.departmentNames.length > 0 ? (
+                                      <div className="mt-3 flex flex-wrap gap-2">
+                                        {hodSummary.departmentNames.slice(0, 8).map((departmentName: string) => (
+                                          <span key={`${hodSummary.hodUser.id}-${departmentName}`} className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-bold text-slate-700">
+                                            {departmentName}
+                                          </span>
+                                        ))}
+                                        {hodSummary.departmentNames.length > 8 && (
+                                          <span className="rounded-full border border-slate-200 bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-600">
+                                            +{hodSummary.departmentNames.length - 8} more
+                                          </span>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <p className="mt-2 text-sm text-slate-500">No downstream department mapping yet.</p>
+                                    )}
+                                  </div>
+
+                                  <div className="mt-4 rounded-2xl border border-white/80 bg-white/70 px-4 py-3">
+                                    <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">Room Preview</p>
+                                    <p className="mt-2 text-sm font-semibold text-slate-700">
+                                      {hodSummary.roomLabels.slice(0, 4).join(', ')}
+                                      {hodSummary.roomLabels.length > 4 ? ` +${hodSummary.roomLabels.length - 4} more` : ''}
+                                    </p>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setShowSchoolSummaryDetails((current) => !current)}
+                  className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-600 hover:border-slate-300 hover:text-slate-900"
+                >
+                  {showSchoolSummaryDetails ? 'Hide school-wise detail table' : 'View school-wise detail table'}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-10 text-center">
+              <LayoutGrid size={36} className="mx-auto text-slate-300" />
+              <p className="mt-3 text-sm font-semibold text-slate-500">
+                No HOD room allocations match the current school or semester filter.
+              </p>
+            </div>
+          )}
+
+          {showSchoolSummaryDetails && schoolHodVisibleRows.length > 0 && (
+            <div className="mt-5 overflow-x-auto border border-slate-100 rounded-xl">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-100">
+                    {['School', 'HOD', 'Building', 'Floor', 'Room', 'Type', SEMESTER_TYPE_LABEL, 'Status', 'Mapped Departments'].map(header => (
+                      <th key={header} className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{header}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {schoolHodVisibleRows.map((entry: any) => {
+                    const mappingStatus = getAllocatedRoomMappingStatus(entry);
+                    return (
+                      <tr key={`school-summary-${entry.allocation.id}`} className="hover:bg-slate-50">
+                        <td className="px-4 py-3 text-sm font-medium text-slate-700">{entry.school?.name || 'Unknown'}</td>
+                        <td className="px-4 py-3 text-sm font-medium text-slate-700">{getHodDisplayLabel(entry.hodUser)}</td>
+                        <td className="px-4 py-3 text-sm text-slate-600">{entry.building?.name || 'Unknown'}</td>
+                        <td className="px-4 py-3 text-sm text-slate-600">{entry.floor ? getFloorName(entry.floor.floor_number) : 'Unknown'}</td>
+                        <td className="px-4 py-3 text-sm font-bold text-slate-800">{entry.room ? getRoomDisplayLabel(entry.room, rooms) : 'Unknown'}</td>
+                        <td className="px-4 py-3 text-sm text-slate-600">{entry.room?.room_type || entry.allocation?.room_type || 'Unknown'}</td>
+                        <td className="px-4 py-3 text-sm text-slate-600">{entry.allocation?.semester || 'Unknown'}</td>
+                        <td className="px-4 py-3 text-sm">
+                          <span className={cn('inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em]', ALLOCATED_ROOM_MAPPING_STATUS_STYLES[mappingStatus.tone])}>
+                            {mappingStatus.label}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-sm text-slate-600">
+                          {mappingStatus.departmentNames.length > 0 ? mappingStatus.departmentNames.join(', ') : 'Not mapped yet'}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
