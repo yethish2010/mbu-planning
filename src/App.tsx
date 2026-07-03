@@ -34,6 +34,35 @@ const DIGITAL_TWIN_STATUS_ORDER = [
   'Not Bookable',
 ] as const;
 
+const ALLOCATED_ROOM_CATEGORY_ORDER = ['Classrooms', 'Labs', 'Computer Labs', 'Seminar Halls', 'Special Rooms'] as const;
+const ALLOCATED_ROOM_CATEGORY_STYLES: Record<(typeof ALLOCATED_ROOM_CATEGORY_ORDER)[number], { card: string; badge: string; iconWrap: string }> = {
+  Classrooms: {
+    card: 'border-blue-200 bg-gradient-to-br from-blue-50 via-white to-blue-100/70',
+    badge: 'bg-blue-100 text-blue-700 border-blue-200',
+    iconWrap: 'bg-blue-600',
+  },
+  Labs: {
+    card: 'border-emerald-200 bg-gradient-to-br from-emerald-50 via-white to-emerald-100/70',
+    badge: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+    iconWrap: 'bg-emerald-600',
+  },
+  'Computer Labs': {
+    card: 'border-violet-200 bg-gradient-to-br from-violet-50 via-white to-violet-100/70',
+    badge: 'bg-violet-100 text-violet-700 border-violet-200',
+    iconWrap: 'bg-violet-600',
+  },
+  'Seminar Halls': {
+    card: 'border-amber-200 bg-gradient-to-br from-amber-50 via-white to-amber-100/70',
+    badge: 'bg-amber-100 text-amber-800 border-amber-200',
+    iconWrap: 'bg-amber-500',
+  },
+  'Special Rooms': {
+    card: 'border-rose-200 bg-gradient-to-br from-rose-50 via-white to-rose-100/70',
+    badge: 'bg-rose-100 text-rose-700 border-rose-200',
+    iconWrap: 'bg-rose-600',
+  },
+};
+
 const DIGITAL_TWIN_STATUS_STYLES: Record<(typeof DIGITAL_TWIN_STATUS_ORDER)[number], {
   card: string;
   badge: string;
@@ -10954,6 +10983,10 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
   const [lookupPage, setLookupPage] = useState(1);
   const [lookupPageSize] = useState(25);
   const [lookupTotal, setLookupTotal] = useState(0);
+  const [allocatedRoomSemesterFilter, setAllocatedRoomSemesterFilter] = useState<'All' | 'Odd' | 'Even'>('All');
+  const [allocatedRoomCategoryFilter, setAllocatedRoomCategoryFilter] = useState('All');
+  const [expandedAllocatedCategory, setExpandedAllocatedCategory] = useState('All');
+  const [showAllocatedRoomDetails, setShowAllocatedRoomDetails] = useState(false);
   const semesterOptions = ['Odd', 'Even'];
   const isDepartmentMappingMode = mode === 'department';
   const isScopedHodUser = isDepartmentMappingMode && normalizeRoleValue(user?.role) === 'hod';
@@ -11176,6 +11209,14 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
       value: hodUser.id,
       label: getHodDisplayLabel(hodUser),
     }));
+  const getAllocatedRoomCategory = (roomType: unknown) => {
+    const normalized = normalizeLookupValue(roomType);
+    if (normalized.includes('computer lab')) return 'Computer Labs';
+    if (normalized.includes('seminar')) return 'Seminar Halls';
+    if (normalized.includes('lab')) return 'Labs';
+    if (normalized.includes('class')) return 'Classrooms';
+    return 'Special Rooms';
+  };
   const myAllocatedRooms = isScopedHodUser
     ? hodRoomAllocations
         .filter((allocation: any) => idsMatch(allocation?.hod_user_id, user?.id))
@@ -11193,6 +11234,72 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
           return (a.room ? getRoomDisplayLabel(a.room, rooms) : '').localeCompare(b.room ? getRoomDisplayLabel(b.room, rooms) : '');
         })
     : [];
+  const myAllocatedRoomsWithCategory = useMemo(
+    () => myAllocatedRooms.map((entry: any) => ({
+      ...entry,
+      category: getAllocatedRoomCategory(entry.room?.room_type || entry.allocation?.room_type),
+    })),
+    [myAllocatedRooms],
+  );
+  const allocatedRoomSummaryByCategory = useMemo(() => {
+    const summaryMap = new Map<string, { category: string; count: number; capacity: number; odd: number; even: number }>();
+    myAllocatedRoomsWithCategory.forEach((entry: any) => {
+      const category = entry.category;
+      const current = summaryMap.get(category) || { category, count: 0, capacity: 0, odd: 0, even: 0 };
+      current.count += 1;
+      current.capacity += Number(entry.room?.capacity ?? entry.allocation?.capacity ?? 0) || 0;
+      if (normalizeSemesterValue(entry.allocation?.semester, '') === 'Odd') current.odd += 1;
+      if (normalizeSemesterValue(entry.allocation?.semester, '') === 'Even') current.even += 1;
+      summaryMap.set(category, current);
+    });
+    return ALLOCATED_ROOM_CATEGORY_ORDER
+      .map((category) => summaryMap.get(category) || { category, count: 0, capacity: 0, odd: 0, even: 0 })
+      .filter((entry) => entry.count > 0);
+  }, [myAllocatedRoomsWithCategory]);
+  const allocatedRoomVisibleRows = useMemo(
+    () => myAllocatedRoomsWithCategory.filter((entry: any) => {
+      const semesterMatches = allocatedRoomSemesterFilter === 'All'
+        || normalizeSemesterValue(entry.allocation?.semester, '') === allocatedRoomSemesterFilter;
+      const categoryMatches = allocatedRoomCategoryFilter === 'All' || entry.category === allocatedRoomCategoryFilter;
+      return semesterMatches && categoryMatches;
+    }),
+    [allocatedRoomCategoryFilter, allocatedRoomSemesterFilter, myAllocatedRoomsWithCategory],
+  );
+  const allocatedRoomGroups = useMemo(() => {
+    const groups = new Map<string, any[]>();
+    allocatedRoomVisibleRows.forEach((entry: any) => {
+      const items = groups.get(entry.category) || [];
+      items.push(entry);
+      groups.set(entry.category, items);
+    });
+    return ALLOCATED_ROOM_CATEGORY_ORDER
+      .map((category) => ({
+        category,
+        items: (groups.get(category) || []).slice().sort((left: any, right: any) =>
+          (left.building?.name || '').localeCompare(right.building?.name || '')
+          || (left.floor?.floor_number ?? 0) - (right.floor?.floor_number ?? 0)
+          || (left.room ? getRoomDisplayLabel(left.room, rooms) : '').localeCompare(right.room ? getRoomDisplayLabel(right.room, rooms) : '', undefined, { numeric: true }),
+        ),
+      }))
+      .filter((group) => group.items.length > 0);
+  }, [allocatedRoomVisibleRows, rooms]);
+  const allocatedRoomOverview = useMemo(() => ({
+    rooms: allocatedRoomVisibleRows.length,
+    capacity: allocatedRoomVisibleRows.reduce((total: number, entry: any) => total + (Number(entry.room?.capacity ?? entry.allocation?.capacity ?? 0) || 0), 0),
+    buildings: new Set(allocatedRoomVisibleRows.map((entry: any) => entry.building?.id?.toString?.()).filter(Boolean)).size,
+  }), [allocatedRoomVisibleRows]);
+
+  useEffect(() => {
+    const firstVisibleCategory = allocatedRoomGroups[0]?.category || 'All';
+    if (allocatedRoomCategoryFilter !== 'All' && allocatedRoomGroups.some((group) => group.category === allocatedRoomCategoryFilter)) {
+      setExpandedAllocatedCategory(allocatedRoomCategoryFilter);
+      return;
+    }
+    if (expandedAllocatedCategory !== 'All' && allocatedRoomGroups.some((group) => group.category === expandedAllocatedCategory)) {
+      return;
+    }
+    setExpandedAllocatedCategory(firstVisibleCategory);
+  }, [allocatedRoomCategoryFilter, allocatedRoomGroups, expandedAllocatedCategory]);
 
   useEffect(() => {
     setLookupPage(1);
@@ -11683,42 +11790,249 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
     <div className="space-y-6">
       {isScopedHodUser && (
         <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-          <div className="mb-5">
-            <h3 className="text-lg font-bold text-slate-800">Rooms Allocated To You</h3>
-            <p className="text-sm text-slate-500">Dean (P&M) assigns rooms to you first. Only these rooms can be mapped onward to your departments.</p>
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between mb-5">
+            <div>
+              <h3 className="text-lg font-bold text-slate-800">Rooms Allocated To You</h3>
+              <p className="text-sm text-slate-500">Dean (P&M) assigns rooms to you first. Only these rooms can be mapped onward to your departments.</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 min-w-[240px]">
+              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Allocated Overview</p>
+              <div className="mt-2 flex items-end gap-3">
+                <div>
+                  <p className="text-3xl font-black text-slate-900">{allocatedRoomOverview.rooms}</p>
+                  <p className="text-xs text-slate-500">rooms in view</p>
+                </div>
+                <div className="mb-1 h-10 w-px bg-slate-200" />
+                <div>
+                  <p className="text-lg font-bold text-slate-800">{allocatedRoomOverview.capacity}</p>
+                  <p className="text-xs text-slate-500">total seats</p>
+                </div>
+                <div className="mb-1 h-10 w-px bg-slate-200" />
+                <div>
+                  <p className="text-lg font-bold text-slate-800">{allocatedRoomOverview.buildings}</p>
+                  <p className="text-xs text-slate-500">buildings</p>
+                </div>
+              </div>
+            </div>
           </div>
-          <div className="overflow-x-auto border border-slate-100 rounded-xl">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="bg-slate-50 border-b border-slate-100">
-                  {['School', 'Building', 'Block', 'Floor', 'Room', 'Type', 'Capacity', SEMESTER_TYPE_LABEL].map(header => (
-                    <th key={header} className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{header}</th>
+
+          {myAllocatedRooms.length > 0 && (
+            <>
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4 mb-5">
+                {allocatedRoomSummaryByCategory.map((summary) => {
+                  const styles = ALLOCATED_ROOM_CATEGORY_STYLES[summary.category as keyof typeof ALLOCATED_ROOM_CATEGORY_STYLES] || ALLOCATED_ROOM_CATEGORY_STYLES['Special Rooms'];
+                  const isActiveCategory = allocatedRoomCategoryFilter === summary.category;
+                  return (
+                    <button
+                      key={summary.category}
+                      type="button"
+                      onClick={() => setAllocatedRoomCategoryFilter((current) => current === summary.category ? 'All' : summary.category)}
+                      className={cn(
+                        'rounded-2xl border p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-md',
+                        styles.card,
+                        isActiveCategory && 'ring-2 ring-slate-900/10 shadow-md',
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className={cn('h-10 w-10 rounded-2xl flex items-center justify-center shadow-sm', styles.iconWrap)}>
+                          <DoorOpen size={18} className="text-white" />
+                        </div>
+                        <span className={cn('inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.18em]', styles.badge)}>
+                          {summary.count} room{summary.count === 1 ? '' : 's'}
+                        </span>
+                      </div>
+                      <p className="mt-4 text-sm font-bold text-slate-800">{summary.category}</p>
+                      <p className="mt-1 text-2xl font-black text-slate-950">{summary.capacity}</p>
+                      <p className="text-xs text-slate-500">total seats in this category</p>
+                      <div className="mt-3 flex gap-2 text-[11px] font-semibold text-slate-500">
+                        <span>Odd {summary.odd}</span>
+                        <span>Even {summary.even}</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="mb-5 rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+                <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Browse Allocations</p>
+                    <p className="mt-1 text-sm text-slate-600">Use the quick filters below to view category-wise HOD room allocations.</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {(['All', ...semesterOptions] as const).map((semester) => (
+                      <button
+                        key={semester}
+                        type="button"
+                        onClick={() => setAllocatedRoomSemesterFilter(semester as 'All' | 'Odd' | 'Even')}
+                        className={cn(
+                          'rounded-full border px-3 py-1.5 text-xs font-bold transition-colors',
+                          allocatedRoomSemesterFilter === semester
+                            ? 'border-slate-900 bg-slate-900 text-white'
+                            : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-900',
+                        )}
+                      >
+                        {semester === 'All' ? `All ${SEMESTER_TYPE_LABEL}s` : `${semester} ${SEMESTER_TYPE_LABEL}`}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAllocatedRoomSemesterFilter('All');
+                        setAllocatedRoomCategoryFilter('All');
+                      }}
+                      className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-500 hover:text-slate-800"
+                    >
+                      Reset View
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+
+          {allocatedRoomGroups.length > 0 ? (
+            <div className="space-y-4">
+              {allocatedRoomGroups.map((group) => {
+                const styles = ALLOCATED_ROOM_CATEGORY_STYLES[group.category as keyof typeof ALLOCATED_ROOM_CATEGORY_STYLES] || ALLOCATED_ROOM_CATEGORY_STYLES['Special Rooms'];
+                const isExpanded = expandedAllocatedCategory === group.category;
+                const totalCategoryCapacity = group.items.reduce((total: number, entry: any) => total + (Number(entry.room?.capacity ?? entry.allocation?.capacity ?? 0) || 0), 0);
+                return (
+                  <div key={group.category} className={cn('overflow-hidden rounded-2xl border', styles.card)}>
+                    <button
+                      type="button"
+                      onClick={() => setExpandedAllocatedCategory((current) => current === group.category ? 'All' : group.category)}
+                      className="w-full px-5 py-4 text-left"
+                    >
+                      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                        <div className="flex items-center gap-3">
+                          <div className={cn('h-11 w-11 rounded-2xl flex items-center justify-center shadow-sm', styles.iconWrap)}>
+                            <DoorOpen size={18} className="text-white" />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h4 className="text-base font-bold text-slate-900">{group.category}</h4>
+                              <span className={cn('inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.16em]', styles.badge)}>
+                                {group.items.length} room{group.items.length === 1 ? '' : 's'}
+                              </span>
+                            </div>
+                            <p className="text-sm text-slate-600">{totalCategoryCapacity} seats across your mapped allocation pool</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <div className="text-right">
+                            <p className="text-xs font-semibold text-slate-500">Click to {isExpanded ? 'collapse' : 'expand'}</p>
+                            <p className="text-sm font-bold text-slate-800">
+                              {Array.from(new Set(group.items.map((entry: any) => entry.building?.name).filter(Boolean))).join(', ') || 'Multiple buildings'}
+                            </p>
+                          </div>
+                          <ChevronDown size={18} className={cn('text-slate-500 transition-transform', isExpanded && 'rotate-180')} />
+                        </div>
+                      </div>
+                    </button>
+                    {isExpanded && (
+                      <div className="border-t border-white/70 bg-white/70 px-5 py-5">
+                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                          {group.items.map(({ allocation, school, room, floor, block, building }: any) => (
+                            <div key={allocation.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md">
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-400">{school?.name || 'Unknown School'}</p>
+                                  <h5 className="mt-2 text-xl font-black text-slate-900">{room ? getRoomDisplayLabel(room, rooms) : 'Unknown'}</h5>
+                                </div>
+                                <span className={cn('inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em]', styles.badge)}>
+                                  {allocation?.semester || 'Unknown'}
+                                </span>
+                              </div>
+                              <div className="mt-4 grid grid-cols-2 gap-3">
+                                <div className="rounded-xl bg-slate-50 p-3">
+                                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">Building</p>
+                                  <p className="mt-1 text-sm font-semibold text-slate-700">{building?.name || 'Unknown'}</p>
+                                </div>
+                                <div className="rounded-xl bg-slate-50 p-3">
+                                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">Floor</p>
+                                  <p className="mt-1 text-sm font-semibold text-slate-700">{floor ? getFloorName(floor.floor_number) : 'Unknown'}</p>
+                                </div>
+                                <div className="rounded-xl bg-slate-50 p-3">
+                                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">Block</p>
+                                  <p className="mt-1 text-sm font-semibold text-slate-700">{getBlockDisplayLabel(block, building)}</p>
+                                </div>
+                                <div className="rounded-xl bg-slate-50 p-3">
+                                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">Capacity</p>
+                                  <p className="mt-1 text-sm font-semibold text-slate-700">{room?.capacity ?? allocation?.capacity ?? 'Unknown'} seats</p>
+                                </div>
+                              </div>
+                              <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                                <div>
+                                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">Room Type</p>
+                                  <p className="mt-1 text-sm font-semibold text-slate-700">{room?.room_type || allocation?.room_type || 'Unknown'}</p>
+                                </div>
+                                <div className={cn('rounded-full px-3 py-1 text-xs font-bold', styles.badge)}>
+                                  Ready to map
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setShowAllocatedRoomDetails((current) => !current)}
+                  className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-600 hover:border-slate-300 hover:text-slate-900"
+                >
+                  {showAllocatedRoomDetails ? 'Hide detailed table' : 'View detailed table'}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-10 text-center">
+              <DoorOpen size={36} className="mx-auto text-slate-300" />
+              <p className="mt-3 text-sm font-semibold text-slate-500">
+                {myAllocatedRooms.length === 0
+                  ? 'No rooms have been allocated to this HOD yet.'
+                  : 'No allocated rooms match the current category or semester filters.'}
+              </p>
+            </div>
+          )}
+
+          {showAllocatedRoomDetails && allocatedRoomVisibleRows.length > 0 && (
+            <div className="mt-5 overflow-x-auto border border-slate-100 rounded-xl">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-100">
+                    {['School', 'Building', 'Block', 'Floor', 'Room', 'Type', 'Category', 'Capacity', SEMESTER_TYPE_LABEL].map(header => (
+                      <th key={header} className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{header}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {allocatedRoomVisibleRows.map(({ allocation, school, room, floor, block, building, category }: any) => (
+                    <tr key={allocation.id} className="hover:bg-slate-50">
+                      <td className="px-4 py-3 text-sm font-medium text-slate-700">{school?.name || 'Unknown'}</td>
+                      <td className="px-4 py-3 text-sm text-slate-600">{building?.name || 'Unknown'}</td>
+                      <td className="px-4 py-3 text-sm text-slate-600">{getBlockDisplayLabel(block, building)}</td>
+                      <td className="px-4 py-3 text-sm text-slate-600">{floor ? getFloorName(floor.floor_number) : 'Unknown'}</td>
+                      <td className="px-4 py-3 text-sm font-bold text-slate-800">{room ? getRoomDisplayLabel(room, rooms) : 'Unknown'}</td>
+                      <td className="px-4 py-3 text-sm text-slate-600">{room?.room_type || allocation?.room_type || 'Unknown'}</td>
+                      <td className="px-4 py-3 text-sm">
+                        <span className={cn('inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em]', (ALLOCATED_ROOM_CATEGORY_STYLES[category as keyof typeof ALLOCATED_ROOM_CATEGORY_STYLES] || ALLOCATED_ROOM_CATEGORY_STYLES['Special Rooms']).badge)}>
+                          {category}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-slate-600">{room?.capacity ?? allocation?.capacity ?? 'Unknown'}</td>
+                      <td className="px-4 py-3 text-sm text-slate-600">{allocation?.semester || 'Unknown'}</td>
+                    </tr>
                   ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {myAllocatedRooms.map(({ allocation, school, room, floor, block, building }: any) => (
-                  <tr key={allocation.id} className="hover:bg-slate-50">
-                    <td className="px-4 py-3 text-sm font-medium text-slate-700">{school?.name || 'Unknown'}</td>
-                    <td className="px-4 py-3 text-sm text-slate-600">{building?.name || 'Unknown'}</td>
-                    <td className="px-4 py-3 text-sm text-slate-600">{getBlockDisplayLabel(block, building)}</td>
-                    <td className="px-4 py-3 text-sm text-slate-600">{floor ? getFloorName(floor.floor_number) : 'Unknown'}</td>
-                    <td className="px-4 py-3 text-sm font-bold text-slate-800">{room ? getRoomDisplayLabel(room, rooms) : 'Unknown'}</td>
-                    <td className="px-4 py-3 text-sm text-slate-600">{room?.room_type || allocation?.room_type || 'Unknown'}</td>
-                    <td className="px-4 py-3 text-sm text-slate-600">{room?.capacity ?? allocation?.capacity ?? 'Unknown'}</td>
-                    <td className="px-4 py-3 text-sm text-slate-600">{allocation?.semester || 'Unknown'}</td>
-                  </tr>
-                ))}
-                {myAllocatedRooms.length === 0 && (
-                  <tr>
-                    <td colSpan={8} className="px-4 py-8 text-center text-sm text-slate-400 italic">
-                      No rooms have been allocated to this HOD yet.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
       {isScopedHodUser && (

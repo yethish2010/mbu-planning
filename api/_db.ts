@@ -30,7 +30,7 @@ type CreateDatabaseOptions = {
   provider?: string;
 };
 
-type SqliteDatabaseConstructor = typeof import("better-sqlite3").default;
+type SqliteDatabaseConstructor = typeof import("better-sqlite3");
 
 type PostgresQueryable = {
   query: (text: string, params?: any[]) => Promise<any>;
@@ -197,7 +197,8 @@ export const createDatabaseClient = async (options: CreateDatabaseOptions): Prom
   const dialect = inferDialect(options);
 
   if (dialect === "sqlite") {
-    const { default: Database } = await import("better-sqlite3");
+    const sqliteModule = await import("better-sqlite3");
+    const Database = ("default" in sqliteModule ? sqliteModule.default : sqliteModule) as SqliteDatabaseConstructor;
     return createSqliteClient(Database, options.databasePath);
   }
 

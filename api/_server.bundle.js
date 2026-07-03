@@ -147,7 +147,8 @@ var createPostgresAdapter = (clientProvider) => {
 var createDatabaseClient = async (options) => {
   const dialect = inferDialect(options);
   if (dialect === "sqlite") {
-    const { default: Database } = await import("better-sqlite3");
+    const sqliteModule = await import("better-sqlite3");
+    const Database = "default" in sqliteModule ? sqliteModule.default : sqliteModule;
     return createSqliteClient(Database, options.databasePath);
   }
   if (!options.databaseUrl) {
