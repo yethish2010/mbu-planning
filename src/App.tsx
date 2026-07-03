@@ -3945,7 +3945,7 @@ function Sidebar() {
   const customAccessPaths = user?.access_paths?.split(',').map((path: string) => path.trim()).filter(Boolean) || [];
   const menuItems = [
     { name: 'Dashboard', icon: LayoutDashboard, path: '/', roles: ['Administrator', 'Admin', 'Master Admin', 'Faculty', 'HOD', 'Dean', 'Timetable Coordinator', 'Event Coordinator', 'Dean (P&M)', 'Deputy Dean (P&M)', 'Maintenance Staff', 'Infrastructure Manager', ...executiveMenuRoles] },
-    { name: 'User Management', icon: Users, path: '/users', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)', 'HOD'] },
+    { name: 'User Management', icon: Users, path: '/users', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)'] },
     { name: 'Campus Management', icon: Globe, path: '/campuses', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)'] },
     { name: 'Building Management', icon: Building2, path: '/buildings', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)'] },
     { name: 'Block Management', icon: Layers, path: '/blocks', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)'] },
@@ -4642,7 +4642,7 @@ export default function App() {
             </ProtectedRoute>
           } />
 
-          <Route path="/users" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)', 'HOD']}><Layout title="User Management"><UserManagement /></Layout></ProtectedRoute>} />
+          <Route path="/users" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)']}><Layout title="User Management"><UserManagement /></Layout></ProtectedRoute>} />
 
           {/* CRUD Routes Placeholder */}
           <Route path="/campuses" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)']}><Layout title="Campus Management"><CampusManagement /></Layout></ProtectedRoute>} />
