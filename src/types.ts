@@ -4,6 +4,7 @@ export type Role =
   | 'Master Admin'
   | 'Vice Chancellor'
   | 'Pro-Chancellor'
+  | 'Registrar'
   | 'Dean'
   | 'Dean (P&M)'
   | 'Deputy Dean (P&M)'

@@ -223,6 +223,7 @@ const ROLE_CANONICAL_LABELS = new Map<string, string>([
   ['master admin', 'Master Admin'],
   ['vice chancellor', 'Vice Chancellor'],
   ['pro chancellor', 'Pro-Chancellor'],
+  ['registrar', 'Registrar'],
   ['dean', 'Dean'],
   ['dean (p&m)', 'Dean (P&M)'],
   ['dean (p & m)', 'Dean (P&M)'],
@@ -244,7 +245,7 @@ const canonicalizeRoleLabel = (value: unknown) => {
 };
 
 const ADMIN_ROLE_OPTIONS = ['Administrator', 'Admin', 'Master Admin'];
-const EXECUTIVE_ROLE_OPTIONS = ['Vice Chancellor', 'Pro-Chancellor'];
+const EXECUTIVE_ROLE_OPTIONS = ['Vice Chancellor', 'Pro-Chancellor', 'Registrar'];
 const SCHOOL_SCOPED_ROLE_OPTIONS = ['Dean'];
 const DEPARTMENT_SCOPED_ROLE_OPTIONS = ['HOD', 'Timetable Coordinator', 'Faculty', 'Event Coordinator'];
 const USER_ROLE_OPTIONS = [
@@ -2366,6 +2367,19 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Password / Admin Reset': 'Welcome123',
       },
       {
+        'Full Name': 'Dr. Nila Registrar',
+        'Employee ID': 'EMP-REG-001',
+        Role: 'Registrar',
+        'Email Address': 'nila.registrar@example.com',
+        'Assigned Schools': '',
+        'Primary School': '',
+        'Assigned Departments': '',
+        'Primary Department': '',
+        'Access Type': 'Global',
+        'Access Scope': 'All',
+        'Password / Admin Reset': 'Welcome123',
+      },
+      {
         'Full Name': 'Dr. Meena Dean PM',
         'Employee ID': 'EMP-DEANPM-001',
         Role: 'Dean (P&M)',
@@ -2452,7 +2466,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       'Use Primary Department only when Assigned Departments has one or more departments. The primary value should also be present in Assigned Departments.',
       'For Dean users, fill Assigned Schools and optionally Primary School. Assigned Departments and Primary Department can stay blank unless you want to provide extra context.',
       'For HOD, Timetable Coordinator, Faculty, and Event Coordinator users, fill Assigned Departments and Primary Department. The system will infer Assigned Schools from the selected departments when possible.',
-      'Global roles like Admin, Master Admin, Vice Chancellor, Pro-Chancellor, Dean (P&M), and Deputy Dean (P&M) can keep school and department assignment columns blank.',
+      'Global roles like Admin, Master Admin, Vice Chancellor, Pro-Chancellor, Registrar, Dean (P&M), and Deputy Dean (P&M) can keep school and department assignment columns blank.',
       'Access Type and Access Scope are imported for clarity, but standard roles still derive their final scope automatically: Global for admin/executive roles, School for Dean, and Department for HOD/Timetable Coordinator/Faculty/Event Coordinator.',
     ],
   },
@@ -3940,7 +3954,7 @@ function Sidebar() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const approvalRoles = ['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)', 'Deputy Dean (P&M)'];
-  const executiveMenuRoles = ['Vice Chancellor', 'Pro-Chancellor'];
+  const executiveMenuRoles = ['Vice Chancellor', 'Pro-Chancellor', 'Registrar'];
 
   const customAccessPaths = user?.access_paths?.split(',').map((path: string) => path.trim()).filter(Boolean) || [];
   const menuItems = [
@@ -4804,9 +4818,9 @@ export default function App() {
               </Layout>
             </ProtectedRoute>
           } />
-          <Route path="/analytics" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)', 'Vice Chancellor', 'Pro-Chancellor']}><Layout title="Infrastructure Analytics"><AnalyticsDashboard /></Layout></ProtectedRoute>} />
-          <Route path="/reports" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)', 'Vice Chancellor', 'Pro-Chancellor']}><Layout title="Utilization Reports"><ReportGeneration /></Layout></ProtectedRoute>} />
-          <Route path="/performance-insights" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Vice Chancellor', 'Pro-Chancellor']}><Layout title="Performance Insights"><PerformanceInsights /></Layout></ProtectedRoute>} />
+          <Route path="/analytics" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)', 'Vice Chancellor', 'Pro-Chancellor', 'Registrar']}><Layout title="Infrastructure Analytics"><AnalyticsDashboard /></Layout></ProtectedRoute>} />
+          <Route path="/reports" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)', 'Vice Chancellor', 'Pro-Chancellor', 'Registrar']}><Layout title="Utilization Reports"><ReportGeneration /></Layout></ProtectedRoute>} />
+          <Route path="/performance-insights" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Vice Chancellor', 'Pro-Chancellor', 'Registrar']}><Layout title="Performance Insights"><PerformanceInsights /></Layout></ProtectedRoute>} />
           <Route path="/timetable" element={
             <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Timetable Coordinator']}>
               <Layout title="Timetable View">
@@ -4817,7 +4831,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/digital-twin" element={
-            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean', 'Dean (P&M)', 'HOD', 'Vice Chancellor', 'Pro-Chancellor']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean', 'Dean (P&M)', 'HOD', 'Vice Chancellor', 'Pro-Chancellor', 'Registrar']}>
               <Layout title="Smart Campus Digital Twin">
                 <DependencyGuard dependencies={[{ table: 'buildings', label: 'Buildings' }, { table: 'rooms', label: 'Rooms' }]}>
                   <DigitalTwin />
@@ -4826,7 +4840,7 @@ export default function App() {
             </ProtectedRoute>
           } />
           <Route path="/live-availability" element={
-            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Timetable Coordinator', 'Faculty', 'Event Coordinator', 'Infrastructure Manager', 'Vice Chancellor', 'Pro-Chancellor']}>
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Timetable Coordinator', 'Faculty', 'Event Coordinator', 'Infrastructure Manager', 'Vice Chancellor', 'Pro-Chancellor', 'Registrar']}>
               <Layout title="Live Room Availability">
                 <DependencyGuard dependencies={[{ table: 'rooms', label: 'Rooms' }]}>
                   <LiveRoomAvailability />
@@ -9366,6 +9380,8 @@ function DashboardShell() {
         ? 'Vice Chancellor Dashboard'
         : user?.role === 'Pro-Chancellor'
           ? 'Pro-Chancellor Dashboard'
+          : user?.role === 'Registrar'
+            ? 'Registrar Dashboard'
           : user?.role === 'Admin'
             ? 'Admin Dashboard'
             : user?.role === 'Master Admin'

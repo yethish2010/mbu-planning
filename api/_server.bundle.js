@@ -206,6 +206,7 @@ var ROLE_CANONICAL_LABELS = /* @__PURE__ */ new Map([
   ["master admin", "Master Admin"],
   ["vice chancellor", "Vice Chancellor"],
   ["pro chancellor", "Pro-Chancellor"],
+  ["registrar", "Registrar"],
   ["dean", "Dean"],
   ["dean (p&m)", "Dean (P&M)"],
   ["dean (p & m)", "Dean (P&M)"],
@@ -226,13 +227,14 @@ var normalizeRoleLabel = (value) => {
 };
 var buildRoleSet = (roles) => new Set(roles.map((role) => normalizeRoleLabel(role)));
 var ADMIN_ROLE_VALUES = buildRoleSet(["Administrator", "Admin", "Master Admin"]);
-var EXECUTIVE_VIEW_ROLE_VALUES = buildRoleSet(["Vice Chancellor", "Pro-Chancellor"]);
+var EXECUTIVE_VIEW_ROLE_VALUES = buildRoleSet(["Vice Chancellor", "Pro-Chancellor", "Registrar"]);
 var GLOBAL_SCOPE_ROLE_VALUES = buildRoleSet([
   "Administrator",
   "Admin",
   "Master Admin",
   "Vice Chancellor",
   "Pro-Chancellor",
+  "Registrar",
   "Dean (P&M)",
   "Deputy Dean (P&M)"
 ]);
@@ -246,6 +248,7 @@ var USER_ROLE_OPTIONS = [
   "Master Admin",
   "Vice Chancellor",
   "Pro-Chancellor",
+  "Registrar",
   "Dean",
   "Dean (P&M)",
   "Deputy Dean (P&M)",
