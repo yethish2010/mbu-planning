@@ -11281,6 +11281,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
         label: 'Ready to map',
         detail: 'No department mapping yet',
         capacityText: roomCapacity > 0 ? `0 / ${roomCapacity} seats assigned` : 'No capacity assigned yet',
+        departmentNames: [] as string[],
       };
     }
 
@@ -11292,6 +11293,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
           ? `Mapped to ${mappedDepartmentNames[0] || '1 department'}`
           : `Mapped to ${matchingAllocations.length} departments`,
         capacityText: `${assignedCapacity} / ${roomCapacity} seats assigned`,
+        departmentNames: mappedDepartmentNames,
       };
     }
 
@@ -11301,14 +11303,16 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
         label: 'Mapped',
         detail: `Mapped to ${mappedDepartmentNames[0] || '1 department'}`,
         capacityText: roomCapacity > 0 ? `${assignedCapacity} / ${roomCapacity} seats assigned` : `${assignedCapacity} seats assigned`,
+        departmentNames: mappedDepartmentNames,
       };
     }
 
     return {
       tone: 'shared' as const,
       label: `Mapped to ${matchingAllocations.length} depts`,
-      detail: mappedDepartmentNames.slice(0, 2).join(', ') + (mappedDepartmentNames.length > 2 ? ` +${mappedDepartmentNames.length - 2} more` : ''),
+      detail: 'Mapped department names',
       capacityText: roomCapacity > 0 ? `${assignedCapacity} / ${roomCapacity} seats assigned` : `${assignedCapacity} seats assigned`,
+      departmentNames: mappedDepartmentNames,
     };
   };
   const allocatedRoomSummaryByCategory = useMemo(() => {
@@ -12045,6 +12049,18 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
                                     {mappingStatus.label}
                                   </div>
                                   <p className="mt-2 max-w-[180px] text-[11px] font-medium text-slate-500">{mappingStatus.detail}</p>
+                                  {mappingStatus.departmentNames.length > 1 && (
+                                    <div className="mt-2 flex max-w-[220px] flex-wrap justify-end gap-1.5">
+                                      {mappingStatus.departmentNames.map((departmentName: string) => (
+                                        <span
+                                          key={`${allocation.id}-${departmentName}`}
+                                          className="rounded-full border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold text-slate-600"
+                                        >
+                                          {departmentName}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
                                 </div>
                               </div>
                             </div>
