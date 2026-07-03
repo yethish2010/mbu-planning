@@ -63,6 +63,13 @@ const ALLOCATED_ROOM_CATEGORY_STYLES: Record<(typeof ALLOCATED_ROOM_CATEGORY_ORD
   },
 };
 
+const ALLOCATED_ROOM_MAPPING_STATUS_STYLES = {
+  ready: 'bg-emerald-100 text-emerald-700',
+  mapped: 'bg-sky-100 text-sky-700',
+  shared: 'bg-violet-100 text-violet-700',
+  full: 'bg-amber-100 text-amber-800',
+} as const;
+
 const DIGITAL_TWIN_STATUS_STYLES: Record<(typeof DIGITAL_TWIN_STATUS_ORDER)[number], {
   card: string;
   badge: string;
@@ -10978,6 +10985,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
   const [blocks, setBlocks] = useState<any[]>([]);
   const [buildings, setBuildings] = useState<any[]>([]);
   const [hodRoomAllocations, setHodRoomAllocations] = useState<any[]>([]);
+  const [departmentAllocations, setDepartmentAllocations] = useState<any[]>([]);
   const [lookupFilters, setLookupFilters] = useState({ school_id: '', department_id: '', semester: '', hod_user_id: '' });
   const [lookupResults, setLookupResults] = useState<any[]>([]);
   const [lookupPage, setLookupPage] = useState(1);
@@ -11017,6 +11025,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
       buildingData,
       userData,
       hodAllocationData,
+      departmentAllocationData,
     ] = await Promise.all([
       fetchSharedLookupJson('/api/schools'),
       fetchSharedLookupJson('/api/departments'),
@@ -11028,6 +11037,9 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
       isScopedHodUser
         ? apiJson(`/api/hod_room_allocations?paginate=1&page=1&pageSize=500&hod_user_id=${user?.id}`)
         : fetchSharedLookupJson('/api/hod_room_allocations'),
+      isScopedHodUser
+        ? apiJson('/api/department_allocations?paginate=1&page=1&pageSize=1000')
+        : fetchSharedLookupJson('/api/department_allocations'),
     ]);
 
     setSchools(Array.isArray(schoolData) ? schoolData : []);
@@ -11042,6 +11054,13 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
         ? hodAllocationData.items
         : Array.isArray(hodAllocationData)
           ? hodAllocationData
+          : []
+    );
+    setDepartmentAllocations(
+      Array.isArray(departmentAllocationData?.items)
+        ? departmentAllocationData.items
+        : Array.isArray(departmentAllocationData)
+          ? departmentAllocationData
           : []
     );
   };
@@ -11241,6 +11260,57 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
     })),
     [myAllocatedRooms],
   );
+  const getAllocatedRoomMappingStatus = (entry: any) => {
+    const roomCapacity = Number(entry.room?.capacity ?? entry.allocation?.capacity ?? 0) || 0;
+    const matchingAllocations = departmentAllocations.filter((allocation: any) =>
+      idsMatch(allocation?.room_id, entry.allocation?.room_id)
+      && normalizeSemesterValue(allocation?.semester, '') === normalizeSemesterValue(entry.allocation?.semester, '')
+      && idsMatch(allocation?.school_id, entry.allocation?.school_id)
+      && (!isScopedHodUser || assignedHodDepartmentIds.some((departmentId) => idsMatch(departmentId, allocation?.department_id)))
+    );
+    const mappedDepartmentNames = Array.from(new Set(
+      matchingAllocations
+        .map((allocation: any) => departments.find((department: any) => idsMatch(department?.id, allocation?.department_id))?.name)
+        .filter(Boolean)
+    ));
+    const assignedCapacity = matchingAllocations.reduce((total: number, allocation: any) => total + (Number(allocation?.capacity || 0) || 0), 0);
+
+    if (matchingAllocations.length === 0) {
+      return {
+        tone: 'ready' as const,
+        label: 'Ready to map',
+        detail: 'No department mapping yet',
+        capacityText: roomCapacity > 0 ? `0 / ${roomCapacity} seats assigned` : 'No capacity assigned yet',
+      };
+    }
+
+    if (roomCapacity > 0 && assignedCapacity >= roomCapacity) {
+      return {
+        tone: 'full' as const,
+        label: 'Fully allocated',
+        detail: matchingAllocations.length === 1
+          ? `Mapped to ${mappedDepartmentNames[0] || '1 department'}`
+          : `Mapped to ${matchingAllocations.length} departments`,
+        capacityText: `${assignedCapacity} / ${roomCapacity} seats assigned`,
+      };
+    }
+
+    if (matchingAllocations.length === 1) {
+      return {
+        tone: 'mapped' as const,
+        label: 'Mapped',
+        detail: `Mapped to ${mappedDepartmentNames[0] || '1 department'}`,
+        capacityText: roomCapacity > 0 ? `${assignedCapacity} / ${roomCapacity} seats assigned` : `${assignedCapacity} seats assigned`,
+      };
+    }
+
+    return {
+      tone: 'shared' as const,
+      label: `Mapped to ${matchingAllocations.length} depts`,
+      detail: mappedDepartmentNames.slice(0, 2).join(', ') + (mappedDepartmentNames.length > 2 ? ` +${mappedDepartmentNames.length - 2} more` : ''),
+      capacityText: roomCapacity > 0 ? `${assignedCapacity} / ${roomCapacity} seats assigned` : `${assignedCapacity} seats assigned`,
+    };
+  };
   const allocatedRoomSummaryByCategory = useMemo(() => {
     const summaryMap = new Map<string, { category: string; count: number; capacity: number; odd: number; even: number }>();
     myAllocatedRoomsWithCategory.forEach((entry: any) => {
@@ -11933,7 +12003,9 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
                     {isExpanded && (
                       <div className="border-t border-white/70 bg-white/70 px-5 py-5">
                         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                          {group.items.map(({ allocation, school, room, floor, block, building }: any) => (
+                          {group.items.map(({ allocation, school, room, floor, block, building }: any) => {
+                            const mappingStatus = getAllocatedRoomMappingStatus({ allocation, school, room, floor, block, building });
+                            return (
                             <div key={allocation.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md">
                               <div className="flex items-start justify-between gap-3">
                                 <div>
@@ -11966,13 +12038,17 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
                                 <div>
                                   <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">Room Type</p>
                                   <p className="mt-1 text-sm font-semibold text-slate-700">{room?.room_type || allocation?.room_type || 'Unknown'}</p>
+                                  <p className="mt-1 text-xs text-slate-500">{mappingStatus.capacityText}</p>
                                 </div>
-                                <div className={cn('rounded-full px-3 py-1 text-xs font-bold', styles.badge)}>
-                                  Ready to map
+                                <div className="text-right">
+                                  <div className={cn('rounded-full px-3 py-1 text-xs font-bold', ALLOCATED_ROOM_MAPPING_STATUS_STYLES[mappingStatus.tone])}>
+                                    {mappingStatus.label}
+                                  </div>
+                                  <p className="mt-2 max-w-[180px] text-[11px] font-medium text-slate-500">{mappingStatus.detail}</p>
                                 </div>
                               </div>
                             </div>
-                          ))}
+                          )})}
                         </div>
                       </div>
                     )}
@@ -12006,13 +12082,15 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="bg-slate-50 border-b border-slate-100">
-                    {['School', 'Building', 'Block', 'Floor', 'Room', 'Type', 'Category', 'Capacity', SEMESTER_TYPE_LABEL].map(header => (
+                    {['School', 'Building', 'Block', 'Floor', 'Room', 'Type', 'Category', 'Capacity', SEMESTER_TYPE_LABEL, 'Status'].map(header => (
                       <th key={header} className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{header}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {allocatedRoomVisibleRows.map(({ allocation, school, room, floor, block, building, category }: any) => (
+                  {allocatedRoomVisibleRows.map(({ allocation, school, room, floor, block, building, category }: any) => {
+                    const mappingStatus = getAllocatedRoomMappingStatus({ allocation, school, room, floor, block, building, category });
+                    return (
                     <tr key={allocation.id} className="hover:bg-slate-50">
                       <td className="px-4 py-3 text-sm font-medium text-slate-700">{school?.name || 'Unknown'}</td>
                       <td className="px-4 py-3 text-sm text-slate-600">{building?.name || 'Unknown'}</td>
@@ -12027,8 +12105,13 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
                       </td>
                       <td className="px-4 py-3 text-sm text-slate-600">{room?.capacity ?? allocation?.capacity ?? 'Unknown'}</td>
                       <td className="px-4 py-3 text-sm text-slate-600">{allocation?.semester || 'Unknown'}</td>
+                      <td className="px-4 py-3 text-sm">
+                        <span className={cn('inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em]', ALLOCATED_ROOM_MAPPING_STATUS_STYLES[mappingStatus.tone])}>
+                          {mappingStatus.label}
+                        </span>
+                      </td>
                     </tr>
-                  ))}
+                  )})}
                 </tbody>
               </table>
             </div>
