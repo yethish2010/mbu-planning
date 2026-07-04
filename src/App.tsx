@@ -12429,32 +12429,36 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
                   const isExpanded = schoolHodGroups.length === 1 || idsMatch(expandedSchoolSummary, group.school?.id);
                   return (
                     <div key={`summary-${group.school.id}`} className="rounded-2xl border border-slate-200 bg-slate-50/70 overflow-hidden">
-                      <button
-                        type="button"
-                        onClick={() => setExpandedSchoolSummary((current) => idsMatch(current, group.school?.id) ? 'All' : group.school.id?.toString?.() || 'All')}
-                        className="w-full px-5 py-4 text-left hover:bg-white/70"
-                      >
+                      <div className="px-5 py-4 hover:bg-white/70">
                         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                          <div>
+                          <button
+                            type="button"
+                            onClick={() => setExpandedSchoolSummary((current) => idsMatch(current, group.school?.id) ? 'All' : group.school.id?.toString?.() || 'All')}
+                            className="flex-1 text-left"
+                          >
                             <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-500">School Scope</p>
                             <h4 className="mt-1 text-xl font-black text-slate-900">{group.school.name}</h4>
                             <p className="mt-2 text-sm text-slate-500">
                               {group.hods.length} HODs, {group.roomCount} rooms, {group.departmentNames.length} mapped departments
                             </p>
-                          </div>
+                          </button>
                           <div className="flex flex-wrap items-center justify-end gap-2">
                             <span className="rounded-full bg-white px-3 py-1.5 text-xs font-bold text-slate-700 shadow-sm">{group.assignedCapacity} / {group.totalCapacity} seats mapped</span>
                             <span className="rounded-full bg-emerald-100 px-3 py-1.5 text-xs font-bold text-emerald-700">{group.readyCount} ready</span>
                             <span className="rounded-full bg-sky-100 px-3 py-1.5 text-xs font-bold text-sky-700">{group.mappedCount} mapped</span>
                             <span className="rounded-full bg-violet-100 px-3 py-1.5 text-xs font-bold text-violet-700">{group.sharedCount} shared</span>
                             <span className="rounded-full bg-amber-100 px-3 py-1.5 text-xs font-bold text-amber-800">{group.fullCount} full</span>
-                            <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-600 shadow-sm">
+                            <button
+                              type="button"
+                              onClick={() => setExpandedSchoolSummary((current) => idsMatch(current, group.school?.id) ? 'All' : group.school.id?.toString?.() || 'All')}
+                              className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-600 shadow-sm hover:border-slate-300 hover:text-slate-900"
+                            >
                               {isExpanded ? 'Collapse' : 'Expand'}
                               {isExpanded ? <ChevronDown size={16} className="text-slate-500" /> : <ChevronRight size={16} className="text-slate-500" />}
-                            </span>
+                            </button>
                           </div>
                         </div>
-                      </button>
+                      </div>
 
                       {isExpanded && (
                         <div className="border-t border-slate-200 px-5 py-5">
