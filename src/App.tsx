@@ -11007,6 +11007,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
   const [schoolSummarySchoolFilter, setSchoolSummarySchoolFilter] = useState('All');
   const [expandedSchoolSummary, setExpandedSchoolSummary] = useState('All');
   const [showSchoolSummaryDetails, setShowSchoolSummaryDetails] = useState(false);
+  const [expandedRoomPreviewKey, setExpandedRoomPreviewKey] = useState<string | null>(null);
   const semesterOptions = ['Odd', 'Even'];
   const isDepartmentMappingMode = mode === 'department';
   const isScopedHodUser = isDepartmentMappingMode && normalizeRoleValue(user?.role) === 'hod';
@@ -11553,6 +11554,16 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
     }
     setExpandedSchoolSummary(firstVisibleSchool);
   }, [expandedSchoolSummary, schoolHodGroups, schoolSummarySchoolFilter]);
+
+  useEffect(() => {
+    if (!expandedRoomPreviewKey) return;
+    const roomPreviewStillVisible = schoolHodGroups.some((group: any) =>
+      group.hods.some((hodSummary: any) => `${group.school?.id}-${hodSummary.hodUser?.id}` === expandedRoomPreviewKey)
+    );
+    if (!roomPreviewStillVisible) {
+      setExpandedRoomPreviewKey(null);
+    }
+  }, [expandedRoomPreviewKey, schoolHodGroups]);
 
   useEffect(() => {
     setLookupPage(1);
@@ -12431,13 +12442,16 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
                               {group.hods.length} HODs, {group.roomCount} rooms, {group.departmentNames.length} mapped departments
                             </p>
                           </div>
-                          <div className="flex flex-wrap items-center gap-2">
+                          <div className="flex flex-wrap items-center justify-end gap-2">
                             <span className="rounded-full bg-white px-3 py-1.5 text-xs font-bold text-slate-700 shadow-sm">{group.assignedCapacity} / {group.totalCapacity} seats mapped</span>
                             <span className="rounded-full bg-emerald-100 px-3 py-1.5 text-xs font-bold text-emerald-700">{group.readyCount} ready</span>
                             <span className="rounded-full bg-sky-100 px-3 py-1.5 text-xs font-bold text-sky-700">{group.mappedCount} mapped</span>
                             <span className="rounded-full bg-violet-100 px-3 py-1.5 text-xs font-bold text-violet-700">{group.sharedCount} shared</span>
                             <span className="rounded-full bg-amber-100 px-3 py-1.5 text-xs font-bold text-amber-800">{group.fullCount} full</span>
-                            {isExpanded ? <ChevronDown size={18} className="text-slate-500" /> : <ChevronRight size={18} className="text-slate-500" />}
+                            <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-600 shadow-sm">
+                              {isExpanded ? 'Collapse' : 'Expand'}
+                              {isExpanded ? <ChevronDown size={16} className="text-slate-500" /> : <ChevronRight size={16} className="text-slate-500" />}
+                            </span>
                           </div>
                         </div>
                       </button>
@@ -12447,6 +12461,12 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
                           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
                             {group.hods.map((hodSummary: any) => {
                               const dominantStyles = ALLOCATED_ROOM_CATEGORY_STYLES[hodSummary.dominantCategory as keyof typeof ALLOCATED_ROOM_CATEGORY_STYLES] || ALLOCATED_ROOM_CATEGORY_STYLES['Special Rooms'];
+                              const roomPreviewKey = `${group.school.id}-${hodSummary.hodUser.id}`;
+                              const isRoomPreviewExpanded = expandedRoomPreviewKey === roomPreviewKey;
+                              const visibleRoomLabels = isRoomPreviewExpanded
+                                ? hodSummary.roomLabels
+                                : hodSummary.roomLabels.slice(0, 4);
+                              const hiddenRoomCount = Math.max(0, hodSummary.roomLabels.length - 4);
                               return (
                                 <div key={`${group.school.id}-${hodSummary.hodUser.id}`} className={cn('rounded-2xl border p-5 shadow-sm', dominantStyles.card)}>
                                   <div className="flex items-start justify-between gap-3">
@@ -12519,10 +12539,22 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
 
                                   <div className="mt-4 rounded-2xl border border-white/80 bg-white/70 px-4 py-3">
                                     <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">Room Preview</p>
-                                    <p className="mt-2 text-sm font-semibold text-slate-700">
-                                      {hodSummary.roomLabels.slice(0, 4).join(', ')}
-                                      {hodSummary.roomLabels.length > 4 ? ` +${hodSummary.roomLabels.length - 4} more` : ''}
-                                    </p>
+                                    <div className="mt-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-700">
+                                      {visibleRoomLabels.map((roomLabel: string) => (
+                                        <span key={`${roomPreviewKey}-${roomLabel}`} className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-bold text-slate-700">
+                                          {roomLabel}
+                                        </span>
+                                      ))}
+                                      {hiddenRoomCount > 0 && (
+                                        <button
+                                          type="button"
+                                          onClick={() => setExpandedRoomPreviewKey((current) => current === roomPreviewKey ? null : roomPreviewKey)}
+                                          className="rounded-full border border-slate-300 bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700 hover:bg-slate-200"
+                                        >
+                                          {isRoomPreviewExpanded ? 'Show less' : `+${hiddenRoomCount} more`}
+                                        </button>
+                                      )}
+                                    </div>
                                   </div>
                                 </div>
                               );
