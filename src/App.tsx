@@ -77,6 +77,7 @@ const DEPARTMENT_MAPPING_SUMMARY_ROLES = new Set([
   'infrastructure manager',
   'dean (p&m)',
 ]);
+const SCHOOL_SUMMARY_COLLAPSED_KEY = '__collapsed__';
 
 const DIGITAL_TWIN_STATUS_STYLES: Record<(typeof DIGITAL_TWIN_STATUS_ORDER)[number], {
   card: string;
@@ -11005,7 +11006,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
   const [showAllocatedRoomDetails, setShowAllocatedRoomDetails] = useState(false);
   const [schoolSummarySemesterFilter, setSchoolSummarySemesterFilter] = useState<'All' | 'Odd' | 'Even'>('All');
   const [schoolSummarySchoolFilter, setSchoolSummarySchoolFilter] = useState('All');
-  const [expandedSchoolSummary, setExpandedSchoolSummary] = useState('All');
+  const [expandedSchoolSummary, setExpandedSchoolSummary] = useState('');
   const [showSchoolSummaryDetails, setShowSchoolSummaryDetails] = useState(false);
   const [expandedRoomPreviewKey, setExpandedRoomPreviewKey] = useState<string | null>(null);
   const semesterOptions = ['Odd', 'Even'];
@@ -11249,6 +11250,10 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
     if (normalized.includes('lab')) return 'Labs';
     if (normalized.includes('class')) return 'Classrooms';
     return 'Special Rooms';
+  };
+  const toggleExpandedSchoolSummary = (schoolId: unknown) => {
+    const normalizedSchoolId = schoolId?.toString?.() || '';
+    setExpandedSchoolSummary((current) => idsMatch(current, normalizedSchoolId) ? SCHOOL_SUMMARY_COLLAPSED_KEY : normalizedSchoolId);
   };
   const myAllocatedRooms = isScopedHodUser
     ? hodRoomAllocations
@@ -11545,14 +11550,19 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
 
   useEffect(() => {
     const firstVisibleSchool = schoolHodGroups[0]?.school?.id?.toString?.() || 'All';
+    if (expandedSchoolSummary === SCHOOL_SUMMARY_COLLAPSED_KEY) {
+      return;
+    }
     if (schoolSummarySchoolFilter !== 'All' && schoolHodGroups.some((group: any) => idsMatch(group.school?.id, schoolSummarySchoolFilter))) {
       setExpandedSchoolSummary(schoolSummarySchoolFilter);
       return;
     }
-    if (expandedSchoolSummary !== 'All' && schoolHodGroups.some((group: any) => idsMatch(group.school?.id, expandedSchoolSummary))) {
+    if (expandedSchoolSummary && schoolHodGroups.some((group: any) => idsMatch(group.school?.id, expandedSchoolSummary))) {
       return;
     }
-    setExpandedSchoolSummary(firstVisibleSchool);
+    if (firstVisibleSchool !== 'All') {
+      setExpandedSchoolSummary(firstVisibleSchool);
+    }
   }, [expandedSchoolSummary, schoolHodGroups, schoolSummarySchoolFilter]);
 
   useEffect(() => {
@@ -12361,7 +12371,11 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
               <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">School Focus</label>
               <select
                 value={schoolSummarySchoolFilter}
-                onChange={e => setSchoolSummarySchoolFilter(e.target.value)}
+                onChange={e => {
+                  const nextSchoolId = e.target.value;
+                  setSchoolSummarySchoolFilter(nextSchoolId);
+                  setExpandedSchoolSummary(nextSchoolId === 'All' ? '' : nextSchoolId);
+                }}
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
               >
                 <option value="All">All Schools</option>
@@ -12396,7 +12410,11 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
                     <button
                       key={group.school.id}
                       type="button"
-                      onClick={() => setSchoolSummarySchoolFilter((current) => idsMatch(current, group.school.id) ? 'All' : group.school.id?.toString?.() || 'All')}
+                      onClick={() => {
+                        const nextSchoolId = idsMatch(schoolSummarySchoolFilter, group.school.id) ? 'All' : group.school.id?.toString?.() || 'All';
+                        setSchoolSummarySchoolFilter(nextSchoolId);
+                        setExpandedSchoolSummary(nextSchoolId === 'All' ? '' : nextSchoolId);
+                      }}
                       className={cn(
                         'rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-emerald-50/40 p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-md',
                         isActiveSchool && 'ring-2 ring-emerald-200 border-emerald-200 shadow-md',
@@ -12426,14 +12444,14 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
 
               <div className="space-y-4">
                 {schoolHodGroups.map((group: any) => {
-                  const isExpanded = schoolHodGroups.length === 1 || idsMatch(expandedSchoolSummary, group.school?.id);
+                  const isExpanded = idsMatch(expandedSchoolSummary, group.school?.id);
                   return (
                     <div key={`summary-${group.school.id}`} className="rounded-2xl border border-slate-200 bg-slate-50/70 overflow-hidden">
                       <div className="px-5 py-4 hover:bg-white/70">
                         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                           <button
                             type="button"
-                            onClick={() => setExpandedSchoolSummary((current) => idsMatch(current, group.school?.id) ? 'All' : group.school.id?.toString?.() || 'All')}
+                            onClick={() => toggleExpandedSchoolSummary(group.school?.id)}
                             className="flex-1 text-left"
                           >
                             <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-500">School Scope</p>
@@ -12450,7 +12468,7 @@ function RoomMappingManagement({ mode }: { mode: 'department' | 'hod' }) {
                             <span className="rounded-full bg-amber-100 px-3 py-1.5 text-xs font-bold text-amber-800">{group.fullCount} full</span>
                             <button
                               type="button"
-                              onClick={() => setExpandedSchoolSummary((current) => idsMatch(current, group.school?.id) ? 'All' : group.school.id?.toString?.() || 'All')}
+                              onClick={() => toggleExpandedSchoolSummary(group.school?.id)}
                               className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-600 shadow-sm hover:border-slate-300 hover:text-slate-900"
                             >
                               {isExpanded ? 'Collapse' : 'Expand'}
