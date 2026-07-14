@@ -4028,7 +4028,7 @@ function Sidebar() {
     { name: 'Maintenance', icon: Wrench, path: '/maintenance', roles: ['Administrator', 'Admin', 'Master Admin', 'Maintenance Staff', 'Infrastructure Manager', 'Dean (P&M)'] },
     { name: 'Analytics', icon: BarChart3, path: '/analytics', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)', ...executiveMenuRoles] },
     { name: 'Utilization Reports', icon: FileText, path: '/reports', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)', ...executiveMenuRoles] },
-    { name: 'Performance Insights', icon: Activity, path: '/performance-insights', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', ...executiveMenuRoles] },
+    { name: 'Performance Insights', icon: Activity, path: '/performance-insights', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager'] },
   ];
 
   const filteredMenu = menuItems.filter(item => item.roles.includes(user?.role) || customAccessPaths.includes(item.path));
@@ -4865,7 +4865,7 @@ export default function App() {
           } />
           <Route path="/analytics" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)', 'Vice Chancellor', 'Pro-Chancellor', 'Registrar']}><Layout title="Infrastructure Analytics"><AnalyticsDashboard /></Layout></ProtectedRoute>} />
           <Route path="/reports" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)', 'Vice Chancellor', 'Pro-Chancellor', 'Registrar']}><Layout title="Utilization Reports"><ReportGeneration /></Layout></ProtectedRoute>} />
-          <Route path="/performance-insights" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Vice Chancellor', 'Pro-Chancellor', 'Registrar']}><Layout title="Performance Insights"><PerformanceInsights /></Layout></ProtectedRoute>} />
+          <Route path="/performance-insights" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager']}><Layout title="Performance Insights"><PerformanceInsights /></Layout></ProtectedRoute>} />
           <Route path="/timetable" element={
             <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Timetable Coordinator']}>
               <Layout title="Timetable View">
@@ -5640,6 +5640,23 @@ function DashboardHome() {
     { label: 'Event Booked', count: twinStatusCounts['Event Booked'], detail: formatStatusBreakdownLine(twinStatusBreakdowns['Event Booked'], 'Special-use rooms in progress') },
     { label: 'Not Bookable', count: twinStatusCounts['Not Bookable'], detail: formatStatusBreakdownLine(twinStatusBreakdowns['Not Bookable'], 'Rooms excluded from booking flow') },
   ]), [twinStatusBreakdowns, twinStatusCounts]);
+  const canAccessPerformanceInsights = ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager'].some(
+    (role) => normalizeRoleValue(role) === normalizeRoleValue(user?.role)
+  );
+  const executiveChartCardClassName = 'rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm transition-all hover:-translate-y-0.5 hover:border-emerald-200 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-emerald-500/30';
+  const navigateFromExecutiveChartCard = (path: string) => {
+    navigate(path);
+  };
+  const navigateFromExecutiveStatusChart = (status: string) => {
+    const params = new URLSearchParams();
+    params.set('status', status);
+    navigate(`/live-availability?${params.toString()}`);
+  };
+  const handleExecutiveChartCardKeyDown = (event: React.KeyboardEvent<HTMLDivElement>, path: string) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    navigateFromExecutiveChartCard(path);
+  };
   const executiveModeToggle = isExecutiveDashboard ? (
     <div className="rounded-[28px] border border-slate-200 bg-white/90 p-5 shadow-sm backdrop-blur">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
@@ -5675,21 +5692,38 @@ function DashboardHome() {
   ) : null;
   const executiveVisualCharts = isExecutiveDashboard ? (
     <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
-      <div className="xl:col-span-3 rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+      <div
+        className={cn('xl:col-span-3', executiveChartCardClassName)}
+      >
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-[11px] uppercase tracking-[0.24em] font-bold text-slate-500">Status Distribution</p>
             <h3 className="text-lg font-bold text-slate-900 mt-2">Live occupancy split</h3>
-            <p className="text-sm text-slate-500 mt-1">A compact chart showing how rooms are distributed right now.</p>
+            <p className="text-sm text-slate-500 mt-1">Click any status slice to open Live Availability with only that room status.</p>
           </div>
           <PieChartIcon size={18} className="text-slate-400" />
         </div>
         <div className="h-64 mt-4">
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
-              <Pie data={executiveStatusChartData} dataKey="value" nameKey="name" innerRadius={54} outerRadius={82} paddingAngle={3}>
+              <Pie
+                data={executiveStatusChartData}
+                dataKey="value"
+                nameKey="name"
+                innerRadius={54}
+                outerRadius={82}
+                paddingAngle={3}
+                onClick={(entry: any) => {
+                  if (entry?.name) navigateFromExecutiveStatusChart(entry.name);
+                }}
+              >
                 {executiveStatusChartData.map((entry) => (
-                  <Cell key={entry.name} fill={entry.fill} />
+                  <Cell
+                    key={entry.name}
+                    fill={entry.fill}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => navigateFromExecutiveStatusChart(entry.name)}
+                  />
                 ))}
               </Pie>
               <Tooltip formatter={(value: any) => [`${value}`, 'Rooms']} />
@@ -5699,7 +5733,14 @@ function DashboardHome() {
         </div>
       </div>
 
-      <div className="xl:col-span-5 rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => navigateFromExecutiveChartCard('/analytics')}
+        onKeyDown={(event) => handleExecutiveChartCardKeyDown(event, '/analytics')}
+        className={cn('xl:col-span-5 cursor-pointer', executiveChartCardClassName)}
+        aria-label="Open infrastructure analytics from utilization by school"
+      >
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-[11px] uppercase tracking-[0.24em] font-bold text-slate-500">School Comparison</p>
@@ -5725,7 +5766,14 @@ function DashboardHome() {
         </div>
       </div>
 
-      <div className="xl:col-span-4 rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => navigateFromExecutiveChartCard('/reports')}
+        onKeyDown={(event) => handleExecutiveChartCardKeyDown(event, '/reports')}
+        className={cn('xl:col-span-4 cursor-pointer', executiveChartCardClassName)}
+        aria-label="Open utilization reports from highest utilization rooms"
+      >
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-[11px] uppercase tracking-[0.24em] font-bold text-slate-500">Top Busy Rooms</p>
@@ -5747,7 +5795,14 @@ function DashboardHome() {
         </div>
       </div>
 
-      <div className="xl:col-span-7 rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => navigateFromExecutiveChartCard('/analytics')}
+        onKeyDown={(event) => handleExecutiveChartCardKeyDown(event, '/analytics')}
+        className={cn('xl:col-span-7 cursor-pointer', executiveChartCardClassName)}
+        aria-label="Open infrastructure analytics from room intensity profile"
+      >
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-[11px] uppercase tracking-[0.24em] font-bold text-slate-500">Utilization Curve</p>
@@ -5775,7 +5830,14 @@ function DashboardHome() {
         </div>
       </div>
 
-      <div className="xl:col-span-5 rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => navigateFromExecutiveChartCard('/analytics')}
+        onKeyDown={(event) => handleExecutiveChartCardKeyDown(event, '/analytics')}
+        className={cn('xl:col-span-5 cursor-pointer', executiveChartCardClassName)}
+        aria-label="Open infrastructure analytics from classrooms vs labs"
+      >
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-[11px] uppercase tracking-[0.24em] font-bold text-slate-500">Infrastructure Mix</p>
@@ -5918,7 +5980,9 @@ function DashboardHome() {
               <h4 className="text-lg font-bold text-slate-900">Critical Alerts And Follow-Up</h4>
               <p className="text-sm text-slate-500 mt-1">Maintenance and operational exceptions requiring executive attention.</p>
             </div>
-            <button type="button" onClick={() => navigate('/performance-insights')} className="text-xs font-bold text-emerald-700 hover:text-emerald-800">Open Insights</button>
+            {canAccessPerformanceInsights && (
+              <button type="button" onClick={() => navigate('/performance-insights')} className="text-xs font-bold text-emerald-700 hover:text-emerald-800">Open Insights</button>
+            )}
           </div>
           <div className="space-y-3 mt-5">
             {recentAlerts.map((alert: any) => (
@@ -16524,6 +16588,8 @@ function BookingManagement() {
 
 function LiveRoomAvailability() {
   const { user, selectedHodDepartmentId, setSelectedHodDepartmentId } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
   const initialLoadRef = useRef(false);
   const [campuses, setCampuses] = useState<any[]>([]);
   const [buildings, setBuildings] = useState<any[]>([]);
@@ -16593,6 +16659,8 @@ function LiveRoomAvailability() {
     recommendedRooms: [],
     rooms: [],
   });
+  const [statusDrilldownFilter, setStatusDrilldownFilter] = useState('All');
+  const [roomDrilldownFilter, setRoomDrilldownFilter] = useState<{ roomId: string, roomLabel: string }>({ roomId: '', roomLabel: '' });
 
   const canDirectDecideBookings = isAdminRole(user?.role) || user?.role === 'Dean (P&M)';
   const canBookRooms = isAdminRole(user?.role) || ['Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Faculty', 'Event Coordinator'].includes(user?.role || '');
@@ -16778,9 +16846,58 @@ function LiveRoomAvailability() {
     void fetchAvailability();
   }, [loadingLookups]);
 
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const requestedStatus = params.get('status') || 'All';
+    setStatusDrilldownFilter(
+      DIGITAL_TWIN_STATUS_ORDER.includes(requestedStatus as typeof DIGITAL_TWIN_STATUS_ORDER[number])
+        ? requestedStatus
+        : 'All'
+    );
+    setRoomDrilldownFilter({
+      roomId: params.get('roomId') || '',
+      roomLabel: params.get('room') || '',
+    });
+  }, [location.search]);
+
+  const filteredLiveAvailabilityRooms = useMemo(() => (
+    results.rooms.filter((room: any) => {
+      if (statusDrilldownFilter === 'All') return true;
+      return getDigitalTwinStatusLabel(room?.status, room?.status !== 'Not Bookable') === statusDrilldownFilter;
+    })
+  ), [results.rooms, statusDrilldownFilter]);
+
+  const roomDrilldownMatchedRooms = useMemo(() => (
+    filteredLiveAvailabilityRooms.filter((room: any) => {
+      if (!roomDrilldownFilter.roomId && !roomDrilldownFilter.roomLabel) return true;
+      const roomIdMatches = roomDrilldownFilter.roomId
+        ? idsMatch(room?.id, roomDrilldownFilter.roomId)
+        : false;
+      const roomLabelMatches = roomDrilldownFilter.roomLabel
+        ? normalizeLookupValue(room?.roomNumber) === normalizeLookupValue(roomDrilldownFilter.roomLabel)
+        : false;
+      return roomIdMatches || roomLabelMatches;
+    })
+  ), [filteredLiveAvailabilityRooms, roomDrilldownFilter]);
+
+  const visibleRecommendedRooms = useMemo(() => (
+    statusDrilldownFilter === 'All' || statusDrilldownFilter === 'Available'
+      ? results.recommendedRooms.filter((room: any) => {
+          if (!roomDrilldownFilter.roomId && !roomDrilldownFilter.roomLabel) return true;
+          const roomIdMatches = roomDrilldownFilter.roomId
+            ? idsMatch(room?.id, roomDrilldownFilter.roomId)
+            : false;
+          const roomLabelMatches = roomDrilldownFilter.roomLabel
+            ? normalizeLookupValue(room?.roomNumber) === normalizeLookupValue(roomDrilldownFilter.roomLabel)
+            : false;
+          return roomIdMatches || roomLabelMatches;
+        })
+      : []
+  ), [results.recommendedRooms, roomDrilldownFilter, statusDrilldownFilter]);
+
   const groupedRooms = useMemo(() => {
     const groups = new Map<string, { key: string, buildingName: string, blockName: string, floorName: string, rooms: any[] }>();
-    results.rooms.forEach((room: any) => {
+    roomDrilldownMatchedRooms.forEach((room: any) => {
       const floorLabel = getFloorName(room.floorName);
       const groupKey = `${room.buildingName}|${room.blockName}|${floorLabel}`;
       if (!groups.has(groupKey)) {
@@ -16795,7 +16912,7 @@ function LiveRoomAvailability() {
       groups.get(groupKey)?.rooms.push(room);
     });
     return Array.from(groups.values());
-  }, [results.rooms]);
+  }, [roomDrilldownMatchedRooms]);
 
   const statusTheme = (status: string) => {
     if (status === 'Best Suitable') return { card: 'border-violet-200 bg-violet-50/70', badge: 'bg-violet-100 text-violet-700 border-violet-200' };
@@ -16868,6 +16985,25 @@ function LiveRoomAvailability() {
   };
 
   const roomTypeOptions = ['Classroom', 'Lab', 'Seminar Hall', 'Auditorium', 'Meeting Room', 'Other'];
+  const clearLiveAvailabilityStatusDrilldown = () => {
+    const params = new URLSearchParams(location.search);
+    params.delete('status');
+    const nextSearch = params.toString();
+    navigate({
+      pathname: '/live-availability',
+      search: nextSearch ? `?${nextSearch}` : '',
+    });
+  };
+  const clearLiveAvailabilityRoomDrilldown = () => {
+    const params = new URLSearchParams(location.search);
+    params.delete('roomId');
+    params.delete('room');
+    const nextSearch = params.toString();
+    navigate({
+      pathname: '/live-availability',
+      search: nextSearch ? `?${nextSearch}` : '',
+    });
+  };
 
   return (
     <div className="space-y-6">
@@ -16927,6 +17063,36 @@ function LiveRoomAvailability() {
             Utility rooms, storage rooms, and restrooms are hidden from this operational view by default.
           </span>
         </div>
+
+        {statusDrilldownFilter !== 'All' && (
+          <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800 md:flex-row md:items-center md:justify-between">
+            <div>
+              <span className="font-bold">Status drill-down active.</span> Showing only rooms with status <span className="font-bold">{statusDrilldownFilter}</span>.
+            </div>
+            <button
+              type="button"
+              onClick={clearLiveAvailabilityStatusDrilldown}
+              className="inline-flex items-center justify-center rounded-xl border border-sky-200 bg-white px-4 py-2 text-xs font-bold text-sky-700 hover:bg-sky-100"
+            >
+              Clear Status Filter
+            </button>
+          </div>
+        )}
+
+        {(roomDrilldownFilter.roomId || roomDrilldownFilter.roomLabel) && (
+          <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm text-violet-800 md:flex-row md:items-center md:justify-between">
+            <div>
+              <span className="font-bold">Room drill-down active.</span> Showing only room <span className="font-bold">{roomDrilldownFilter.roomLabel || roomDrilldownFilter.roomId}</span>.
+            </div>
+            <button
+              type="button"
+              onClick={clearLiveAvailabilityRoomDrilldown}
+              className="inline-flex items-center justify-center rounded-xl border border-violet-200 bg-white px-4 py-2 text-xs font-bold text-violet-700 hover:bg-violet-100"
+            >
+              Clear Room Filter
+            </button>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
           <div>
@@ -17093,12 +17259,12 @@ function LiveRoomAvailability() {
             <h3 className="text-xl font-bold text-slate-800">Recommended Booking Options</h3>
             <p className="text-sm text-slate-500 mt-1">Secondary shortcuts drawn from rooms that are physically vacant in the selected real-time window.</p>
           </div>
-          <div className="px-3 py-1 rounded-full bg-violet-50 text-violet-700 text-xs font-bold">{results.recommendedRooms.length} suggestions</div>
+          <div className="px-3 py-1 rounded-full bg-violet-50 text-violet-700 text-xs font-bold">{visibleRecommendedRooms.length} suggestions</div>
         </div>
 
-        {results.recommendedRooms.length > 0 ? (
+        {visibleRecommendedRooms.length > 0 ? (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            {results.recommendedRooms.map((room: any) => (
+            {visibleRecommendedRooms.map((room: any) => (
               <div key={`recommended-${room.id}`} className="rounded-2xl border border-violet-200 bg-violet-50/70 p-5">
                 <div className="flex justify-between items-start gap-3 mb-3">
                   <div>
@@ -17124,7 +17290,9 @@ function LiveRoomAvailability() {
           </div>
         ) : (
           <div className="rounded-2xl border border-dashed border-slate-200 p-8 text-center text-slate-400">
-            Recommended rooms will appear here once matching available rooms are found.
+            {statusDrilldownFilter !== 'All' && statusDrilldownFilter !== 'Available'
+              ? `Recommended booking options are hidden while the ${statusDrilldownFilter} drill-down is active.`
+              : 'Recommended rooms will appear here once matching available rooms are found.'}
           </div>
         )}
       </div>
@@ -17135,16 +17303,16 @@ function LiveRoomAvailability() {
             <h3 className="text-xl font-bold text-slate-800">Live Availability Map</h3>
             <p className="text-sm text-slate-500 mt-1">Primary operational view grouped by building, block/direct floors, and floor using actual requested-time vacancy rather than timing-profile slot visibility. Support-only spaces like restrooms, stores, and utilities are excluded.</p>
           </div>
-          <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">{results.rooms.length} rooms</div>
+          <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">{roomDrilldownMatchedRooms.length} rooms</div>
         </div>
 
         {loadingResults ? (
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-10 text-center text-slate-500">
             Loading live availability...
           </div>
-        ) : results.rooms.length === 0 ? (
+        ) : roomDrilldownMatchedRooms.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-slate-200 p-10 text-center text-slate-400">
-            No matching rooms found for the selected date, time, and filters.
+            No matching rooms found for the selected date, time, filters, status drill-down, and room drill-down.
           </div>
         ) : viewMode === 'table' ? (
           <div className="overflow-x-auto">
@@ -17157,7 +17325,7 @@ function LiveRoomAvailability() {
                 </tr>
               </thead>
               <tbody>
-                {results.rooms.map((room: any) => {
+                {roomDrilldownMatchedRooms.map((room: any) => {
                   const theme = statusTheme(room.status);
                   return (
                     <Fragment key={`table-room-${room.id}`}>
@@ -17801,6 +17969,7 @@ function AIAllocation() {
 }
 
 function AnalyticsDashboard() {
+  const navigate = useNavigate();
   const [utilizationData, setUtilizationData] = useState<any[]>([]);
   const [frequencyData, setFrequencyData] = useState<any[]>([]);
   const [reportData, setReportData] = useState<any>(null);
@@ -17926,9 +18095,20 @@ function AnalyticsDashboard() {
     return true;
   });
   const filteredUtilizationData = filteredRoomReports
-    .map((room: any) => ({ name: room.room_number, utilization: room.utilization }))
+    .map((room: any) => ({
+      name: room.room_number,
+      utilization: room.utilization,
+      roomId: room.room_id?.toString() || '',
+      roomLabel: room.room_number?.toString() || '',
+    }))
     .sort((a: any, b: any) => b.utilization - a.utilization)
     .slice(0, 10);
+  const navigateToAnalyticsRoomDrilldown = (entry: any) => {
+    const params = new URLSearchParams();
+    if (entry?.roomId) params.set('roomId', entry.roomId);
+    if (entry?.roomLabel) params.set('room', entry.roomLabel);
+    navigate(`/live-availability?${params.toString()}`);
+  };
   const filteredFrequencyData = Array.from(new Set<string>(filteredRoomReports.map((room: any) => room.building))).map(building => ({
     name: building,
     count: filteredBookings.filter(booking => matchesAnalyticsValue(getBookingRoomMeta(booking)?.building, building)).length
@@ -18139,7 +18319,13 @@ function AnalyticsDashboard() {
                   contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)' }}
                   cursor={{ fill: '#f8fafc' }}
                 />
-                <Bar dataKey="utilization" fill="#10b981" radius={[6, 6, 0, 0]} barSize={32} />
+                <Bar
+                  dataKey="utilization"
+                  fill="#10b981"
+                  radius={[6, 6, 0, 0]}
+                  barSize={32}
+                  onClick={(entry: any) => navigateToAnalyticsRoomDrilldown(entry)}
+                />
               </BarChart>
             </ResponsiveContainer>
           </div>
