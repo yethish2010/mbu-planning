@@ -5640,6 +5640,9 @@ function DashboardHome() {
     { label: 'Event Booked', count: twinStatusCounts['Event Booked'], detail: formatStatusBreakdownLine(twinStatusBreakdowns['Event Booked'], 'Special-use rooms in progress') },
     { label: 'Not Bookable', count: twinStatusCounts['Not Bookable'], detail: formatStatusBreakdownLine(twinStatusBreakdowns['Not Bookable'], 'Rooms excluded from booking flow') },
   ]), [twinStatusBreakdowns, twinStatusCounts]);
+  const canAccessBookings = ['Administrator', 'Admin', 'Master Admin', 'Faculty', 'HOD', 'Dean', 'Event Coordinator', 'Dean (P&M)', 'Deputy Dean (P&M)'].some(
+    (role) => normalizeRoleValue(role) === normalizeRoleValue(user?.role)
+  );
   const canAccessPerformanceInsights = ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager'].some(
     (role) => normalizeRoleValue(role) === normalizeRoleValue(user?.role)
   );
@@ -6669,10 +6672,12 @@ function DashboardHome() {
                   <MapIcon className="text-slate-400 group-hover:text-emerald-500 mb-3" size={24} />
                   <p className="text-xs font-bold text-slate-700">Live Availability</p>
                 </Link>
-                <Link to="/bookings" className="p-4 bg-slate-50 rounded-2xl border border-slate-100 hover:border-emerald-500 hover:bg-white transition-all group">
-                  <Calendar className="text-slate-400 group-hover:text-emerald-500 mb-3" size={24} />
-                  <p className="text-xs font-bold text-slate-700">Room Bookings</p>
-                </Link>
+                {canAccessBookings && (
+                  <Link to="/bookings" className="p-4 bg-slate-50 rounded-2xl border border-slate-100 hover:border-emerald-500 hover:bg-white transition-all group">
+                    <Calendar className="text-slate-400 group-hover:text-emerald-500 mb-3" size={24} />
+                    <p className="text-xs font-bold text-slate-700">Room Bookings</p>
+                  </Link>
+                )}
                 <Link to="/maintenance" className="p-4 bg-slate-50 rounded-2xl border border-slate-100 hover:border-emerald-500 hover:bg-white transition-all group">
                   <Wrench className="text-slate-400 group-hover:text-emerald-500 mb-3" size={24} />
                   <p className="text-xs font-bold text-slate-700">Maintenance</p>
@@ -6757,13 +6762,15 @@ function DashboardHome() {
                   >
                     Open Twin
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => navigate(`/bookings?roomId=${selectedTwinRoom.id}`)}
-                    className="px-4 py-3 rounded-2xl border border-emerald-200 bg-emerald-50 text-emerald-700 text-sm font-bold hover:bg-emerald-100 transition-colors"
-                  >
-                    Booking Flow
-                  </button>
+                  {canAccessBookings && (
+                    <button
+                      type="button"
+                      onClick={() => navigate(`/bookings?roomId=${selectedTwinRoom.id}`)}
+                      className="px-4 py-3 rounded-2xl border border-emerald-200 bg-emerald-50 text-emerald-700 text-sm font-bold hover:bg-emerald-100 transition-colors"
+                    >
+                      Booking Flow
+                    </button>
+                  )}
                 </div>
               </div>
             ) : (
