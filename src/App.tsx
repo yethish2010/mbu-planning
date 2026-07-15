@@ -16655,6 +16655,11 @@ function LiveRoomAvailability() {
   });
   const [results, setResults] = useState<any>({
     summary: {
+      inventoryRooms: 0,
+      hierarchyLinkedRooms: 0,
+      operationalRooms: 0,
+      hierarchyExcludedRooms: 0,
+      supportRoomsExcluded: 0,
       totalRooms: 0,
       available: 0,
       occupied: 0,
@@ -16992,6 +16997,71 @@ function LiveRoomAvailability() {
   };
 
   const roomTypeOptions = ['Classroom', 'Lab', 'Seminar Hall', 'Auditorium', 'Meeting Room', 'Other'];
+  const liveAvailabilitySummaryCards = [
+    {
+      label: 'Total Inventory',
+      value: results.summary.inventoryRooms || results.summary.totalRooms,
+      color: 'text-slate-700',
+      bg: 'bg-white',
+      helper: results.summary.hierarchyExcludedRooms > 0
+        ? `${results.summary.hierarchyExcludedRooms} room${results.summary.hierarchyExcludedRooms === 1 ? '' : 's'} missing hierarchy links`
+        : 'All rooms from the master inventory',
+    },
+    {
+      label: 'Operational Rooms',
+      value: results.summary.operationalRooms || results.summary.totalRooms,
+      color: 'text-slate-700',
+      bg: 'bg-slate-50',
+      helper: [
+        results.summary.hierarchyLinkedRooms > 0 ? `${results.summary.hierarchyLinkedRooms} hierarchy-linked` : '',
+        results.summary.supportRoomsExcluded > 0 ? `${results.summary.supportRoomsExcluded} support-only excluded` : '',
+      ].filter(Boolean).join(' • ') || 'Rooms shown in this live availability workflow',
+    },
+    {
+      label: 'Available In Window',
+      value: (results.summary.available || 0) + (results.summary.bestSuitable || 0),
+      color: 'text-emerald-700',
+      bg: 'bg-emerald-50',
+      helper: results.summary.bestSuitable > 0
+        ? `${results.summary.bestSuitable} recommended room${results.summary.bestSuitable === 1 ? '' : 's'} already included`
+        : 'Physically free in the selected time window',
+    },
+    {
+      label: 'Recommended',
+      value: results.summary.bestSuitable,
+      color: 'text-violet-700',
+      bg: 'bg-violet-50',
+      helper: 'Subset of the available rooms',
+    },
+    {
+      label: 'Occupied',
+      value: results.summary.occupied,
+      color: 'text-rose-700',
+      bg: 'bg-rose-50',
+      helper: 'Live timetable occupancy',
+    },
+    {
+      label: 'Event Booked',
+      value: results.summary.booked,
+      color: 'text-sky-700',
+      bg: 'bg-sky-50',
+      helper: 'Reserved for approved events',
+    },
+    {
+      label: 'Maintenance Rooms',
+      value: results.summary.maintenance,
+      color: 'text-amber-700',
+      bg: 'bg-amber-50',
+      helper: 'Temporarily unavailable',
+    },
+    {
+      label: 'Not Bookable',
+      value: results.summary.notBookable,
+      color: 'text-slate-700',
+      bg: 'bg-slate-100',
+      helper: 'Operational non-bookable rooms only',
+    },
+  ];
   const clearLiveAvailabilityStatusDrilldown = () => {
     const params = new URLSearchParams(location.search);
     params.delete('status');
@@ -17227,18 +17297,12 @@ function LiveRoomAvailability() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4">
-        {[ 
-          { label: 'Total Rooms', value: results.summary.totalRooms, color: 'text-slate-700', bg: 'bg-slate-50' },
-          { label: 'Available In Window', value: results.summary.available, color: 'text-emerald-700', bg: 'bg-emerald-50' },
-          { label: 'Occupied', value: results.summary.occupied, color: 'text-rose-700', bg: 'bg-rose-50' },
-          { label: 'Event Booked', value: results.summary.booked, color: 'text-sky-700', bg: 'bg-sky-50' },
-          { label: 'Maintenance Rooms', value: results.summary.maintenance, color: 'text-amber-700', bg: 'bg-amber-50' },
-          { label: 'Not Bookable', value: results.summary.notBookable, color: 'text-slate-700', bg: 'bg-slate-100' },
-        ].map(card => (
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+        {liveAvailabilitySummaryCards.map(card => (
           <div key={card.label} className={cn('rounded-2xl border border-slate-200 p-5 shadow-sm', card.bg)}>
             <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-slate-500">{card.label}</p>
             <p className={cn('text-3xl font-extrabold mt-3', card.color)}>{card.value || 0}</p>
+            <p className="mt-2 text-xs font-medium text-slate-500">{card.helper}</p>
           </div>
         ))}
       </div>

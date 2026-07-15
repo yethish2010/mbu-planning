@@ -4569,6 +4569,7 @@ const getSharedAvailabilitySnapshot = async ({
 }) => {
   await ensureBookingColumnsReady();
   const [
+    allRoomsRaw,
     roomsRaw,
     departments,
     departmentAllocations,
@@ -4577,6 +4578,13 @@ const getSharedAvailabilitySnapshot = async ({
     maintenance,
     approvedBookings,
   ] = await Promise.all([
+    db.prepare(`
+      SELECT
+        id,
+        room_type,
+        usage_category
+      FROM rooms
+    `).all() as Promise<any[]>,
     db.prepare(`
       SELECT
         r.*,
@@ -4660,6 +4668,12 @@ const getSharedAvailabilitySnapshot = async ({
   batchAllocations.forEach((allocation: any) =>
     applyDepartmentContext(allocation.room_id, allocation.department_id, allocation.department_name || departmentNameById.get(allocation.department_id?.toString()))
   );
+
+  const inventoryRoomCount = allRoomsRaw.length;
+  const hierarchyLinkedRoomCount = roomsRaw.length;
+  const operationalRoomCount = roomsRaw.filter((room: any) => isLiveAvailabilityVisibleRoom(room)).length;
+  const hierarchyExcludedRoomCount = Math.max(0, inventoryRoomCount - hierarchyLinkedRoomCount);
+  const supportRoomsExcluded = Math.max(0, hierarchyLinkedRoomCount - operationalRoomCount);
 
   const roomCandidates = roomsRaw.filter((room: any) => {
     const roomKey = room.id?.toString() || "";
@@ -4902,6 +4916,11 @@ const getSharedAvailabilitySnapshot = async ({
 
   return {
     summary: {
+      inventoryRooms: inventoryRoomCount,
+      hierarchyLinkedRooms: hierarchyLinkedRoomCount,
+      operationalRooms: operationalRoomCount,
+      hierarchyExcludedRooms: hierarchyExcludedRoomCount,
+      supportRoomsExcluded,
       totalRooms: sortedRooms.length,
       available: sortedRooms.filter((room: any) => room.status === "Available").length,
       occupied: sortedRooms.filter((room: any) => room.status === "Occupied").length,
