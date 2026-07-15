@@ -16676,6 +16676,7 @@ function LiveRoomAvailability() {
 
   const canDirectDecideBookings = isAdminRole(user?.role) || user?.role === 'Dean (P&M)';
   const canBookRooms = isAdminRole(user?.role) || ['Dean', 'Dean (P&M)', 'Deputy Dean (P&M)', 'HOD', 'Faculty', 'Event Coordinator'].includes(user?.role || '');
+  const isExecutiveMonitoringRole = ['Pro-Chancellor', 'Vice Chancellor', 'Registrar'].includes(user?.role || '');
   const isHodUser = normalizeRoleValue(user?.role) === 'hod';
   const hodDepartmentIds = useMemo(
     () => getAssignedDepartmentIdsFromUser(user),
@@ -17062,6 +17063,9 @@ function LiveRoomAvailability() {
       helper: 'Operational non-bookable rooms only',
     },
   ];
+  const visibleLiveAvailabilitySummaryCards = isExecutiveMonitoringRole
+    ? liveAvailabilitySummaryCards.filter(card => card.label !== 'Recommended')
+    : liveAvailabilitySummaryCards;
   const clearLiveAvailabilityStatusDrilldown = () => {
     const params = new URLSearchParams(location.search);
     params.delete('status');
@@ -17121,15 +17125,17 @@ function LiveRoomAvailability() {
           </div>
         </div>
 
-        <div className="mb-6 rounded-2xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm text-sky-800">
-          <span className="font-bold">Status-first workspace.</span> This page is meant for monitoring all room states, status reasons, and building-wise availability.
-          <span className="ml-1">
-            If you already know you want to book a room, use <Link to="/bookings" className="font-bold underline">Room Bookings</Link> for the faster booking-first flow.
-          </span>
-          <span className="ml-1">
-            Filters are optional here, so the page opens with a broad live campus view first.
-          </span>
-        </div>
+        {!isExecutiveMonitoringRole && (
+          <div className="mb-6 rounded-2xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm text-sky-800">
+            <span className="font-bold">Status-first workspace.</span> This page is meant for monitoring all room states, status reasons, and building-wise availability.
+            <span className="ml-1">
+              If you already know you want to book a room, use <Link to="/bookings" className="font-bold underline">Room Bookings</Link> for the faster booking-first flow.
+            </span>
+            <span className="ml-1">
+              Filters are optional here, so the page opens with a broad live campus view first.
+            </span>
+          </div>
+        )}
 
         <div className="mb-6 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
           <span className="font-bold">Real-time vacancy rule.</span> Live Availability shows rooms that are physically free in the exact requested clock-time window, irrespective of department timing profiles.
@@ -17298,7 +17304,7 @@ function LiveRoomAvailability() {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-        {liveAvailabilitySummaryCards.map(card => (
+        {visibleLiveAvailabilitySummaryCards.map(card => (
           <div key={card.label} className={cn('rounded-2xl border border-slate-200 p-5 shadow-sm', card.bg)}>
             <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-slate-500">{card.label}</p>
             <p className={cn('text-3xl font-extrabold mt-3', card.color)}>{card.value || 0}</p>
@@ -17324,6 +17330,7 @@ function LiveRoomAvailability() {
         </div>
       </div>
 
+      {!isExecutiveMonitoringRole && (
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
         <div className="flex items-center justify-between mb-5">
           <div>
@@ -17367,6 +17374,7 @@ function LiveRoomAvailability() {
           </div>
         )}
       </div>
+      )}
 
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
         <div className="flex items-center justify-between mb-5">
