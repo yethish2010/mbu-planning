@@ -5149,12 +5149,28 @@ function DashboardHome() {
 
   const schoolUsageItems = useMemo(() => {
     const colorClasses = ['bg-emerald-500', 'bg-blue-500', 'bg-amber-500', 'bg-rose-500', 'bg-indigo-500'];
+    const buildSchoolShortCode = (schoolName: string) => {
+      const normalizedName = schoolName?.trim() || '';
+      if (!normalizedName) return '';
+      const compactMatch = normalizedName.match(/\bSo[A-Z][A-Za-z]*/g);
+      if (compactMatch?.[0]) return compactMatch[0];
+      const cleanedWords = normalizedName
+        .replace(/&/g, ' ')
+        .split(/\s+/)
+        .map((word: string) => word.replace(/[^A-Za-z]/g, ''))
+        .filter(Boolean);
+      const significantWords = cleanedWords.filter((word: string) => !['school', 'of', 'and', 'the'].includes(word.toLowerCase()));
+      const sourceWords = significantWords.length > 0 ? significantWords : cleanedWords;
+      const initials = sourceWords.slice(0, 6).map((word: string) => word[0]?.toUpperCase() || '').join('');
+      return cleanedWords[0]?.toLowerCase() === 'school' ? `So${initials}` : initials || normalizedName;
+    };
 
     return (Array.isArray(schoolUsage) ? schoolUsage : [])
       .filter((school: any) => school?.name && school.name !== 'Unmapped')
       .sort((a: any, b: any) => (Number(b?.avgUtilization) || 0) - (Number(a?.avgUtilization) || 0))
       .map((school: any, index: number) => ({
         name: school.name,
+        shortName: buildSchoolShortCode(school.name),
         value: Number(school.avgUtilization) || 0,
         deptCount: Number(school.deptCount) || 0,
         classroomUtilization: Number(school.classroomUtilization) || 0,
@@ -5706,33 +5722,48 @@ function DashboardHome() {
           </div>
           <PieChartIcon size={18} className="text-slate-400" />
         </div>
-        <div className="h-64 mt-4">
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
-              <Pie
-                data={executiveStatusChartData}
-                dataKey="value"
-                nameKey="name"
-                innerRadius={54}
-                outerRadius={82}
-                paddingAngle={3}
-                onClick={(entry: any) => {
-                  if (entry?.name) navigateFromExecutiveStatusChart(entry.name);
-                }}
+        <div className="mt-4">
+          <div className="h-52">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={executiveStatusChartData}
+                  dataKey="value"
+                  nameKey="name"
+                  innerRadius={54}
+                  outerRadius={82}
+                  paddingAngle={3}
+                  onClick={(entry: any) => {
+                    if (entry?.name) navigateFromExecutiveStatusChart(entry.name);
+                  }}
+                >
+                  {executiveStatusChartData.map((entry) => (
+                    <Cell
+                      key={entry.name}
+                      fill={entry.fill}
+                      style={{ cursor: 'pointer' }}
+                      onClick={() => navigateFromExecutiveStatusChart(entry.name)}
+                    />
+                  ))}
+                </Pie>
+                <Tooltip formatter={(value: any) => [`${value}`, 'Rooms']} />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="mt-4 flex flex-wrap gap-x-4 gap-y-2">
+            {executiveStatusChartData.map((entry) => (
+              <button
+                key={entry.name}
+                type="button"
+                onClick={() => navigateFromExecutiveStatusChart(entry.name)}
+                className="inline-flex items-center gap-2 text-left text-sm font-medium text-slate-600 hover:text-slate-900"
               >
-                {executiveStatusChartData.map((entry) => (
-                  <Cell
-                    key={entry.name}
-                    fill={entry.fill}
-                    style={{ cursor: 'pointer' }}
-                    onClick={() => navigateFromExecutiveStatusChart(entry.name)}
-                  />
-                ))}
-              </Pie>
-              <Tooltip formatter={(value: any) => [`${value}`, 'Rooms']} />
-              <Legend verticalAlign="bottom" height={24} iconType="circle" />
-            </PieChart>
-          </ResponsiveContainer>
+                <span className="h-3 w-3 rounded-full" style={{ backgroundColor: entry.fill }} />
+                <span>{entry.name}</span>
+                <span className="text-slate-400">{entry.value}</span>
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -5754,11 +5785,14 @@ function DashboardHome() {
         </div>
         <div className="h-64 mt-4">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={schoolUsageItems} margin={{ top: 8, right: 12, left: 0, bottom: 4 }}>
+            <BarChart data={schoolUsageItems} margin={{ top: 8, right: 12, left: 0, bottom: 28 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
-              <XAxis dataKey="name" tick={{ fontSize: 11 }} interval={0} angle={-12} textAnchor="end" height={56} />
+              <XAxis dataKey="shortName" tick={{ fontSize: 11 }} interval={0} angle={0} textAnchor="middle" height={44} />
               <YAxis tick={{ fontSize: 11 }} domain={[0, 100]} />
-              <Tooltip formatter={(value: any) => [`${value}%`, 'Utilization']} />
+              <Tooltip
+                formatter={(value: any) => [`${value}%`, 'Utilization']}
+                labelFormatter={(value: any, payload: any) => payload?.[0]?.payload?.name || value}
+              />
               <Bar dataKey="value" radius={[10, 10, 0, 0]}>
                 {schoolUsageItems.map((entry) => (
                   <Cell key={entry.name} fill={entry.color === 'bg-emerald-500' ? '#10b981' : entry.color === 'bg-blue-500' ? '#3b82f6' : entry.color === 'bg-amber-500' ? '#f59e0b' : entry.color === 'bg-rose-500' ? '#f43f5e' : '#6366f1'} />
