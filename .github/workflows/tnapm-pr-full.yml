@@ -41,11 +41,12 @@ jobs:
           TNAPM_FAMILY: ${{ matrix.family }}
         run: |
           python - <<'PY'
-          import importlib.util, os
+          import importlib.util, os, sys
           from pathlib import Path
           p=Path('tnapm/tnapm_experiment_runner.py')
           spec=importlib.util.spec_from_file_location('tnapm_runner', p)
           m=importlib.util.module_from_spec(spec)
+          sys.modules[spec.name]=m
           spec.loader.exec_module(m)
           backend=os.environ['TNAPM_BACKEND']
           family=os.environ['TNAPM_FAMILY']
@@ -106,7 +107,7 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          import json, pandas as pd, importlib.util
+          import json, pandas as pd, importlib.util, sys
           files=sorted(Path('downloaded_shards').glob('**/raw_runs.csv'))
           assert len(files)==15, f'Expected 15 shard CSVs, found {len(files)}'
           frames=[pd.read_csv(f) for f in files]
@@ -116,16 +117,16 @@ jobs:
           assert df[keys].drop_duplicates().shape[0]==6000, 'Duplicate/missing run-key coverage before Step-10 audit'
           out=Path('tnapm_results'); out.mkdir(exist_ok=True)
           df.to_csv(out/'raw_runs.csv', index=False)
-          # Consolidate backend snapshots from shard outputs.
           snapshots={}
           for f in Path('downloaded_shards').glob('**/backend_snapshots.json'):
               data=json.loads(f.read_text())
               snapshots.update(data)
           (out/'backend_snapshots.json').write_text(json.dumps(snapshots, indent=2))
-          # Re-run only the validated runner's analysis layer over the merged raw records.
           p=Path('tnapm/tnapm_experiment_runner.py')
           spec=importlib.util.spec_from_file_location('tnapm_runner', p)
-          m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+          m=importlib.util.module_from_spec(spec)
+          sys.modules[spec.name]=m
+          spec.loader.exec_module(m)
           m.analyze_results(out)
           print('TNAPM_STEP9_MERGE_PASS', len(df), df['status'].value_counts().to_dict())
           PY
