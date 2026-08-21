@@ -1,0 +1,76 @@
+name: TNAPM Smoke Test
+
+on:
+  push:
+    branches:
+      - tnapm-experiment
+    paths:
+      - 'tnapm/**'
+      - '.github/workflows/tnapm-smoke.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'tnapm/**'
+      - '.github/workflows/tnapm-smoke.yml'
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: tnapm/requirements_tnapm.txt
+
+      - name: Restore uploaded runner
+        run: |
+          base64 -d tnapm/runner.py.gz.b64 | gunzip > tnapm/tnapm_experiment_runner.py
+          python -m py_compile tnapm/tnapm_experiment_runner.py
+
+      - name: Install frozen TNAPM requirements
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r tnapm/requirements_tnapm.txt
+
+      - name: Show environment
+        run: |
+          python --version
+          python - <<'PY'
+          import qiskit, qiskit_aer, qiskit_ibm_runtime
+          print('qiskit', qiskit.__version__)
+          print('qiskit_aer', qiskit_aer.__version__)
+          print('qiskit_ibm_runtime', qiskit_ibm_runtime.__version__)
+          PY
+
+      - name: Run validated Step-9 smoke test
+        run: |
+          python tnapm/tnapm_experiment_runner.py --smoke --mode full --outdir tnapm_smoke_results
+
+      - name: Validate smoke output
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          p='tnapm_smoke_results/raw_runs.csv'
+          df=pd.read_csv(p)
+          print(df[['backend','benchmark_instance_id','method','transpiler_seed','status','hellinger_fidelity']])
+          assert len(df)==5, f'Expected 5 smoke rows, found {len(df)}'
+          assert (df['status']=='ok').all(), df[['method','status','error_message']].to_string(index=False)
+          assert df['hellinger_fidelity'].notna().all(), 'Missing smoke Hellinger fidelity'
+          print('TNAPM_SMOKE_PASS')
+          PY
+
+      - name: Upload smoke artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tnapm-smoke-results
+          path: tnapm_smoke_results/
+          if-no-files-found: warn
