@@ -1,0 +1,138 @@
+name: TNAPM Full Step-9 Experiment
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'tnapm/FULL_TRIGGER.md'
+
+jobs:
+  experiment-shard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [FakeMelbourneV2, FakeSherbrooke, FakeTorino]
+        family: [Star-GHZ, Exact-QFT, Bernstein-Vazirani, EfficientSU2, Quantum-Volume]
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: tnapm/requirements_tnapm.txt
+
+      - name: Restore exact uploaded runner
+        run: |
+          base64 -d tnapm/runner.py.gz.b64 | gunzip > tnapm/tnapm_experiment_runner.py
+          python -m py_compile tnapm/tnapm_experiment_runner.py
+
+      - name: Install frozen TNAPM requirements
+        run: python -m pip install -r tnapm/requirements_tnapm.txt
+
+      - name: Execute locked shard
+        env:
+          TNAPM_BACKEND: ${{ matrix.backend }}
+          TNAPM_FAMILY: ${{ matrix.family }}
+        run: |
+          python - <<'PY'
+          import importlib.util, os
+          from pathlib import Path
+          p=Path('tnapm/tnapm_experiment_runner.py')
+          spec=importlib.util.spec_from_file_location('tnapm_runner', p)
+          m=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(m)
+          backend=os.environ['TNAPM_BACKEND']
+          family=os.environ['TNAPM_FAMILY']
+          all_factories=dict(m.BACKEND_FACTORIES)
+          original_build=m.build_benchmarks
+          m.BACKEND_FACTORIES={backend: all_factories[backend]}
+          def filtered_benchmarks():
+              return [b for b in original_build() if b.family == family]
+          m.build_benchmarks=filtered_benchmarks
+          out=Path('shard_result')
+          m.run_experiment(out, mode='full', smoke=False, resume=False)
+          import pandas as pd
+          df=pd.read_csv(out/'raw_runs.csv')
+          expected=4*5*20
+          assert len(df)==expected, f'Expected {expected} rows, found {len(df)}'
+          assert (df['backend']==backend).all()
+          assert (df['benchmark_family']==family).all()
+          print('TNAPM_SHARD_PASS', backend, family, len(df))
+          PY
+
+      - name: Upload shard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tnapm-shard-${{ matrix.backend }}-${{ matrix.family }}
+          path: shard_result/
+          if-no-files-found: error
+
+  merge-step9:
+    needs: experiment-shard
+    if: ${{ always() && needs.experiment-shard.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: tnapm/requirements_tnapm.txt
+
+      - name: Restore exact uploaded runner
+        run: base64 -d tnapm/runner.py.gz.b64 | gunzip > tnapm/tnapm_experiment_runner.py
+
+      - name: Install frozen requirements
+        run: python -m pip install -r tnapm/requirements_tnapm.txt
+
+      - name: Download all 15 shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: tnapm-shard-*
+          path: downloaded_shards
+
+      - name: Merge and validate 6000 run records
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json, pandas as pd, importlib.util
+          files=sorted(Path('downloaded_shards').glob('**/raw_runs.csv'))
+          assert len(files)==15, f'Expected 15 shard CSVs, found {len(files)}'
+          frames=[pd.read_csv(f) for f in files]
+          df=pd.concat(frames, ignore_index=True)
+          keys=['backend','benchmark_family','width','method','transpiler_seed']
+          assert len(df)==6000, f'Expected 6000 rows, found {len(df)}'
+          assert df[keys].drop_duplicates().shape[0]==6000, 'Duplicate/missing run-key coverage before Step-10 audit'
+          out=Path('tnapm_results'); out.mkdir(exist_ok=True)
+          df.to_csv(out/'raw_runs.csv', index=False)
+          # Consolidate backend snapshots from shard outputs.
+          snapshots={}
+          for f in Path('downloaded_shards').glob('**/backend_snapshots.json'):
+              data=json.loads(f.read_text())
+              snapshots.update(data)
+          (out/'backend_snapshots.json').write_text(json.dumps(snapshots, indent=2))
+          # Re-run only the validated runner's analysis layer over the merged raw records.
+          p=Path('tnapm/tnapm_experiment_runner.py')
+          spec=importlib.util.spec_from_file_location('tnapm_runner', p)
+          m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+          m.analyze_results(out)
+          print('TNAPM_STEP9_MERGE_PASS', len(df), df['status'].value_counts().to_dict())
+          PY
+
+      - name: Upload merged Step-9 evidence package
+        uses: actions/upload-artifact@v4
+        with:
+          name: tnapm-step9-merged-results
+          path: tnapm_results/
+          if-no-files-found: error
