@@ -2,6 +2,8 @@
 import fs from "fs";
 import path, { dirname } from "path";
 import { fileURLToPath } from "url";
+import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
+import net from "net";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import cookieParser from "cookie-parser";
@@ -12,6 +14,7 @@ import { createDatabaseClient, type DatabaseClient, type DatabaseDialect } from 
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+const projectRoot = path.resolve(__dirname, "..");
 
 dotenv.config();
 
@@ -34,6 +37,14 @@ const isLocalhostDatabaseUrl = /localhost|127\.0\.0\.1/.test(rawDatabaseUrl);
 const databaseProvider = (isVercelRuntime && isLocalhostDatabaseUrl) ? "" : rawDatabaseProvider;
 const databaseUrl = (isVercelRuntime && isLocalhostDatabaseUrl) ? "" : rawDatabaseUrl;
 const APP_TIME_ZONE = process.env.APP_TIMEZONE || "Asia/Kolkata";
+const uploadsRoot = isVercelRuntime
+  ? path.join("/tmp", "uploads")
+  : path.join(projectRoot, "uploads");
+const cameraStreamRoot = isVercelRuntime
+  ? path.join("/tmp", "camera-streams")
+  : path.join(projectRoot, "camera-streams");
+const facultyCvUploadDir = path.join(uploadsRoot, "faculty-cv");
+const facultyPhotoUploadDir = path.join(uploadsRoot, "faculty-photos");
 const normalizeOrigin = (value?: string | null) => {
   const trimmed = value?.trim();
   if (!trimmed) return "";
@@ -269,6 +280,33 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       FOREIGN KEY(parent_room_id) REFERENCES rooms(id)
     );
 
+    CREATE TABLE IF NOT EXISTS cameras (
+      id ${idDefinition},
+      camera_code TEXT UNIQUE NOT NULL,
+      camera_name TEXT NOT NULL,
+      camera_type TEXT,
+      camera_ip TEXT,
+      camera_make TEXT,
+      room_id INTEGER NOT NULL,
+      placement TEXT,
+      coverage_description TEXT,
+      stream_type TEXT NOT NULL,
+      stream_url TEXT,
+      nvr_ip TEXT,
+      rtsp_port TEXT,
+      channel_number TEXT,
+      stream_number TEXT,
+      public_ip TEXT,
+      stream_transport TEXT,
+      status TEXT NOT NULL DEFAULT 'Online',
+      recording_enabled INTEGER DEFAULT 0,
+      access_level TEXT DEFAULT 'Security',
+      notes TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(room_id) REFERENCES rooms(id)
+    );
+
     CREATE TABLE IF NOT EXISTS schools (
       id ${idDefinition},
       school_id TEXT UNIQUE NOT NULL,
@@ -285,6 +323,55 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       type TEXT,
       description TEXT,
       FOREIGN KEY(school_id) REFERENCES schools(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS faculties (
+      id ${idDefinition},
+      faculty_code TEXT UNIQUE NOT NULL,
+      full_name TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      employee_id TEXT,
+      designation TEXT NOT NULL,
+      joining_designation TEXT,
+      employment_type TEXT,
+      faculty_status TEXT NOT NULL,
+      school TEXT NOT NULL,
+      department TEXT NOT NULL,
+      official_email TEXT,
+      phone_number TEXT,
+      office_room_cabin TEXT,
+      date_of_joining TEXT,
+      teaching_experience_years REAL,
+      research_experience_years REAL,
+      industry_experience_years REAL,
+      total_experience_years REAL,
+      experience_display TEXT,
+      highest_qualification TEXT,
+      qualification_institution TEXT,
+      year_of_qualification TEXT,
+      specialization TEXT,
+      subjects_expertise TEXT,
+      research_interests TEXT,
+      profile_summary TEXT,
+      orcid_id TEXT,
+      orcid_url TEXT,
+      scopus_author_id TEXT,
+      scopus_url TEXT,
+      web_of_science_researcherid TEXT,
+      web_of_science_url TEXT,
+      publications_count_snapshot INTEGER,
+      citations_count_snapshot INTEGER,
+      h_index_snapshot INTEGER,
+      projects_count_snapshot INTEGER,
+      patents_count_snapshot INTEGER,
+      phd_guided_count_snapshot INTEGER,
+      metrics_last_updated_on TEXT,
+      cv_file_name TEXT,
+      cv_file_url_path TEXT,
+      cv_upload_date TEXT,
+      cv_version TEXT,
+      cv_file_size TEXT,
+      faculty_photo_url_path TEXT
     );
 
     CREATE TABLE IF NOT EXISTS user_school_assignments (
@@ -431,6 +518,9 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       section TEXT,
       course_code TEXT,
       course_name TEXT,
+      faculty_code TEXT,
+      faculty_display_name TEXT,
+      faculty_full_name TEXT,
       faculty TEXT,
       room_id INTEGER,
       room_label TEXT,
@@ -592,6 +682,9 @@ await ensureColumn("schedules", "room_label", "TEXT");
 await ensureColumn("schedules", "section", "TEXT");
 await ensureColumn("schedules", "specialization", "TEXT");
 await ensureColumn("schedules", "program", "TEXT");
+await ensureColumn("schedules", "faculty_code", "TEXT");
+await ensureColumn("schedules", "faculty_display_name", "TEXT");
+await ensureColumn("schedules", "faculty_full_name", "TEXT");
 await ensureColumn("schedules", "semester", "TEXT");
 await ensureColumn("schedules", "year_of_study", "TEXT");
 await ensureColumn("schedules", "import_status", "TEXT");
@@ -623,6 +716,10 @@ await ensureColumn("academic_calendars", "timing_profile_id", "INTEGER");
 await ensureColumn("timing_profiles", "specialization", "TEXT");
 await ensureColumn("academic_calendars", "specialization", "TEXT");
 await ensureColumn("batch_room_allocations", "specialization", "TEXT");
+await ensureColumn("cameras", "camera_ip", "TEXT");
+await ensureColumn("cameras", "camera_make", "TEXT");
+await ensureColumn("cameras", "public_ip", "TEXT");
+await ensureColumn("cameras", "stream_transport", "TEXT");
 
 const normalizeStatusValue = (value: any) => value?.toString().trim().toLowerCase() || "";
 const getCurrentScopedDate = () => getCampusDateTimeParts().date || new Date().toISOString().split("T")[0];
@@ -2105,6 +2202,16 @@ const normalizeSchedulePayload = (payload: any) => ({
   program: normalizeScheduleProgramValue(payload?.program),
   specialization: normalizeScheduleSpecializationValue(payload?.specialization || payload?.branch),
   section: payload?.section?.toString().trim() || null,
+  faculty_code: payload?.faculty_code?.toString().trim() || null,
+  faculty_display_name: payload?.faculty_display_name?.toString().trim() || null,
+  faculty_full_name: payload?.faculty_full_name?.toString().trim() || null,
+  faculty: (
+    payload?.faculty?.toString().trim() ||
+    payload?.faculty_display_name?.toString().trim() ||
+    payload?.faculty_full_name?.toString().trim() ||
+    payload?.faculty_code?.toString().trim() ||
+    null
+  ),
   session_group_id: payload?.session_group_id?.toString().trim() || null,
 });
 
@@ -2934,8 +3041,19 @@ const markAllNotificationsRead = async (user: any, notificationIds?: number[]) =
   });
 };
 
-app.use(express.json({ limit: "25mb" }));
+app.use(express.json({ limit: "75mb" }));
 app.use(cookieParser());
+app.use("/uploads", express.static(uploadsRoot));
+app.use((err: any, _req: any, res: any, next: any) => {
+  if (!err) return next();
+  if (err.type === "entity.too.large") {
+    return res.status(413).json({ error: "Uploaded file is too large. Please upload a smaller CV or faculty photo file." });
+  }
+  if (err instanceof SyntaxError && "body" in err) {
+    return res.status(400).json({ error: "Invalid request body." });
+  }
+  return next(err);
+});
 app.use((req, res, next) => {
   const requestOrigin = normalizeOrigin(typeof req.headers.origin === "string" ? req.headers.origin : "");
 
@@ -2967,25 +3085,52 @@ const getAuthCookieOptions = () => ({
   sameSite: (isProduction ? "none" : "lax") as "none" | "lax",
 });
 
+const getTokenCandidates = (req: any) => {
+  const candidates = new Set<string>();
+  const parsedToken = req.cookies?.token?.toString?.().trim();
+  if (parsedToken) candidates.add(parsedToken);
+  const rawCookieHeader = req.headers?.cookie?.toString?.() || "";
+  rawCookieHeader.split(";").forEach((part: string) => {
+    const [name, ...valueParts] = part.trim().split("=");
+    if (name === "token") {
+      const value = valueParts.join("=").trim();
+      if (value) candidates.add(decodeURIComponent(value));
+    }
+  });
+  return Array.from(candidates);
+};
+
+const resolveSessionFromRequest = async (req: any) => {
+  for (const token of getTokenCandidates(req)) {
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      const userId = (decoded as any)?.id;
+      if (!userId) return decoded;
+      const user = await db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
+      if (user) return await getUserSessionPayload(user);
+    } catch {
+      // Try the next token candidate.
+    }
+  }
+  return null;
+};
+
 // Auth Middleware
 const authenticate = async (req: any, res: any, next: any) => {
-  const token = req.cookies.token;
-  if (!token) return res.status(401).json({ error: "Unauthorized" });
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    const userId = (decoded as any)?.id;
-    if (userId) {
-      const user = await db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
-      if (!user) return res.status(401).json({ error: "Unauthorized" });
-      req.user = await getUserSessionPayload(user);
-    } else {
-      req.user = decoded;
-    }
-    next();
-  } catch (err) {
-    res.status(401).json({ error: "Invalid token" });
+  const user = await resolveSessionFromRequest(req);
+  if (!user) {
+    res.clearCookie("token", getAuthCookieOptions());
+    return res.status(401).json({ error: "Session expired. Please log in again." });
   }
+  req.user = user;
+  next();
 };
+
+app.use("/api/camera-streams", authenticate, express.static(cameraStreamRoot, {
+  setHeaders: (res) => {
+    res.setHeader("Cache-Control", "no-store");
+  },
+}));
 
 const getAIResponseText = async (response: any) => {
   const textValue = response?.text;
@@ -3351,18 +3496,12 @@ app.post("/api/auth/logout", (req, res) => {
 });
 
 app.get("/api/auth/me", async (req, res) => {
-  const token = req.cookies.token;
-  if (!token) return res.status(401).json({ error: "Not logged in" });
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    const userId = (decoded as any)?.id;
-    if (!userId) return res.json({ user: decoded });
-    const user = await db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
-    if (!user) return res.status(401).json({ error: "Not logged in" });
-    res.json({ user: await getUserSessionPayload(user) });
-  } catch (err) {
-    res.status(401).json({ error: "Invalid token" });
+  const user = await resolveSessionFromRequest(req);
+  if (!user) {
+    res.clearCookie("token", getAuthCookieOptions());
+    return res.status(401).json({ error: "Not logged in" });
   }
+  res.json({ user });
 });
 
 app.put("/api/auth/preferences/dashboard-view", authenticate, async (req: any, res) => {
@@ -3761,6 +3900,11 @@ app.post("/api/auth/change-password", authenticate, async (req: any, res) => {
 // --- CRUD ROUTES ---
 
 const duplicateRules: Record<string, Array<{ fields: string[]; label: string }>> = {
+  faculties: [
+    { fields: ["faculty_code"], label: "Faculty Code" },
+    { fields: ["employee_id"], label: "Employee ID" },
+    { fields: ["display_name"], label: "Display Name" },
+  ],
   users: [
     { fields: ["employee_id"], label: "Employee ID" },
     { fields: ["email"], label: "Email" },
@@ -3784,6 +3928,10 @@ const duplicateRules: Record<string, Array<{ fields: string[]; label: string }>>
   rooms: [
     { fields: ["room_id"], label: "Room ID" },
     { fields: ["room_number"], label: "Room number" },
+  ],
+  cameras: [
+    { fields: ["camera_code"], label: "Camera Code" },
+    { fields: ["room_id", "camera_name"], label: "Camera name in this room" },
   ],
   schools: [
     { fields: ["school_id"], label: "School ID" },
@@ -3829,6 +3977,280 @@ const duplicateRules: Record<string, Array<{ fields: string[]; label: string }>>
 
 const normalizeDuplicateValue = (value: any) =>
   typeof value === "string" ? value.trim().toLowerCase() : value;
+
+const normalizeSimpleTextField = (value: any) => value?.toString().trim() || "";
+
+const normalizeOptionalProfileFileField = (value: any) => {
+  const normalized = normalizeSimpleTextField(value);
+  return ["-", "--", "na", "n/a", "none", "null", "not found"].includes(normalized.toLowerCase())
+    ? ""
+    : normalized;
+};
+
+const normalizeProfileFileUrlPath = (value: any) => {
+  const normalized = normalizeOptionalProfileFileField(value).replace(/\\/g, "/");
+  if (!normalized) return "";
+  if (/^(https?:|data:|blob:)/i.test(normalized)) return normalized;
+  const withoutLeadingSlash = normalized.replace(/^\/+/, "");
+  if (withoutLeadingSlash.startsWith("uploads/")) return `/${withoutLeadingSlash}`;
+  if (withoutLeadingSlash.startsWith("faculty-cv/") || withoutLeadingSlash.startsWith("faculty-photos/")) {
+    return `/uploads/${withoutLeadingSlash}`;
+  }
+  return normalized.startsWith("/") ? normalized : `/${withoutLeadingSlash}`;
+};
+
+const localUploadPathExists = async (urlPath: string) => {
+  const normalizedPath = normalizeProfileFileUrlPath(urlPath);
+  if (!normalizedPath.startsWith("/uploads/")) return true;
+  const relativeUploadPath = normalizedPath.replace(/^\/uploads\/+/, "");
+  const resolvedPath = path.resolve(uploadsRoot, relativeUploadPath);
+  if (!resolvedPath.startsWith(path.resolve(uploadsRoot))) return false;
+  try {
+    const stat = await fs.promises.stat(resolvedPath);
+    return stat.isFile();
+  } catch {
+    return false;
+  }
+};
+
+const activeCameraStreams = new Map<string, {
+  process: ChildProcessWithoutNullStreams;
+  directory: string;
+  playlistPath: string;
+  startedAt: number;
+  lastError: string;
+}>();
+const recentCameraStreamErrors = new Map<string, string>();
+
+let ffmpegAvailability: Promise<boolean> | null = null;
+
+const getBundledFfmpegPath = () =>
+  path.join(projectRoot, "tools", "ffmpeg", "bin", process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg");
+
+const getFfmpegPath = () => {
+  const configuredPath = process.env.FFMPEG_PATH?.toString().trim() || "";
+  const bundledPath = getBundledFfmpegPath();
+  if (configuredPath) {
+    if (!path.isAbsolute(configuredPath) || fs.existsSync(configuredPath)) return configuredPath;
+    if (fs.existsSync(bundledPath)) return bundledPath;
+    return configuredPath;
+  }
+  if (fs.existsSync(bundledPath)) return bundledPath;
+  return "ffmpeg";
+};
+
+const checkFfmpegAvailable = () => {
+  if (!ffmpegAvailability) {
+    ffmpegAvailability = new Promise<boolean>((resolve) => {
+      const probe = spawn(getFfmpegPath(), ["-version"]);
+      probe.once("error", () => resolve(false));
+      probe.once("exit", (code) => resolve(code === 0));
+    });
+  }
+  return ffmpegAvailability;
+};
+
+const sanitizeCameraStreamSessionKey = (value: any) => {
+  const normalized = value?.toString().trim().replace(/[^a-zA-Z0-9_-]/g, "-") || "camera";
+  return normalized.slice(0, 80);
+};
+
+const decodeURIComponentSafely = (value: string) => {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+};
+
+const encodeRtspUserInfo = (streamUrl: any) => {
+  const raw = streamUrl?.toString().trim() || "";
+  const prefixMatch = raw.match(/^rtsp:\/\//i);
+  if (!prefixMatch) return raw;
+  const prefix = prefixMatch[0];
+  const rest = raw.slice(prefix.length);
+  const pathIndex = rest.search(/[/?#]/);
+  const authority = pathIndex >= 0 ? rest.slice(0, pathIndex) : rest;
+  const suffix = pathIndex >= 0 ? rest.slice(pathIndex) : "";
+  const atIndex = authority.lastIndexOf("@");
+  if (atIndex <= 0) return raw;
+  const userInfo = authority.slice(0, atIndex);
+  const host = authority.slice(atIndex + 1);
+  const colonIndex = userInfo.indexOf(":");
+  const encodedUserInfo = colonIndex >= 0
+    ? `${encodeURIComponent(decodeURIComponentSafely(userInfo.slice(0, colonIndex)))}:${encodeURIComponent(decodeURIComponentSafely(userInfo.slice(colonIndex + 1)))}`
+    : encodeURIComponent(decodeURIComponentSafely(userInfo));
+  return `${prefix}${encodedUserInfo}@${host}${suffix}`;
+};
+
+const normalizeHikvisionRtspChannelPath = (streamUrl: any, channel: any, stream: any) => {
+  const encodedUrl = encodeRtspUserInfo(streamUrl);
+  const channelNumber = parseInt(channel?.toString().trim() || "", 10);
+  const streamNumber = parseInt(stream?.toString().trim() || "", 10);
+  if (!encodedUrl || !Number.isFinite(channelNumber) || channelNumber <= 0 || !Number.isFinite(streamNumber) || streamNumber <= 0) {
+    return encodedUrl;
+  }
+  const expectedPathChannel = `${channelNumber}${streamNumber.toString().padStart(2, "0")}`;
+  return encodedUrl.replace(/(\/Streaming\/Channels\/)(\d+)(?=\/|\?|#|$)/i, (_match, prefix) => `${prefix}${expectedPathChannel}`);
+};
+
+const normalizeCameraPayload = (payload: any) => {
+  const nextPayload = { ...(payload || {}) };
+  nextPayload.stream_url = normalizeHikvisionRtspChannelPath(
+    nextPayload.stream_url,
+    nextPayload.channel_number,
+    nextPayload.stream_number,
+  );
+  return nextPayload;
+};
+
+const parseRtspEndpoint = (streamUrl: any) => {
+  const raw = streamUrl?.toString().trim() || "";
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol.toLowerCase() !== "rtsp:") return null;
+    const port = parseInt(parsed.port || "554", 10);
+    if (!parsed.hostname || !Number.isFinite(port) || port <= 0) return null;
+    return { host: parsed.hostname, port };
+  } catch {
+    return null;
+  }
+};
+
+const isPrivateIpv4Address = (host: string) => {
+  const parts = host.split(".").map(part => parseInt(part, 10));
+  if (parts.length !== 4 || parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  const [first, second] = parts;
+  return first === 10
+    || first === 127
+    || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && second === 168)
+    || (first === 169 && second === 254);
+};
+
+const waitForTcpConnection = (host: string, port: number, timeoutMs = 5000) =>
+  new Promise<{ reachable: boolean; error: string }>((resolve) => {
+    const socket = new net.Socket();
+    let settled = false;
+    const finish = (reachable: boolean, error = "") => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve({ reachable, error });
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once("connect", () => finish(true));
+    socket.once("timeout", () => finish(false, `Connection timed out after ${Math.round(timeoutMs / 1000)} seconds.`));
+    socket.once("error", (err: any) => finish(false, err?.message || "Connection failed."));
+    socket.connect(port, host);
+  });
+
+const maskSensitiveStreamUrl = (value: any) => value?.toString().replace(/:\/\/([^:@/]+):([^@/]+)@/g, "://$1:****@") || "";
+
+const stopCameraStreamProcess = (cameraId: any) => {
+  const key = sanitizeCameraStreamSessionKey(cameraId);
+  const active = activeCameraStreams.get(key);
+  if (!active) return false;
+  activeCameraStreams.delete(key);
+  if (!active.process.killed) {
+    active.process.kill("SIGTERM");
+  }
+  return true;
+};
+
+const rememberCameraStreamError = (key: string, message: any) => {
+  const sanitized = maskSensitiveStreamUrl(message?.toString?.() || "").trim();
+  if (sanitized) recentCameraStreamErrors.set(key, sanitized.slice(-1200));
+};
+
+const normalizeOptionalNumberField = (value: any) => {
+  if (value === undefined || value === null || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const normalizeFacultyPayload = (payload: any) => {
+  const nextPayload = { ...(payload || {}) };
+  const textFields = [
+    "faculty_code",
+    "full_name",
+    "display_name",
+    "employee_id",
+    "designation",
+    "joining_designation",
+    "employment_type",
+    "faculty_status",
+    "school",
+    "department",
+    "official_email",
+    "phone_number",
+    "office_room_cabin",
+    "date_of_joining",
+    "experience_display",
+    "highest_qualification",
+    "qualification_institution",
+    "year_of_qualification",
+    "specialization",
+    "subjects_expertise",
+    "research_interests",
+    "profile_summary",
+    "orcid_id",
+    "orcid_url",
+    "scopus_author_id",
+    "scopus_url",
+    "web_of_science_researcherid",
+    "web_of_science_url",
+    "metrics_last_updated_on",
+    "cv_file_name",
+    "cv_file_url_path",
+    "cv_upload_date",
+    "cv_version",
+    "cv_file_size",
+    "faculty_photo_url_path",
+  ];
+  for (const field of textFields) {
+    if (field in nextPayload) nextPayload[field] = normalizeSimpleTextField(nextPayload[field]);
+  }
+  for (const field of ["cv_file_name", "cv_upload_date", "cv_file_size"]) {
+    if (field in nextPayload) nextPayload[field] = normalizeOptionalProfileFileField(nextPayload[field]);
+  }
+  for (const field of ["cv_file_url_path", "faculty_photo_url_path"]) {
+    if (field in nextPayload) nextPayload[field] = normalizeProfileFileUrlPath(nextPayload[field]);
+  }
+  const numberFields = [
+    "teaching_experience_years",
+    "research_experience_years",
+    "industry_experience_years",
+    "total_experience_years",
+    "publications_count_snapshot",
+    "citations_count_snapshot",
+    "h_index_snapshot",
+    "projects_count_snapshot",
+    "patents_count_snapshot",
+    "phd_guided_count_snapshot",
+  ];
+  for (const field of numberFields) {
+    if (field in nextPayload) nextPayload[field] = normalizeOptionalNumberField(nextPayload[field]);
+  }
+  return nextPayload;
+};
+
+const validateFacultyRecord = (record: any) => {
+  if (!normalizeSimpleTextField(record?.faculty_code)) throw new Error("Faculty Code is required.");
+  if (!normalizeSimpleTextField(record?.full_name)) throw new Error("Full Name is required.");
+  if (!normalizeSimpleTextField(record?.display_name)) throw new Error("Display Name is required.");
+  if (!normalizeSimpleTextField(record?.designation)) throw new Error("Designation is required.");
+  if (!normalizeSimpleTextField(record?.school)) throw new Error("School is required.");
+  if (!normalizeSimpleTextField(record?.department)) throw new Error("Department is required.");
+  if (!normalizeSimpleTextField(record?.faculty_status)) throw new Error("Faculty Status is required.");
+};
+
+const validateTableSpecificPayload = (tableName: string, record: any) => {
+  if (tableName === "faculties") {
+    validateFacultyRecord(record);
+  }
+};
 
 const idsEqual = (left: any, right: any) =>
   left !== undefined && left !== null && right !== undefined && right !== null && left.toString() === right.toString();
@@ -4143,12 +4565,14 @@ const checkDuplicateRecord = async (tableName: string, data: any, excludeId?: st
 };
 
 const BULK_IMPORT_SUPPORTED_TABLES = new Set([
+  "faculties",
   "users",
   "campuses",
   "buildings",
   "blocks",
   "floors",
   "rooms",
+  "cameras",
   "schools",
   "departments",
   "department_allocations",
@@ -4165,6 +4589,81 @@ const hasImportMatchValue = (value: any) => value !== undefined && value !== nul
 
 const normalizeImportMatchValue = (value: any) =>
   value?.toString().trim().toLowerCase().replace(/\s+/g, " ") || "";
+
+const FACULTY_NAME_PREFIXES = new Set(["dr", "prof", "professor", "mr", "mrs", "ms", "miss", "sri", "smt"]);
+
+const getFacultyNameTokens = (value: any) =>
+  normalizeImportMatchValue(value)
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .map(token => token.trim())
+    .filter(token => token && !FACULTY_NAME_PREFIXES.has(token));
+
+const valuesContextuallyMatch = (left: any, right: any) => {
+  const leftValue = normalizeImportMatchValue(left);
+  const rightValue = normalizeImportMatchValue(right);
+  return !!leftValue && !!rightValue && (leftValue === rightValue || leftValue.includes(rightValue) || rightValue.includes(leftValue));
+};
+
+const facultyMatchesAcademicContext = (faculty: any, schedule: any) =>
+  valuesContextuallyMatch(faculty?.department, schedule?.department_name || schedule?.department) ||
+  valuesContextuallyMatch(faculty?.school, schedule?.school_name || schedule?.school);
+
+const facultyNamesLooselyMatch = (scheduleName: any, faculty: any) => {
+  const scheduleStrongTokens = getFacultyNameTokens(scheduleName).filter(token => token.length > 1);
+  if (scheduleStrongTokens.length === 0) return false;
+  return [faculty?.display_name, faculty?.full_name].filter(Boolean).some((facultyName) => {
+    const facultyStrongTokens = getFacultyNameTokens(facultyName).filter(token => token.length > 1);
+    if (facultyStrongTokens.length === 0) return false;
+    const overlap = scheduleStrongTokens.filter(token => facultyStrongTokens.includes(token));
+    if (overlap.length === 0) return false;
+    if (scheduleStrongTokens.length === 1) return true;
+    return scheduleStrongTokens.every(token => facultyStrongTokens.includes(token));
+  });
+};
+
+const resolveFacultyProfileFromSchedule = (schedule: any, faculties: any[]) => {
+  const exactIdentifiers = [
+    schedule?.faculty_code,
+    schedule?.faculty_display_name,
+    schedule?.faculty_full_name,
+    schedule?.faculty,
+  ].map(normalizeImportMatchValue).filter(Boolean);
+  const exactMatches = faculties.filter((faculty: any) => [
+    faculty?.faculty_code,
+    faculty?.display_name,
+    faculty?.full_name,
+  ].some(value => exactIdentifiers.includes(normalizeImportMatchValue(value))));
+  if (exactMatches.length === 1) return exactMatches[0];
+  const contextualExactMatches = exactMatches.filter((faculty: any) => facultyMatchesAcademicContext(faculty, schedule));
+  if (contextualExactMatches.length === 1) return contextualExactMatches[0];
+
+  const candidateNames = [schedule?.faculty_display_name, schedule?.faculty_full_name, schedule?.faculty].filter(Boolean);
+  const fuzzyMatches = faculties.filter((faculty: any) =>
+    candidateNames.some(name => facultyNamesLooselyMatch(name, faculty))
+  );
+  if (fuzzyMatches.length === 1) return fuzzyMatches[0];
+  const contextualFuzzyMatches = fuzzyMatches.filter((faculty: any) => facultyMatchesAcademicContext(faculty, schedule));
+  return contextualFuzzyMatches.length === 1 ? contextualFuzzyMatches[0] : null;
+};
+
+const sanitizeUploadFileName = (fileName: any, fallback = "file") => {
+  const extension = path.extname(fileName?.toString?.() || "").toLowerCase();
+  const baseName = path.basename(fileName?.toString?.() || fallback, extension)
+    .replace(/[^a-z0-9]+/gi, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80) || fallback;
+  return `${baseName}${extension}`;
+};
+
+const formatFileSize = (bytes: number) => {
+  if (!Number.isFinite(bytes) || bytes < 0) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  const kilobytes = bytes / 1024;
+  if (kilobytes < 1024) return `${kilobytes.toFixed(kilobytes >= 100 ? 0 : 1)} KB`;
+  const megabytes = kilobytes / 1024;
+  return `${megabytes.toFixed(megabytes >= 100 ? 0 : 2)} MB`;
+};
 
 const SERVER_PAGINATION_TABLES = new Set([
   "rooms",
@@ -4310,9 +4809,15 @@ const normalizeBulkImportPayload = async (tableName: string, payload: any, exist
     if (nextPayload.password) nextPayload.force_password_change = 1;
     nextPayload = await normalizeUserPayload(nextPayload, existingItem);
   }
+  if (tableName === "faculties") {
+    nextPayload = normalizeFacultyPayload(existingItem ? { ...existingItem, ...nextPayload } : nextPayload);
+  }
 
   if (tableName === "rooms") {
     nextPayload = normalizeRoomPayload(nextPayload);
+  }
+  if (tableName === "cameras") {
+    nextPayload = normalizeCameraPayload(nextPayload);
   }
   if (tableName === "academic_calendars") {
     nextPayload = await normalizeAcademicCalendarPayload(existingItem ? { ...existingItem, ...nextPayload } : nextPayload);
@@ -4334,6 +4839,7 @@ const normalizeBulkImportPayload = async (tableName: string, payload: any, exist
 
 const validateBulkImportPayload = async (tableName: string, payload: any, existingItem?: any, context?: BulkImportContext) => {
   const nextRecord = existingItem ? { ...existingItem, ...payload } : payload;
+  validateTableSpecificPayload(tableName, nextRecord);
   const duplicateError = context?.records
     ? findDuplicateRecordInCollection(tableName, context.records, nextRecord, existingItem?.id)
     : await checkDuplicateRecord(tableName, nextRecord, existingItem?.id);
@@ -4791,18 +5297,42 @@ const getSharedAvailabilitySnapshot = async ({
       );
       status = "Occupied";
       currentUsage = `${sameSession ? "Combined Class" : "Scheduled"}: ${roomSchedules[0]?.course_name || "Class"}`;
-      statusReason = roomSchedules
-        .map((schedule: any) => {
-          const contextLabel = getAudienceLabel(schedule);
-          const departmentName = departmentNameById.get(schedule.department_id?.toString()) || "";
-          return [
-            schedule.course_name || "Scheduled class",
-            schedule.faculty ? `Faculty: ${schedule.faculty}` : "",
-            departmentName,
-            contextLabel,
-          ].filter(Boolean).join(" • ");
-        })
-        .join("; ");
+      if (sameSession) {
+        const audienceLabels = Array.from(new Set(
+          roomSchedules
+            .map((schedule: any) => getAudienceLabel(schedule))
+            .filter(Boolean)
+        ));
+        const departmentLabels = Array.from(new Set(
+          roomSchedules
+            .map((schedule: any) => departmentNameById.get(schedule.department_id?.toString()) || "")
+            .filter(Boolean)
+        ));
+        const facultyLabel = roomSchedules[0]?.faculty ? `Faculty: ${roomSchedules[0].faculty}` : "";
+        const departmentSummary = departmentLabels.length === 1
+          ? departmentLabels[0]
+          : departmentLabels.length > 1
+            ? `${departmentLabels.length} departments`
+            : "";
+        const audienceSummary = audienceLabels.length > 0
+          ? audienceLabels.join(" + ")
+          : `${roomSchedules.length} academic groups`;
+
+        statusReason = [facultyLabel, departmentSummary, audienceSummary].filter(Boolean).join(" • ");
+      } else {
+        statusReason = roomSchedules
+          .map((schedule: any) => {
+            const contextLabel = getAudienceLabel(schedule);
+            const departmentName = departmentNameById.get(schedule.department_id?.toString()) || "";
+            return [
+              schedule.course_name || "Scheduled class",
+              schedule.faculty ? `Faculty: ${schedule.faculty}` : "",
+              departmentName,
+              contextLabel,
+            ].filter(Boolean).join(" • ");
+          })
+          .join("; ");
+      }
     } else if (roomBookings.length > 0) {
       status = "Event Booked";
       currentUsage = roomBookings[0]?.event_name || "Approved booking";
@@ -6078,10 +6608,17 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       if (tableName === "schedules") {
         req.body = normalizeSchedulePayload(req.body);
       }
+      if (tableName === "faculties") {
+        req.body = normalizeFacultyPayload(req.body);
+      }
       if (tableName === "rooms") {
         req.body = normalizeRoomPayload(req.body);
       }
+      if (tableName === "cameras") {
+        req.body = normalizeCameraPayload(req.body);
+      }
       req.body = await normalizeHierarchyReferencePayload(tableName, req.body);
+      validateTableSpecificPayload(tableName, req.body);
       const fields = Object.keys(req.body);
       const placeholders = fields.map(() => "?").join(", ");
       const values = Object.values(req.body);
@@ -6376,7 +6913,14 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       if (tableName === "schedules") {
         req.body = normalizeSchedulePayload({ ...existingItem, ...req.body });
       }
+      if (tableName === "faculties") {
+        req.body = normalizeFacultyPayload({ ...existingItem, ...req.body });
+      }
+      if (tableName === "cameras") {
+        req.body = normalizeCameraPayload({ ...existingItem, ...req.body });
+      }
       req.body = await normalizeHierarchyReferencePayload(tableName, req.body);
+      validateTableSpecificPayload(tableName, { ...existingItem, ...req.body });
       let fields = Object.keys(req.body);
       let setClause = fields.map(f => `${f} = ?`).join(", ");
       let values = [...Object.values(req.body), req.params.id];
@@ -6771,11 +7315,414 @@ app.delete("/api/department_allocations/cleanup/odd", authenticate, async (_req,
   }
 });
 
+app.get("/api/faculties/:facultyCode/profile", authenticate, async (req, res) => {
+  try {
+    const facultyCode = req.params.facultyCode?.toString().trim() || "";
+    if (!facultyCode) {
+      return res.status(400).json({ error: "Faculty Code is required." });
+    }
+
+    const faculty = await db.prepare(`
+      SELECT *
+      FROM faculties
+      WHERE LOWER(TRIM(faculty_code)) = LOWER(TRIM(?))
+    `).get(facultyCode) as any;
+    if (!faculty) {
+      return res.status(404).json({ error: "Faculty profile not found." });
+    }
+    for (const field of ["cv_file_name", "cv_upload_date", "cv_file_size"]) {
+      faculty[field] = normalizeOptionalProfileFileField(faculty[field]);
+    }
+    for (const field of ["cv_file_url_path", "faculty_photo_url_path"]) {
+      faculty[field] = normalizeProfileFileUrlPath(faculty[field]);
+      if (faculty[field] && !(await localUploadPathExists(faculty[field]))) {
+        faculty[field] = "";
+      }
+    }
+
+    const [allFaculties, scheduleRows] = await Promise.all([
+      db.prepare("SELECT faculty_code, display_name, full_name, school, department FROM faculties").all() as Promise<any[]>,
+      db.prepare(`
+        SELECT
+          schedules.*,
+          rooms.room_number,
+          departments.name AS department_name,
+          schools.name AS school_name
+        FROM schedules
+        LEFT JOIN rooms ON rooms.id = schedules.room_id
+        LEFT JOIN departments ON departments.id = schedules.department_id
+        LEFT JOIN schools ON schools.id = departments.school_id
+        ORDER BY day_of_week ASC, start_time ASC, course_name ASC, course_code ASC, schedules.id ASC
+      `).all() as Promise<any[]>,
+    ]);
+
+    const matchedScheduleRows = scheduleRows.filter((schedule) => {
+      const matchedFaculty = resolveFacultyProfileFromSchedule(schedule, allFaculties);
+      return normalizeImportMatchValue(matchedFaculty?.faculty_code) === normalizeImportMatchValue(faculty.faculty_code);
+    });
+    const teachingAssignments = Array.from(new Map(matchedScheduleRows.map((schedule) => [
+      [
+        schedule.program,
+        schedule.course_name,
+        schedule.course_code,
+        schedule.semester,
+        schedule.section,
+        schedule.day_of_week,
+        schedule.start_time,
+        schedule.end_time,
+        schedule.room_id || schedule.room_label || schedule.room_number,
+      ].map(value => normalizeImportMatchValue(value)).join("|"),
+      schedule,
+    ] as const)).values());
+
+    const profileFields = [
+      "full_name",
+      "display_name",
+      "employee_id",
+      "designation",
+      "joining_designation",
+      "employment_type",
+      "faculty_status",
+      "school",
+      "department",
+      "official_email",
+      "phone_number",
+      "office_room_cabin",
+      "date_of_joining",
+      "teaching_experience_years",
+      "research_experience_years",
+      "industry_experience_years",
+      "total_experience_years",
+      "experience_display",
+      "highest_qualification",
+      "qualification_institution",
+      "year_of_qualification",
+      "specialization",
+      "subjects_expertise",
+      "research_interests",
+      "profile_summary",
+      "orcid_id",
+      "orcid_url",
+      "scopus_author_id",
+      "scopus_url",
+      "web_of_science_researcherid",
+      "web_of_science_url",
+      "publications_count_snapshot",
+      "citations_count_snapshot",
+      "h_index_snapshot",
+      "projects_count_snapshot",
+      "patents_count_snapshot",
+      "phd_guided_count_snapshot",
+      "metrics_last_updated_on",
+      "cv_file_name",
+      "cv_file_url_path",
+      "cv_upload_date",
+      "cv_file_size",
+      "faculty_photo_url_path",
+    ];
+    const completedFieldCount = profileFields.filter(field => {
+      const value = faculty?.[field];
+      return value !== undefined && value !== null && value !== "";
+    }).length;
+    const profileCompletion = profileFields.length > 0
+      ? Math.round((completedFieldCount / profileFields.length) * 100)
+      : 0;
+
+    res.json({
+      faculty,
+      teachingAssignments,
+      profileCompletion,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/faculties/:facultyCode/cv", authenticate, async (req, res) => {
+  try {
+    const facultyCode = req.params.facultyCode?.toString().trim() || "";
+    if (!facultyCode) {
+      return res.status(400).json({ error: "Faculty Code is required." });
+    }
+
+    const faculty = await db.prepare(`
+      SELECT id, faculty_code
+      FROM faculties
+      WHERE LOWER(TRIM(faculty_code)) = LOWER(TRIM(?))
+    `).get(facultyCode) as any;
+    if (!faculty) {
+      return res.status(404).json({ error: "Faculty profile not found." });
+    }
+
+    const { fileName, mimeType, data } = req.body || {};
+    const allowedMimeTypes = new Set([
+      "application/pdf",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ]);
+    const originalFileName = fileName?.toString?.().trim?.() || "";
+    const extension = path.extname(originalFileName).toLowerCase();
+    const allowedExtensions = new Set([".pdf", ".doc", ".docx"]);
+    if (!originalFileName || !data || !allowedMimeTypes.has(mimeType) || !allowedExtensions.has(extension)) {
+      return res.status(400).json({ error: "Please upload a PDF, DOC, or DOCX CV file." });
+    }
+
+    const base64Data = data.toString().includes(",")
+      ? data.toString().split(",").pop()
+      : data.toString();
+    const buffer = Buffer.from(base64Data || "", "base64");
+    if (!buffer.length) {
+      return res.status(400).json({ error: "Uploaded CV file is empty." });
+    }
+    if (buffer.length > 20 * 1024 * 1024) {
+      return res.status(400).json({ error: "CV file size must be 20 MB or smaller." });
+    }
+
+    await fs.promises.mkdir(facultyCvUploadDir, { recursive: true });
+    const safeFileName = sanitizeUploadFileName(originalFileName, "cv");
+    const storedFileName = `${sanitizeUploadFileName(faculty.faculty_code, "faculty").replace(/\.[^.]+$/, "")}_${Date.now()}_${safeFileName}`;
+    const storedPath = path.join(facultyCvUploadDir, storedFileName);
+    await fs.promises.writeFile(storedPath, buffer);
+
+    const cvFileUrlPath = `/uploads/faculty-cv/${storedFileName}`;
+    const cvUploadDate = new Intl.DateTimeFormat("en-IN", {
+      timeZone: APP_TIME_ZONE,
+      year: "numeric",
+      month: "short",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+    }).format(new Date());
+    const cvFileSize = formatFileSize(buffer.length);
+
+    await db.prepare(`
+      UPDATE faculties
+      SET cv_file_name = ?,
+          cv_file_url_path = ?,
+          cv_upload_date = ?,
+          cv_file_size = ?
+      WHERE id = ?
+    `).run(originalFileName, cvFileUrlPath, cvUploadDate, cvFileSize, faculty.id);
+
+    res.json({
+      success: true,
+      cv_file_name: originalFileName,
+      cv_file_url_path: cvFileUrlPath,
+      cv_upload_date: cvUploadDate,
+      cv_file_size: cvFileSize,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/faculties/:facultyCode/photo", authenticate, async (req, res) => {
+  try {
+    const facultyCode = req.params.facultyCode?.toString().trim() || "";
+    if (!facultyCode) {
+      return res.status(400).json({ error: "Faculty Code is required." });
+    }
+
+    const faculty = await db.prepare(`
+      SELECT id, faculty_code
+      FROM faculties
+      WHERE LOWER(TRIM(faculty_code)) = LOWER(TRIM(?))
+    `).get(facultyCode) as any;
+    if (!faculty) {
+      return res.status(404).json({ error: "Faculty profile not found." });
+    }
+
+    const { fileName, mimeType, data } = req.body || {};
+    const allowedMimeTypes = new Set([
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+    ]);
+    const originalFileName = fileName?.toString?.().trim?.() || "";
+    const extension = path.extname(originalFileName).toLowerCase();
+    const allowedExtensions = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+    if (!originalFileName || !data || !allowedMimeTypes.has(mimeType) || !allowedExtensions.has(extension)) {
+      return res.status(400).json({ error: "Please upload a JPG, PNG, or WebP faculty photo." });
+    }
+
+    const base64Data = data.toString().includes(",")
+      ? data.toString().split(",").pop()
+      : data.toString();
+    const buffer = Buffer.from(base64Data || "", "base64");
+    if (!buffer.length) {
+      return res.status(400).json({ error: "Uploaded faculty photo is empty." });
+    }
+    if (buffer.length > 5 * 1024 * 1024) {
+      return res.status(400).json({ error: "Faculty photo size must be 5 MB or smaller." });
+    }
+
+    await fs.promises.mkdir(facultyPhotoUploadDir, { recursive: true });
+    const safeFileName = sanitizeUploadFileName(originalFileName, "photo");
+    const storedFileName = `${sanitizeUploadFileName(faculty.faculty_code, "faculty").replace(/\.[^.]+$/, "")}_${Date.now()}_${safeFileName}`;
+    const storedPath = path.join(facultyPhotoUploadDir, storedFileName);
+    await fs.promises.writeFile(storedPath, buffer);
+
+    const facultyPhotoUrlPath = `/uploads/faculty-photos/${storedFileName}`;
+
+    await db.prepare(`
+      UPDATE faculties
+      SET faculty_photo_url_path = ?
+      WHERE id = ?
+    `).run(facultyPhotoUrlPath, faculty.id);
+
+    res.json({
+      success: true,
+      faculty_photo_url_path: facultyPhotoUrlPath,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/cameras/:id/hls/start", authenticate, async (req, res) => {
+  try {
+    const camera = await db.prepare("SELECT * FROM cameras WHERE id = ?").get(req.params.id) as any;
+    if (!camera) {
+      return res.status(404).json({ error: "Camera not found." });
+    }
+
+    const streamType = camera.stream_type?.toString().trim().toLowerCase() || "";
+    if (streamType !== "rtsp") {
+      return res.status(400).json({ error: "Only RTSP cameras need backend HLS conversion." });
+    }
+
+    const streamUrl = normalizeHikvisionRtspChannelPath(camera.stream_url, camera.channel_number, camera.stream_number);
+    if (!streamUrl) {
+      return res.status(400).json({ error: "RTSP Stream URL is required before live preview can start. Add the exact VLC-tested RTSP URL in Stream URL." });
+    }
+
+    if (isVercelRuntime) {
+      return res.status(503).json({
+        error: "Live RTSP preview cannot run on Vercel/serverless hosting because FFmpeg must keep running and HLS files must stay on the same server between preview requests. Deploy this backend on a persistent server on the campus/VPN network, then start live preview again.",
+      });
+    }
+
+    const rtspEndpoint = parseRtspEndpoint(streamUrl);
+    if (!rtspEndpoint) {
+      return res.status(400).json({ error: "Stream URL is not a valid RTSP URL. Use a URL like rtsp://user:password@nvr-host:554/Streaming/Channels/202." });
+    }
+
+    const reachability = await waitForTcpConnection(rtspEndpoint.host, rtspEndpoint.port, 5000);
+    if (!reachability.reachable) {
+      const privateNetworkHint = isPrivateIpv4Address(rtspEndpoint.host)
+        ? ` ${rtspEndpoint.host} is a private campus/LAN address, so the Smart Campus server must run on the same network/VPN, or the Stream URL must use a reachable public NVR address and forwarded RTSP port.`
+        : "";
+      return res.status(502).json({
+        error: `RTSP endpoint ${rtspEndpoint.host}:${rtspEndpoint.port} is not reachable from this server. ${reachability.error}${privateNetworkHint}`,
+      });
+    }
+
+    const ffmpegReady = await checkFfmpegAvailable();
+    if (!ffmpegReady) {
+      return res.status(503).json({ error: `FFmpeg is not installed or not available at "${getFfmpegPath()}". Install FFmpeg on the server, set FFMPEG_PATH, or keep the bundled tools/ffmpeg/bin/ffmpeg.exe file, then restart the server and start live preview again.` });
+    }
+
+    const key = sanitizeCameraStreamSessionKey(camera.id);
+    const streamDirectory = path.resolve(cameraStreamRoot, key);
+    const streamRootResolved = path.resolve(cameraStreamRoot);
+    if (!streamDirectory.startsWith(streamRootResolved)) {
+      return res.status(400).json({ error: "Invalid camera stream directory." });
+    }
+
+    stopCameraStreamProcess(camera.id);
+    recentCameraStreamErrors.delete(key);
+    await fs.promises.rm(streamDirectory, { recursive: true, force: true });
+    await fs.promises.mkdir(streamDirectory, { recursive: true });
+
+    const playlistPath = path.join(streamDirectory, "index.m3u8");
+    const transport = (req.body?.transport || camera.stream_transport || "TCP").toString().trim().toLowerCase() === "udp" ? "udp" : "tcp";
+    const ffmpegArgs = [
+      "-hide_banner",
+      "-loglevel",
+      "warning",
+      "-rtsp_transport",
+      transport,
+      "-i",
+      streamUrl,
+      "-an",
+      "-c:v",
+      "copy",
+      "-f",
+      "hls",
+      "-hls_time",
+      "2",
+      "-hls_list_size",
+      "5",
+      "-hls_flags",
+      "delete_segments+append_list+omit_endlist",
+      playlistPath,
+    ];
+    const processHandle = spawn(getFfmpegPath(), ffmpegArgs, { windowsHide: true });
+    const streamState = {
+      process: processHandle,
+      directory: streamDirectory,
+      playlistPath,
+      startedAt: Date.now(),
+      lastError: "",
+    };
+    activeCameraStreams.set(key, streamState);
+
+    processHandle.stderr.on("data", (chunk) => {
+      streamState.lastError = maskSensitiveStreamUrl(chunk.toString()).slice(-1200);
+      rememberCameraStreamError(key, streamState.lastError);
+    });
+    processHandle.once("exit", (code, signal) => {
+      if (streamState.lastError) {
+        rememberCameraStreamError(key, streamState.lastError);
+      } else if (code !== 0) {
+        rememberCameraStreamError(key, `FFmpeg exited before creating a playable stream. Exit code: ${code ?? "-"}, signal: ${signal ?? "-"}.`);
+      }
+      const active = activeCameraStreams.get(key);
+      if (active?.process === processHandle) activeCameraStreams.delete(key);
+    });
+    processHandle.once("error", (err) => {
+      streamState.lastError = err.message;
+      rememberCameraStreamError(key, err.message);
+      const active = activeCameraStreams.get(key);
+      if (active?.process === processHandle) activeCameraStreams.delete(key);
+    });
+
+    res.json({
+      success: true,
+      playlistUrl: `/api/camera-streams/${key}/index.m3u8`,
+      transport,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || "Unable to start camera live preview." });
+  }
+});
+
+app.post("/api/cameras/:id/hls/stop", authenticate, async (req, res) => {
+  const stopped = stopCameraStreamProcess(req.params.id);
+  res.json({ success: true, stopped });
+});
+
+app.get("/api/cameras/:id/hls/status", authenticate, async (req, res) => {
+  const key = sanitizeCameraStreamSessionKey(req.params.id);
+  const active = activeCameraStreams.get(key);
+  const playlistReady = active ? fs.existsSync(active.playlistPath) : false;
+  res.json({
+    active: !!active,
+    startedAt: active?.startedAt || null,
+    playlistReady,
+    playlistUrl: playlistReady ? `/api/camera-streams/${key}/index.m3u8` : "",
+    lastError: active?.lastError || recentCameraStreamErrors.get(key) || "",
+  });
+});
+
+createCrudRoutes("faculties");
 createCrudRoutes("users");
 createCrudRoutes("campuses");
 createCrudRoutes("buildings");
 createCrudRoutes("blocks");
 createCrudRoutes("floors");
+createCrudRoutes("cameras");
 
 app.get("/api/bookings/:id/activity", authenticate, async (req, res) => {
   try {
@@ -8411,13 +9358,44 @@ async function healInfrastructureHierarchy() {
   };
 }
 
-app.get('/api/health', (_req, res) => {
-  res.json({
-    ok: true,
-    database: db.dialect,
-    geminiConfigured: Boolean(GEMINI_API_KEY),
-    timestamp: new Date().toISOString(),
-  });
+app.get('/api/health', async (_req, res) => {
+  const databaseConfigured = Boolean(databaseUrl) || databaseProvider.trim().toLowerCase() === "sqlite";
+  if (dbInitializationError || !db) {
+    return res.status(200).json({
+      ok: false,
+      databaseConfigured,
+      databaseConnected: false,
+      databaseProvider: databaseProvider || (databaseUrl ? "postgres" : "sqlite"),
+      database: null,
+      databaseError: dbInitializationError || "Database client is not initialized.",
+      geminiConfigured: Boolean(GEMINI_API_KEY),
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  try {
+    await db.prepare("SELECT 1").get();
+    res.json({
+      ok: true,
+      databaseConfigured,
+      databaseConnected: true,
+      databaseProvider: db.dialect,
+      database: db.dialect,
+      geminiConfigured: Boolean(GEMINI_API_KEY),
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    res.status(200).json({
+      ok: false,
+      databaseConfigured,
+      databaseConnected: false,
+      databaseProvider: db.dialect,
+      database: db.dialect,
+      databaseError: err?.code || err?.message || "Database health check failed.",
+      geminiConfigured: Boolean(GEMINI_API_KEY),
+      timestamp: new Date().toISOString(),
+    });
+  }
 });
 
 app.get('/api/health/heal', authenticate, async (req, res) => {

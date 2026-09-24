@@ -4,18 +4,38 @@ export const config = {
 
 const checkDatabaseConnection = async () => {
   const databaseUrl = process.env.DATABASE_URL || "";
+  const rawProvider = process.env.DATABASE_PROVIDER || "";
+  const isVercelRuntime = process.env.VERCEL === "1";
+  const isLocalhostDatabaseUrl = /localhost|127\.0\.0\.1/.test(databaseUrl);
+
   if (!databaseUrl) {
     return {
       databaseConfigured: false,
       databaseConnected: false,
-      databaseProvider: process.env.DATABASE_PROVIDER || "",
+      databaseProvider: rawProvider || "",
+      databaseError: "DATABASE_URL is not configured.",
+    };
+  }
+
+  if (isVercelRuntime && isLocalhostDatabaseUrl) {
+    return {
+      databaseConfigured: true,
+      databaseConnected: false,
+      databaseProvider: rawProvider || "postgres",
+      databaseError: "DATABASE_URL points to localhost, which Vercel cannot reach.",
     };
   }
 
   const { Pool } = await import("pg");
+  // Keep this health check aligned with api/_db.ts. pg-connection-string can
+  // interpret sslmode=require as verify-full, which fails for Supabase pooler.
+  const cleanUrl = databaseUrl.replace(/([?&])sslmode=[^&]*/i, "$1").replace(/[?&]$/, "");
   const pool = new Pool({
-    connectionString: databaseUrl,
+    connectionString: cleanUrl,
     ssl: process.env.PGSSL === "disable" ? false : { rejectUnauthorized: false },
+    max: 1,
+    idleTimeoutMillis: 5000,
+    connectionTimeoutMillis: 10000,
   });
 
   try {
@@ -23,13 +43,13 @@ const checkDatabaseConnection = async () => {
     return {
       databaseConfigured: true,
       databaseConnected: true,
-      databaseProvider: "postgres",
+      databaseProvider: rawProvider || "postgres",
     };
   } catch (error: any) {
     return {
       databaseConfigured: true,
       databaseConnected: false,
-      databaseProvider: "postgres",
+      databaseProvider: rawProvider || "postgres",
       databaseError: error?.code || error?.message || "Connection failed",
     };
   } finally {

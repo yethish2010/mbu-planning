@@ -1,17 +1,18 @@
 import { useState, useEffect, createContext, useContext, useRef, useMemo, Fragment, Component } from 'react';
-import { BrowserRouter, HashRouter, Routes, Route, Navigate, Link, useNavigate, useLocation } from 'react-router-dom';
+import { BrowserRouter, HashRouter, Routes, Route, Navigate, Link, useNavigate, useLocation, useParams } from 'react-router-dom';
 import { 
   LayoutDashboard, Users, Building2, Layers, DoorOpen, 
   Wrench, Calendar, Clock, BookOpen, BrainCircuit, 
   BarChart3, FileText, Bell, LogOut, Menu, X,
   ChevronRight, ChevronDown, Search, Plus, Edit2, Trash2, Check, AlertTriangle,
   Globe, Map as MapIcon, Activity, Zap, TrendingUp, TrendingDown, Sparkles, FileSpreadsheet,
-  PieChart as PieChartIcon, AlertCircle, CheckCircle2, Info, LayoutGrid
+  PieChart as PieChartIcon, AlertCircle, CheckCircle2, Info, LayoutGrid, Camera
 } from 'lucide-react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Text, PerspectiveCamera, Environment, ContactShadows, Float, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { GoogleGenAI } from "@google/genai";
+import Hls from 'hls.js';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import * as XLSX from 'xlsx';
@@ -258,6 +259,189 @@ const sanitizeExtractedSchedule = (schedule: any) => {
 
 const normalizeLookupValue = (value: unknown) =>
   value?.toString().trim().toLowerCase().replace(/\s+/g, ' ') || '';
+
+const isMeaningfulProfileFileValue = (value: unknown) => {
+  const normalized = normalizeLookupValue(value);
+  return !!normalized && !['-', '--', 'na', 'n/a', 'none', 'null', 'not found'].includes(normalized);
+};
+
+const normalizeProfileFileUrl = (value: unknown) => {
+  const rawValue = value?.toString().trim().replace(/\\/g, '/') || '';
+  if (!isMeaningfulProfileFileValue(rawValue)) return '';
+  if (/^(https?:|data:|blob:)/i.test(rawValue)) return rawValue;
+  const withoutLeadingSlash = rawValue.replace(/^\/+/, '');
+  if (withoutLeadingSlash.startsWith('uploads/')) return `/${withoutLeadingSlash}`;
+  if (withoutLeadingSlash.startsWith('faculty-cv/') || withoutLeadingSlash.startsWith('faculty-photos/')) {
+    return `/uploads/${withoutLeadingSlash}`;
+  }
+  return rawValue.startsWith('/') ? rawValue : `/${withoutLeadingSlash}`;
+};
+
+const autoCropImageFileToDataUrl = async (file: File) => {
+  const originalDataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result?.toString() || '');
+    reader.onerror = () => reject(new Error('Failed to read the selected faculty photo.'));
+    reader.readAsDataURL(file);
+  });
+
+  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const nextImage = new Image();
+    nextImage.onload = () => resolve(nextImage);
+    nextImage.onerror = () => reject(new Error('Failed to prepare the selected faculty photo.'));
+    nextImage.src = originalDataUrl;
+  });
+
+  const sourceCanvas = document.createElement('canvas');
+  sourceCanvas.width = image.naturalWidth || image.width;
+  sourceCanvas.height = image.naturalHeight || image.height;
+  const sourceContext = sourceCanvas.getContext('2d', { willReadFrequently: true });
+  if (!sourceContext || sourceCanvas.width <= 0 || sourceCanvas.height <= 0) return originalDataUrl;
+
+  sourceContext.drawImage(image, 0, 0);
+  const imageData = sourceContext.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
+  const { data, width, height } = imageData;
+  const cornerIndexes = [
+    0,
+    (width - 1) * 4,
+    ((height - 1) * width) * 4,
+    ((height - 1) * width + (width - 1)) * 4,
+  ];
+  const background = cornerIndexes.reduce((acc, index) => {
+    acc.r += data[index] || 0;
+    acc.g += data[index + 1] || 0;
+    acc.b += data[index + 2] || 0;
+    return acc;
+  }, { r: 0, g: 0, b: 0 });
+  background.r /= cornerIndexes.length;
+  background.g /= cornerIndexes.length;
+  background.b /= cornerIndexes.length;
+
+  const isBorderPixel = (index: number) => {
+    const alpha = data[index + 3] ?? 255;
+    if (alpha < 12) return true;
+    const distance = Math.abs((data[index] || 0) - background.r)
+      + Math.abs((data[index + 1] || 0) - background.g)
+      + Math.abs((data[index + 2] || 0) - background.b);
+    return distance < 72;
+  };
+
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = (y * width + x) * 4;
+      if (!isBorderPixel(index)) {
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+      }
+    }
+  }
+
+  if (maxX < minX || maxY < minY) return originalDataUrl;
+  const padding = Math.round(Math.min(maxX - minX + 1, maxY - minY + 1) * 0.015);
+  minX = Math.max(0, minX - padding);
+  minY = Math.max(0, minY - padding);
+  maxX = Math.min(width - 1, maxX + padding);
+  maxY = Math.min(height - 1, maxY + padding);
+
+  const cropWidth = maxX - minX + 1;
+  const cropHeight = maxY - minY + 1;
+  const targetAspectRatio = 4 / 5;
+  let sourceX = minX;
+  let sourceY = minY;
+  let sourceWidth = cropWidth;
+  let sourceHeight = cropHeight;
+
+  if (sourceWidth / sourceHeight > targetAspectRatio) {
+    const nextWidth = Math.round(sourceHeight * targetAspectRatio);
+    sourceX = Math.max(0, Math.round(minX + (sourceWidth - nextWidth) / 2));
+    sourceWidth = Math.min(nextWidth, width - sourceX);
+  } else if (sourceWidth / sourceHeight < targetAspectRatio) {
+    const nextHeight = Math.round(sourceWidth / targetAspectRatio);
+    const topBiasedOffset = Math.round((sourceHeight - nextHeight) * 0.12);
+    sourceY = Math.max(0, Math.round(minY + topBiasedOffset));
+    sourceHeight = Math.min(nextHeight, height - sourceY);
+  }
+
+  const outputCanvas = document.createElement('canvas');
+  const outputWidth = 720;
+  const outputHeight = 900;
+  outputCanvas.width = outputWidth;
+  outputCanvas.height = outputHeight;
+  const outputContext = outputCanvas.getContext('2d');
+  if (!outputContext) return originalDataUrl;
+  outputContext.drawImage(sourceCanvas, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, outputWidth, outputHeight);
+  return outputCanvas.toDataURL('image/jpeg', 0.92);
+};
+
+const FACULTY_NAME_PREFIXES = new Set(['dr', 'prof', 'professor', 'mr', 'mrs', 'ms', 'miss', 'sri', 'smt']);
+
+const getFacultyNameTokens = (value: unknown) =>
+  normalizeLookupValue(value)
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .map(token => token.trim())
+    .filter(token => token && !FACULTY_NAME_PREFIXES.has(token));
+
+const valuesContextuallyMatch = (left: unknown, right: unknown) => {
+  const leftValue = normalizeLookupValue(left);
+  const rightValue = normalizeLookupValue(right);
+  return !!leftValue && !!rightValue && (leftValue === rightValue || leftValue.includes(rightValue) || rightValue.includes(leftValue));
+};
+
+const facultyMatchesAcademicContext = (faculty: any, schedule: any, departments: any[] = [], schools: any[] = []) => {
+  const scheduleDepartment = departments.find((department: any) => idsMatch(department?.id, schedule?.department_id));
+  const scheduleSchool = schools.find((school: any) => idsMatch(school?.id, scheduleDepartment?.school_id));
+  const departmentMatches = valuesContextuallyMatch(faculty?.department, scheduleDepartment?.name || schedule?.department);
+  const schoolMatches = valuesContextuallyMatch(faculty?.school, scheduleSchool?.name || schedule?.school);
+  return departmentMatches || schoolMatches;
+};
+
+const facultyNamesLooselyMatch = (scheduleName: unknown, faculty: any) => {
+  const scheduleTokens = getFacultyNameTokens(scheduleName);
+  if (scheduleTokens.length === 0) return false;
+  const scheduleStrongTokens = scheduleTokens.filter(token => token.length > 1);
+  const facultyNames = [faculty?.display_name, faculty?.full_name].filter(Boolean);
+  return facultyNames.some((facultyName) => {
+    const facultyTokens = getFacultyNameTokens(facultyName);
+    const facultyStrongTokens = facultyTokens.filter(token => token.length > 1);
+    if (facultyStrongTokens.length === 0) return false;
+    const overlap = scheduleStrongTokens.filter(token => facultyStrongTokens.includes(token));
+    if (overlap.length === 0) return false;
+    if (scheduleStrongTokens.length === 1) return true;
+    return scheduleStrongTokens.every(token => facultyStrongTokens.includes(token));
+  });
+};
+
+const resolveFacultyProfileFromSchedule = (schedule: any, faculties: any[] = [], departments: any[] = [], schools: any[] = []) => {
+  const exactIdentifiers = [
+    schedule?.faculty_code,
+    schedule?.faculty_display_name,
+    schedule?.faculty_full_name,
+    schedule?.faculty,
+  ].map(normalizeLookupValue).filter(Boolean);
+  const exactMatches = faculties.filter((faculty: any) => [
+    faculty?.faculty_code,
+    faculty?.display_name,
+    faculty?.full_name,
+  ].some((value) => exactIdentifiers.includes(normalizeLookupValue(value))));
+  if (exactMatches.length === 1) return exactMatches[0];
+  const contextualExactMatches = exactMatches.filter((faculty: any) => facultyMatchesAcademicContext(faculty, schedule, departments, schools));
+  if (contextualExactMatches.length === 1) return contextualExactMatches[0];
+
+  const candidateNames = [schedule?.faculty_display_name, schedule?.faculty_full_name, schedule?.faculty].filter(Boolean);
+  const fuzzyMatches = faculties.filter((faculty: any) =>
+    candidateNames.some((name) => facultyNamesLooselyMatch(name, faculty))
+  );
+  if (fuzzyMatches.length === 1) return fuzzyMatches[0];
+  const contextualFuzzyMatches = fuzzyMatches.filter((faculty: any) => facultyMatchesAcademicContext(faculty, schedule, departments, schools));
+  return contextualFuzzyMatches.length === 1 ? contextualFuzzyMatches[0] : null;
+};
 
 const normalizeRoleValue = (value: unknown) =>
   normalizeLookupValue(value).replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -1945,9 +2129,12 @@ const apiJson = async (url: string, options?: RequestInit) => {
       ...(options?.headers || {}),
     },
   });
-  const data = await res.json().catch(() => ({}));
+  const contentType = res.headers.get('content-type') || '';
+  const data = contentType.includes('application/json')
+    ? await res.json().catch(() => ({}))
+    : { error: await res.text().catch(() => '') };
   if (!res.ok) {
-    throw new Error(data?.error || 'Import request failed');
+    throw new Error(data?.error || res.statusText || 'Request failed');
   }
   return data;
 };
@@ -1977,6 +2164,7 @@ const trackModuleLoadMetric = async (
 };
 
 const SHARED_LOOKUP_CACHE_PATHS = new Set([
+  '/api/faculties',
   '/api/campuses',
   '/api/buildings',
   '/api/blocks',
@@ -2515,6 +2703,108 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       'Access Type and Access Scope are imported for clarity, but standard roles still derive their final scope automatically: Global for admin/executive roles, School for Dean, and Department for HOD/Timetable Coordinator/Faculty/Event Coordinator.',
     ],
   },
+  'Faculty Profile': {
+    headers: [
+      'Faculty Code',
+      'Full Name',
+      'Display Name',
+      'Employee ID',
+      'Designation',
+      'Joining Designation',
+      'Employment Type',
+      'Faculty Status',
+      'School',
+      'Department',
+      'Official Email',
+      'Phone Number',
+      'Office Room / Cabin',
+      'Date of Joining',
+      'Teaching Experience (Years)',
+      'Research Experience (Years)',
+      'Industry Experience (Years)',
+      'Total Experience (Years)',
+      'Experience Display',
+      'Highest Qualification',
+      'Qualification Institution',
+      'Year of Qualification',
+      'Specialization',
+      'Subjects / Expertise',
+      'Research Interests',
+      'Profile Summary',
+      'ORCID ID',
+      'ORCID URL',
+      'Scopus Author ID',
+      'Scopus URL',
+      'Web of Science ResearcherID',
+      'Web of Science URL',
+      'Publications Count',
+      'Citations Count',
+      'h-index',
+      'Projects Count',
+      'Patents Count',
+      'PhD Guided Count',
+      'Metrics Last Updated On',
+      'CV File Name',
+      'CV File',
+      'CV Upload Date',
+      'CV File Size',
+      'Faculty Photo',
+    ],
+    exampleRows: [
+      {
+        'Faculty Code': 'FCS-1025',
+        'Full Name': 'Dr. Ramesh Kumar',
+        'Display Name': 'Dr. Ramesh Kumar',
+        'Employee ID': 'EMP-1025',
+        Designation: 'Professor',
+        'Joining Designation': 'Assistant Professor',
+        'Employment Type': 'Regular',
+        'Faculty Status': 'Active',
+        School: 'School of Computing',
+        Department: 'Department of Computer Science & Engineering',
+        'Official Email': 'ramesh.kumar@mbu.edu.in',
+        'Phone Number': '+91 98765 43210',
+        'Office Room / Cabin': 'SC-305',
+        'Date of Joining': '2012-08-12',
+        'Teaching Experience (Years)': 18,
+        'Research Experience (Years)': 12,
+        'Industry Experience (Years)': 2,
+        'Total Experience (Years)': 20,
+        'Experience Display': '18 Y 4 M',
+        'Highest Qualification': 'Ph.D. (Computer Science)',
+        'Qualification Institution': 'IIT Delhi',
+        'Year of Qualification': '2010',
+        Specialization: 'Artificial Intelligence',
+        'Subjects / Expertise': 'Machine Learning, Data Mining, AI, Deep Learning, Algorithms',
+        'Research Interests': 'Machine Learning, Computer Vision, Natural Language Processing, Data Science',
+        'Profile Summary': 'Professor with strong teaching, research, and academic leadership experience.',
+        'ORCID ID': '0000-0002-1234-5678',
+        'ORCID URL': 'https://orcid.org/0000-0002-1234-5678',
+        'Scopus Author ID': '57219876543',
+        'Scopus URL': 'https://www.scopus.com/authid/detail.uri?authorId=57219876543',
+        'Web of Science ResearcherID': 'A-1234-2016',
+        'Web of Science URL': 'https://www.webofscience.com/wos/author/record/A-1234-2016',
+        'Publications Count': 48,
+        'Citations Count': 1256,
+        'h-index': 17,
+        'Projects Count': 6,
+        'Patents Count': 2,
+        'PhD Guided Count': 5,
+        'Metrics Last Updated On': '2026-07-24',
+        'CV File Name': 'Dr_Ramesh_Kumar_CV.pdf',
+        'CV File': 'faculty-cv/Dr_Ramesh_Kumar_CV.pdf',
+        'CV Upload Date': '2025-05-15 10:30 AM',
+        'CV File Size': '1.24 MB',
+        'Faculty Photo': 'faculty-photos/Dr_Ramesh_Kumar.jpg',
+      },
+    ],
+    instructions: [
+      'Keep Timestamp and Score out of this template before importing.',
+      'Use Faculty Code as the stable primary identifier for every faculty member. It can be the same value as Employee ID.',
+      'Research counts are snapshots. Refresh them only when verified and keep Metrics Last Updated On filled.',
+      'The workbook can omit optional CV metadata or photo path without blocking profile creation.',
+    ],
+  },
   Campus: {
     headers: ['Campus ID', 'Campus Name', 'Location', 'Description'],
     exampleRows: [
@@ -2792,6 +3082,44 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Sub Lab Name': '',
         'Restroom For': '',
       },
+    ],
+  },
+  'Camera Surveillance': {
+    headers: ['Camera Code', 'Camera Name', 'Camera Area', 'Camera IP', 'Camera Type', 'Make', 'Building', 'Block / Direct Floors', 'Floor', 'Room Number', 'Placement', 'Coverage Description', 'Stream Type', 'Stream URL', 'NVR IP', 'RTSP Port', 'Channel Number', 'Stream Number', 'Public IP', 'Transport', 'Status', 'Recording Enabled', 'Access Level', 'Notes'],
+    exampleRows: [
+      {
+        'Camera Code': 'CCTV-MPLAZA-W1-101-01',
+        'Camera Name': 'M-Plaza West Floor-1 Room 101 Front Camera',
+        'Camera Area': 'MP 101 Class Room',
+        'Camera IP': '172.16.165.47',
+        'Camera Type': 'Dome',
+        Make: 'HIKVISION',
+        Building: 'M-Plaza',
+        'Block / Direct Floors': 'West',
+        Floor: 'Floor -1',
+        'Room Number': '101',
+        Placement: 'Inside room',
+        'Coverage Description': 'Front classroom view',
+        'Stream Type': 'RTSP',
+        'Stream URL': 'rtsp://username:password@10.10.20.101:554/Streaming/Channels/102',
+        'NVR IP': '10.10.20.10',
+        'RTSP Port': '554',
+        'Channel Number': '10',
+        'Stream Number': '2',
+        'Public IP': '103.252.147.68',
+        Transport: 'TCP',
+        Status: 'Online',
+        'Recording Enabled': 'Yes',
+        'Access Level': 'Security',
+        Notes: 'Use sub-stream for browser dashboard conversion.',
+      },
+    ],
+    instructions: [
+      'Room Number must match an existing Room Management room number or alias.',
+      'If Room Number is blank, the importer tries to extract it from Camera Area values like MP 101 Class Room.',
+      'Use Stream Type values: HLS, MJPEG, RTSP, HTTP Snapshot, or Metadata Only.',
+      'Do not share production CCTV passwords in public files. Prefer temporary test credentials or backend-only storage.',
+      'RTSP cannot play directly in the browser; the app will map it first and can later convert it through a backend FFmpeg stream proxy.',
     ],
   },
   School: {
@@ -3172,7 +3500,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   Schedule: {
-    headers: ['Schedule ID', 'Department', 'Program', 'Year', EXACT_SEMESTER_LABEL, 'Specialization / Branch', 'Section', 'Course Code', 'Course Name', 'Faculty', 'Room', 'Day', 'Start Time', 'End Time', 'Import Status', 'Review Note'],
+    headers: ['Schedule ID', 'Department', 'Program', 'Year', EXACT_SEMESTER_LABEL, 'Specialization / Branch', 'Section', 'Course Code', 'Course Name', 'Faculty Code', 'Display Name', 'Full Name', 'Faculty', 'Room', 'Day', 'Start Time', 'End Time', 'Import Status', 'Review Note'],
     exampleRows: [
       {
         'Schedule ID': 'SCH-CSE-BTECH-001',
@@ -3184,7 +3512,10 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Section: 'A1',
         'Course Code': 'CSE401L',
         'Course Name': 'Data Structures Lab',
-        Faculty: 'Dr. Keerthi',
+        'Faculty Code': 'FCS-1025',
+        'Display Name': 'Dr. Keerthi',
+        'Full Name': '',
+        Faculty: '',
         Room: '328',
         Day: 'Tuesday',
         'Start Time': '09:00',
@@ -3202,6 +3533,9 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Section: 'B2',
         'Course Code': 'PHARM402L',
         'Course Name': 'Pharmaceutics Lab',
+        'Faculty Code': '',
+        'Display Name': 'Dr. Anitha',
+        'Full Name': '',
         Faculty: 'Dr. Anitha',
         Room: 'PH-LAB-2',
         Day: 'Wednesday',
@@ -3220,6 +3554,9 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Section: '',
         'Course Code': 'BSC201',
         'Course Name': 'Applied Physiology',
+        'Faculty Code': '',
+        'Display Name': '',
+        'Full Name': 'Dr. Kavitha',
         Faculty: 'Dr. Kavitha',
         Room: '4003',
         Day: 'Thursday',
@@ -3238,6 +3575,9 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Section: '',
         'Course Code': 'BSC201',
         'Course Name': 'Applied Physiology',
+        'Faculty Code': '',
+        'Display Name': '',
+        'Full Name': 'Dr. Kavitha',
         Faculty: 'Dr. Kavitha',
         Room: '4003',
         Day: 'Monday',
@@ -3263,6 +3603,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       'Lab durations are fully dynamic. Enter the real Start Time and End Time exactly as used by that department, whether the lab spans two periods, three periods, or any other continuous window.',
       'If a lab is conducted in a classroom instead of a dedicated lab room, still enter the actual classroom room number here. The app links schedules to the real room used, not only to room type labels.',
       'Different departments or schools can follow different lab lengths in the same workbook. The schedule template does not force a fixed lab duration; it only preserves the actual timed occupancy.',
+      'Faculty profiles link directly from timetable rows. Fill any one of Faculty Code, Display Name, Full Name, or the legacy Faculty column; Faculty Code is preferred when available.',
       'Import Status and Review Note columns are optional in Excel. If Import Status is blank, the app auto-sets Linked / Unmatched Room / Room Missing from room matching.',
       `Department, Program, ${EXACT_SEMESTER_LABEL}, and Section are also used by Timetable View, Room Bookings schedule review, and Digital Twin links to preserve the correct mixed-room academic context. Fill them consistently for accurate vacancy display.`,
       'All workbook sheets are scanned during import. Rows without a matching room are imported as Unmatched Room schedules and can be fixed later after adding the missing room.',
@@ -3792,6 +4133,13 @@ const minutesToTime = (minutes: number) => {
   return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
 };
 
+const timeToMinutesValue = (time?: string) => {
+  if (!time) return null;
+  const [hours, minutes] = time.split(':').map(Number);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  return hours * 60 + minutes;
+};
+
 const getRangeLifecycleStatus = (startDate?: string, endDate?: string, completedLabel = 'Completed', futureLabel = 'Upcoming') => {
   const today = normalizeComparableDateValue(new Date());
   const normalizedStartDate = normalizeComparableDateValue(startDate);
@@ -4010,8 +4358,11 @@ function Sidebar() {
     { name: 'Block Management', icon: Layers, path: '/blocks', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)'] },
     { name: 'Floor Management', icon: Layers, path: '/floors', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)'] },
     { name: 'Room Management', icon: DoorOpen, path: '/rooms', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)'] },
+    { name: 'Camera Surveillance', icon: Camera, path: '/camera-surveillance', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)'] },
     { name: 'School Management', icon: BookOpen, path: '/schools', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)'] },
     { name: 'Department Management', icon: Layers, path: '/departments', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)'] },
+    { name: 'Faculty Directory', icon: Users, path: '/faculties', roles: ['Administrator', 'Admin', 'Master Admin', 'Faculty', 'HOD', 'Dean', 'Timetable Coordinator', 'Dean (P&M)', 'Deputy Dean (P&M)', ...executiveMenuRoles] },
+    { name: 'Faculty Profile Management', icon: FileSpreadsheet, path: '/faculty-management', roles: ['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)'] },
     { name: 'Timing Profile Management', icon: Clock, path: '/timing-profiles', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)'] },
     { name: 'Academic Calendar', icon: Calendar, path: '/academic-calendars', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'HOD', 'Dean (P&M)'] },
     { name: 'HOD Room Allocation', icon: DoorOpen, path: '/hod-room-allocation', roles: ['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)'] },
@@ -4749,6 +5100,18 @@ export default function App() {
               </Layout>
             </ProtectedRoute>
           } />
+          <Route path="/camera-surveillance" element={
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Infrastructure Manager', 'Dean (P&M)']}>
+              <Layout title="Camera Surveillance">
+                <DependencyGuard dependencies={[
+                  { table: 'buildings', label: 'Buildings' },
+                  { table: 'rooms', label: 'Rooms' }
+                ]}>
+                  <CameraSurveillanceManagement />
+                </DependencyGuard>
+              </Layout>
+            </ProtectedRoute>
+          } />
           <Route path="/schools" element={<ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)']}><Layout title="School Management"><SchoolManagement /></Layout></ProtectedRoute>} />
           <Route path="/departments" element={
             <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)']}>
@@ -4756,6 +5119,27 @@ export default function App() {
                 <DependencyGuard dependencies={[{ table: 'schools', label: 'Schools' }]}>
                   <DepartmentManagement />
                 </DependencyGuard>
+              </Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/faculties" element={
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Faculty', 'HOD', 'Dean', 'Timetable Coordinator', 'Dean (P&M)', 'Deputy Dean (P&M)', 'Vice Chancellor', 'Pro-Chancellor', 'Registrar']}>
+              <Layout title="Faculty Directory">
+                <FacultyDirectory />
+              </Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/faculties/:facultyCode" element={
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Faculty', 'HOD', 'Dean', 'Timetable Coordinator', 'Dean (P&M)', 'Deputy Dean (P&M)', 'Vice Chancellor', 'Pro-Chancellor', 'Registrar']}>
+              <Layout title="Faculty Profile">
+                <FacultyProfilePage />
+              </Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/faculty-management" element={
+            <ProtectedRoute roles={['Administrator', 'Admin', 'Master Admin', 'Dean (P&M)']}>
+              <Layout title="Faculty Profile Management">
+                <FacultyManagement />
               </Layout>
             </ProtectedRoute>
           } />
@@ -4953,6 +5337,7 @@ function DashboardHome() {
   const [aiInsightMessage, setAiInsightMessage] = useState('');
   const [dashboardOverview, setDashboardOverview] = useState<any>({});
   const [digitalTwinSnapshot, setDigitalTwinSnapshot] = useState<any>({ statusCounts: {}, statusBreakdowns: {}, buildings: [] });
+  const [cameras, setCameras] = useState<any[]>([]);
   const [selectedTwinStatus, setSelectedTwinStatus] = useState('All');
   const [selectedTwinBuilding, setSelectedTwinBuilding] = useState('All');
   const [selectedTwinRoomId, setSelectedTwinRoomId] = useState('');
@@ -4960,6 +5345,7 @@ function DashboardHome() {
   const [selectedDashboardViewMode, setSelectedDashboardViewMode] = useState<DashboardViewMode>(normalizeDashboardViewMode(user?.dashboard_view_mode));
   const [isSavingDashboardViewMode, setIsSavingDashboardViewMode] = useState(false);
   const [dashboardViewModeMessage, setDashboardViewModeMessage] = useState('');
+  const [faculties, setFaculties] = useState<any[]>([]);
   const [roleDashboardData, setRoleDashboardData] = useState<{
     bookings: any[];
     rooms: any[];
@@ -5035,13 +5421,14 @@ function DashboardHome() {
       };
 
       try {
-        const isRoleBasedView = user?.role === 'HOD' || user?.role === 'Dean';
+        const isRoleBasedView = user?.role === 'HOD' || user?.role === 'Dean' || isExecutiveRole(user?.role);
 
         // Fire role-specific secondary requests in parallel with the overview so
         // both sets of data are in-flight at the same time.
         const secondaryPromise = isRoleBasedView
           ? Promise.all([
               fetchJson<any[]>('/api/bookings', []),
+              fetchSharedLookupJson('/api/faculties'),
               fetchSharedLookupJson('/api/rooms'),
               fetchSharedLookupJson('/api/departments'),
               fetchSharedLookupJson('/api/schools'),
@@ -5051,7 +5438,10 @@ function DashboardHome() {
             ])
           : Promise.resolve(null);
 
-        const overviewData = await fetchJson<any>('/api/dashboard/overview', {});
+        const [overviewData, cameraData] = await Promise.all([
+          fetchJson<any>('/api/dashboard/overview', {}),
+          fetchSharedLookupJson('/api/cameras'),
+        ]);
 
         if (!isActive) return;
 
@@ -5065,11 +5455,13 @@ function DashboardHome() {
         setAiInsightMessage(fallbackInsight);
         setDashboardOverview(overviewData || {});
         setDigitalTwinSnapshot(overviewData?.digitalTwinSnapshot || { statusCounts: {}, statusBreakdowns: {}, buildings: [] });
+        setCameras(Array.isArray(cameraData) ? cameraData : []);
 
         if (isRoleBasedView) {
           const secondaryData = await secondaryPromise;
           const [
             bookingData,
+            facultyData,
             roomData,
             departmentData,
             schoolData,
@@ -5089,6 +5481,7 @@ function DashboardHome() {
             batchAllocations: Array.isArray(batchAllocationData) ? batchAllocationData : [],
             schedules: Array.isArray(scheduleData) ? scheduleData : [],
           });
+          setFaculties(Array.isArray(facultyData) ? facultyData : []);
         } else {
           setRoleDashboardData({
             bookings: [],
@@ -5099,6 +5492,7 @@ function DashboardHome() {
             batchAllocations: [],
             schedules: [],
           });
+          setFaculties([]);
         }
         void trackModuleLoadMetric(
           'DashboardHome',
@@ -5523,6 +5917,55 @@ function DashboardHome() {
     () => deduplicateScheduleRows(roleDashboardData.schedules || []).filter((schedule: any) => idsMatch(schedule?.department_id, userDepartment?.id)),
     [roleDashboardData.schedules, userDepartment],
   );
+  const dashboardFacultyLookup = useMemo(() => {
+    const lookup = new Map<string, any[]>();
+    (faculties || []).forEach((faculty: any) => {
+      [
+        faculty?.faculty_code,
+        faculty?.display_name,
+        faculty?.full_name,
+      ].forEach((value) => appendLookupCandidate(lookup, normalizeLookupValue(value), faculty));
+    });
+    return lookup;
+  }, [faculties]);
+  const getDashboardFacultyProfilePath = (...facultyIdentifiers: unknown[]) => {
+    for (const identifier of facultyIdentifiers) {
+      const matches = dashboardFacultyLookup.get(normalizeLookupValue(identifier)) || [];
+      const matchedFaculty = matches[0];
+      const facultyCode = matchedFaculty?.faculty_code?.toString?.().trim?.() || '';
+      if (facultyCode) return `/faculties/${encodeURIComponent(facultyCode)}`;
+    }
+    return '';
+  };
+  const renderDashboardFacultyLink = (facultyName: unknown, fallbackLabel = 'Faculty', ...alternateIdentifiers: unknown[]) => {
+    const label = facultyName?.toString().trim() || fallbackLabel;
+    const path = getDashboardFacultyProfilePath(...alternateIdentifiers, facultyName);
+    if (!path) return <span>{label}</span>;
+    return (
+      <button
+        type="button"
+        onClick={() => navigate(path)}
+        className="hover:text-emerald-700 hover:underline"
+      >
+        {label}
+      </button>
+    );
+  };
+  const renderDashboardScheduleFacultyLink = (schedule: any, fallbackLabel = 'Faculty not set') => {
+    const label = schedule?.faculty?.toString().trim() || schedule?.faculty_display_name?.toString().trim() || schedule?.faculty_full_name?.toString().trim() || schedule?.faculty_code?.toString().trim() || fallbackLabel;
+    const matchedFaculty = resolveFacultyProfileFromSchedule(schedule, faculties, roleDashboardData.departments || [], roleDashboardData.schools || []);
+    const facultyCode = matchedFaculty?.faculty_code?.toString?.().trim?.() || '';
+    if (!facultyCode) return <span>{label}</span>;
+    return (
+      <button
+        type="button"
+        onClick={() => navigate(`/faculties/${encodeURIComponent(facultyCode)}`)}
+        className="hover:text-emerald-700 hover:underline"
+      >
+        {label}
+      </button>
+    );
+  };
   const deanSchedules = useMemo(
     () => deduplicateScheduleRows(roleDashboardData.schedules || []).filter((schedule: any) => schedule?.department_id != null && schoolDepartmentIds.has(schedule.department_id.toString())),
     [roleDashboardData.schedules, schoolDepartmentIds],
@@ -5539,6 +5982,13 @@ function DashboardHome() {
       .sort((left: any, right: any) => `${left.date || ''} ${left.start_time || ''}`.localeCompare(`${right.date || ''} ${right.start_time || ''}`))
       .slice(0, 8),
     [deanBookings],
+  );
+  const executiveRecentBookingRows = useMemo(
+    () => (roleDashboardData.bookings || [])
+      .filter((booking: any) => booking?.faculty_name || booking?.event_name || booking?.purpose)
+      .sort((left: any, right: any) => `${right.date || ''} ${right.start_time || ''}`.localeCompare(`${left.date || ''} ${left.start_time || ''}`))
+      .slice(0, 8),
+    [roleDashboardData.bookings],
   );
   const hodWorkflowCounts = useMemo(() => ({
     awaitingRecommendation: hodBookings.filter((booking: any) => booking?.status === 'Pending').length,
@@ -5984,6 +6434,41 @@ function DashboardHome() {
         </div>
       </div>
 
+      <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h4 className="text-lg font-bold text-slate-900">Faculty-Linked Request Snapshot</h4>
+            <p className="text-sm text-slate-500 mt-1">Recent booking activity with direct faculty profile entry points for executive review.</p>
+          </div>
+          <button type="button" onClick={() => navigate('/bookings')} className="text-xs font-bold text-emerald-700 hover:text-emerald-800">Open Bookings</button>
+        </div>
+        <div className="space-y-3 mt-5">
+          {executiveRecentBookingRows.map((booking: any) => (
+            <div key={`executive-booking-${booking.id}`} className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-slate-800 truncate">{booking.event_name || booking.purpose || 'Room request'}</p>
+                  <p className="text-xs text-slate-500 truncate">
+                    {renderDashboardFacultyLink(booking.faculty_name)}
+                    {' • '}
+                    {booking.department_name || 'Department not set'}
+                    {' • '}
+                    {booking.room_number || 'Room not set'}
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <p className="text-[11px] text-slate-500 whitespace-nowrap">{booking.date || 'Date not set'} • {booking.start_time || '--:--'}</p>
+                  <span className={cn('px-2 py-1 rounded-full text-[10px] font-bold whitespace-nowrap', currentStatusClass(booking.status || 'Pending'))}>{booking.status || 'Pending'}</span>
+                </div>
+              </div>
+            </div>
+          ))}
+          {executiveRecentBookingRows.length === 0 && (
+            <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-center text-sm text-slate-400">No faculty-linked booking activity is available yet.</div>
+          )}
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex items-center justify-between gap-4">
@@ -6156,7 +6641,9 @@ function DashboardHome() {
                 <div key={`${schedule.id || schedule.schedule_id || index}`} className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
                   <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
                     <div>
-                      <p className="text-sm font-bold text-slate-800">{schedule.faculty || 'Faculty not set'}</p>
+                      <p className="text-sm font-bold text-slate-800">
+                        {renderDashboardScheduleFacultyLink(schedule)}
+                      </p>
                       <p className="text-xs text-slate-500">{schedule.course_name || 'Scheduled class'}{schedule.section ? ` • Section ${schedule.section}` : ''}</p>
                     </div>
                     <div className="text-right">
@@ -6186,7 +6673,7 @@ function DashboardHome() {
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="text-sm font-bold text-slate-800 truncate">{booking.event_name || booking.purpose || 'Room request'}</p>
-                      <p className="text-xs text-slate-500 truncate">{booking.faculty_name || 'Faculty'} • {booking.room_number || 'Room not set'}</p>
+                      <p className="text-xs text-slate-500 truncate">{renderDashboardFacultyLink(booking.faculty_name)} • {booking.room_number || 'Room not set'}</p>
                     </div>
                     <span className={cn('px-2 py-1 rounded-full text-[10px] font-bold whitespace-nowrap', currentStatusClass(booking.status || 'Pending'))}>{booking.status || 'Pending'}</span>
                   </div>
@@ -6482,7 +6969,7 @@ function DashboardHome() {
                 <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
                   <div className="min-w-0">
                     <p className="text-sm font-bold text-slate-800 truncate">{booking.event_name || booking.purpose || 'Room request'}</p>
-                    <p className="text-xs text-slate-500 truncate">{booking.department_name || roleDepartmentsById.get(booking.department_id?.toString?.() || '')?.name || 'Department not set'} • {booking.room_number || 'Room not set'}</p>
+                    <p className="text-xs text-slate-500 truncate">{renderDashboardFacultyLink(booking.faculty_name)} • {booking.department_name || roleDepartmentsById.get(booking.department_id?.toString?.() || '')?.name || 'Department not set'} • {booking.room_number || 'Room not set'}</p>
                   </div>
                   <div className="flex items-center gap-3">
                     <p className="text-[11px] text-slate-500 whitespace-nowrap">{booking.date || 'Date not set'} • {booking.start_time || '--:--'}</p>
@@ -6656,6 +7143,7 @@ function DashboardHome() {
                             const statusLabel = getDigitalTwinStatusLabel(room?.status, room?.isBookable !== false);
                             const theme = DIGITAL_TWIN_STATUS_STYLES[statusLabel];
                             const isSelected = selectedTwinRoom?.id === room.id;
+                            const cameraSummary = getRoomCameraSummary(cameras, room.id);
                             return (
                               <button
                                 key={room.id}
@@ -6669,7 +7157,15 @@ function DashboardHome() {
                               >
                                 <div className="flex items-center justify-between gap-2 mb-2">
                                   <span className="text-sm font-bold text-slate-900">{room.roomNumber}</span>
-                                  <span className={cn('h-2.5 w-2.5 rounded-full', theme.darkDot)} />
+                                  <span className="flex items-center gap-1.5">
+                                    {cameraSummary.total > 0 && (
+                                      <span className={cn('inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-black', cameraSummary.online > 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-100 text-slate-500')}>
+                                        <Camera size={11} />
+                                        {cameraSummary.total}
+                                      </span>
+                                    )}
+                                    <span className={cn('h-2.5 w-2.5 rounded-full', theme.darkDot)} />
+                                  </span>
                                 </div>
                                 <p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">{room.roomType}</p>
                                 <p className="text-[11px] mt-2 font-semibold text-slate-700">{statusLabel}</p>
@@ -6764,6 +7260,27 @@ function DashboardHome() {
             </div>
             {selectedTwinRoom ? (
               <div className="space-y-4">
+                {(() => {
+                  const cameraSummary = getRoomCameraSummary(cameras, selectedTwinRoom.id);
+                  return cameraSummary.total > 0 ? (
+                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-[10px] uppercase tracking-widest font-bold text-emerald-700">CCTV Coverage</p>
+                          <p className="mt-1 text-sm font-bold text-slate-800">{cameraSummary.total} camera{cameraSummary.total === 1 ? '' : 's'} mapped</p>
+                        </div>
+                        <Camera className="text-emerald-700" size={22} />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => navigate(`/camera-surveillance?roomId=${selectedTwinRoom.id}`)}
+                        className="mt-3 text-xs font-bold text-emerald-800 hover:underline"
+                      >
+                        Open cameras
+                      </button>
+                    </div>
+                  ) : null;
+                })()}
                 <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
                   <p className="text-2xl font-black text-slate-900">{selectedTwinRoom.roomNumber}</p>
                   <p className="text-sm text-slate-500 mt-1">
@@ -6995,6 +7512,7 @@ function GenericCRUD({
   serverSortKey,
   serverQueryParams,
   allowReset = true,
+  rowActions,
 }: {
   type: string,
   fields: any[],
@@ -7014,6 +7532,7 @@ function GenericCRUD({
   serverSortKey?: string,
   serverQueryParams?: Record<string, string>,
   allowReset?: boolean,
+  rowActions?: (item: any) => React.ReactNode,
 }) {
   const [data, setData] = useState<any[]>([]);
   const [totalCount, setTotalCount] = useState(0);
@@ -7542,6 +8061,7 @@ function GenericCRUD({
                   <td key={f.key} className="px-6 py-4 text-sm text-slate-600 font-medium">{getFieldDisplayValue(f, item)}</td>
                 ))}
                 <td className="px-6 py-4 text-right space-x-2">
+                  {rowActions ? rowActions(item) : null}
                   <button
                     onClick={() => { setEditingItem(item); setFormData(prepareFormData ? prepareFormData(item) : item); setIsModalOpen(true); }}
                     className="p-2 text-slate-400 hover:text-emerald-600 transition-colors"
@@ -7772,6 +8292,704 @@ function GenericCRUD({
 }
 
 // --- SPECIFIC MODULES ---
+
+const FACULTY_PROFILE_FIELDS = [
+  { key: 'faculty_code', label: 'Faculty Code' },
+  { key: 'full_name', label: 'Full Name' },
+  { key: 'display_name', label: 'Display Name' },
+  { key: 'employee_id', label: 'Employee ID', required: false },
+  { key: 'designation', label: 'Designation' },
+  { key: 'joining_designation', label: 'Joining Designation', required: false },
+  { key: 'employment_type', label: 'Employment Type', required: false },
+  { key: 'faculty_status', label: 'Faculty Status' },
+  { key: 'school', label: 'School' },
+  { key: 'department', label: 'Department' },
+  { key: 'official_email', label: 'Official Email', required: false },
+  { key: 'phone_number', label: 'Phone Number', required: false },
+  { key: 'office_room_cabin', label: 'Office Room / Cabin', required: false },
+  { key: 'date_of_joining', label: 'Date of Joining', type: 'date', required: false, render: (item: any) => formatDisplayDate(item.date_of_joining) || '-' },
+  { key: 'teaching_experience_years', label: 'Teaching Experience (Years)', type: 'number', required: false },
+  { key: 'research_experience_years', label: 'Research Experience (Years)', type: 'number', required: false },
+  { key: 'industry_experience_years', label: 'Industry Experience (Years)', type: 'number', required: false },
+  { key: 'total_experience_years', label: 'Total Experience (Years)', type: 'number', required: false },
+  { key: 'experience_display', label: 'Experience Display', required: false },
+  { key: 'highest_qualification', label: 'Highest Qualification', required: false },
+  { key: 'qualification_institution', label: 'Qualification Institution', required: false },
+  { key: 'year_of_qualification', label: 'Year of Qualification', required: false },
+  { key: 'specialization', label: 'Specialization', required: false },
+  { key: 'subjects_expertise', label: 'Subjects / Expertise', required: false, fullWidth: true },
+  { key: 'research_interests', label: 'Research Interests', required: false, fullWidth: true },
+  { key: 'profile_summary', label: 'Profile Summary', type: 'textarea', required: false, rows: 4, fullWidth: true },
+  { key: 'orcid_id', label: 'ORCID ID', required: false },
+  { key: 'orcid_url', label: 'ORCID URL', required: false, fullWidth: true },
+  { key: 'scopus_author_id', label: 'Scopus Author ID', required: false },
+  { key: 'scopus_url', label: 'Scopus URL', required: false, fullWidth: true },
+  { key: 'web_of_science_researcherid', label: 'Web of Science ResearcherID', required: false },
+  { key: 'web_of_science_url', label: 'Web of Science URL', required: false, fullWidth: true },
+  { key: 'publications_count_snapshot', label: 'Publications Count', type: 'number', required: false },
+  { key: 'citations_count_snapshot', label: 'Citations Count', type: 'number', required: false },
+  { key: 'h_index_snapshot', label: 'h-index', type: 'number', required: false },
+  { key: 'projects_count_snapshot', label: 'Projects Count', type: 'number', required: false },
+  { key: 'patents_count_snapshot', label: 'Patents Count', type: 'number', required: false },
+  { key: 'phd_guided_count_snapshot', label: 'PhD Guided Count', type: 'number', required: false },
+  { key: 'metrics_last_updated_on', label: 'Metrics Last Updated On', type: 'date', required: false, render: (item: any) => formatDisplayDate(item.metrics_last_updated_on) || '-' },
+  { key: 'cv_file_name', label: 'CV File Name', required: false },
+  { key: 'cv_file_url_path', label: 'CV File', required: false, fullWidth: true },
+  { key: 'cv_upload_date', label: 'CV Upload Date', required: false },
+  { key: 'cv_file_size', label: 'CV File Size', required: false },
+  { key: 'faculty_photo_url_path', label: 'Faculty Photo', required: false, fullWidth: true },
+];
+
+const getFacultyImportValue = (row: any, labels: string[]) => getImportValue(row, labels)?.toString().trim() || '';
+
+function FacultyManagement() {
+  const handleImport = async (data: any[]) => {
+    const entries = data
+      .filter((row) => !row.__sheetName || normalizeLookupValue(row.__sheetName) === 'faculty profile' || normalizeLookupValue(row.__sheetName) === 'template')
+      .map((row) => {
+        const payload = {
+          faculty_code: getFacultyImportValue(row, ['Faculty Code']) || getFacultyImportValue(row, ['Employee ID']),
+          full_name: getFacultyImportValue(row, ['Full Name']),
+          display_name: getFacultyImportValue(row, ['Display Name']),
+          employee_id: getFacultyImportValue(row, ['Employee ID']),
+          designation: getFacultyImportValue(row, ['Designation']),
+          joining_designation: getFacultyImportValue(row, ['Joining Designation']),
+          employment_type: getFacultyImportValue(row, ['Employment Type']),
+          faculty_status: getFacultyImportValue(row, ['Faculty Status']),
+          school: getFacultyImportValue(row, ['School']),
+          department: getFacultyImportValue(row, ['Department']),
+          official_email: getFacultyImportValue(row, ['Official Email']),
+          phone_number: getFacultyImportValue(row, ['Phone Number']),
+          office_room_cabin: getFacultyImportValue(row, ['Office Room / Cabin']),
+          date_of_joining: formatExcelDate(getImportValue(row, ['Date of Joining'])) || getFacultyImportValue(row, ['Date of Joining']),
+          teaching_experience_years: getImportValue(row, ['Teaching Experience (Years)']),
+          research_experience_years: getImportValue(row, ['Research Experience (Years)']),
+          industry_experience_years: getImportValue(row, ['Industry Experience (Years)']),
+          total_experience_years: getImportValue(row, ['Total Experience (Years)']),
+          experience_display: getFacultyImportValue(row, ['Experience Display']),
+          highest_qualification: getFacultyImportValue(row, ['Highest Qualification']),
+          qualification_institution: getFacultyImportValue(row, ['Qualification Institution']),
+          year_of_qualification: getFacultyImportValue(row, ['Year of Qualification']),
+          specialization: getFacultyImportValue(row, ['Specialization']),
+          subjects_expertise: getFacultyImportValue(row, ['Subjects / Expertise']),
+          research_interests: getFacultyImportValue(row, ['Research Interests']),
+          profile_summary: getFacultyImportValue(row, ['Profile Summary']),
+          orcid_id: getFacultyImportValue(row, ['ORCID ID']),
+          orcid_url: getFacultyImportValue(row, ['ORCID URL']),
+          scopus_author_id: getFacultyImportValue(row, ['Scopus Author ID']),
+          scopus_url: getFacultyImportValue(row, ['Scopus URL']),
+          web_of_science_researcherid: getFacultyImportValue(row, ['Web of Science ResearcherID']),
+          web_of_science_url: getFacultyImportValue(row, ['Web of Science URL']),
+          publications_count_snapshot: getImportValue(row, ['Publications Count', 'Publications Count Snapshot']),
+          citations_count_snapshot: getImportValue(row, ['Citations Count', 'Citations Count Snapshot']),
+          h_index_snapshot: getImportValue(row, ['h-index', 'h-index Snapshot']),
+          projects_count_snapshot: getImportValue(row, ['Projects Count', 'Projects Count Snapshot']),
+          patents_count_snapshot: getImportValue(row, ['Patents Count', 'Patents Count Snapshot']),
+          phd_guided_count_snapshot: getImportValue(row, ['PhD Guided Count', 'PhD Guided Count Snapshot']),
+          metrics_last_updated_on: formatExcelDate(getImportValue(row, ['Metrics Last Updated On'])) || getFacultyImportValue(row, ['Metrics Last Updated On']),
+          cv_file_name: getFacultyImportValue(row, ['CV File Name']),
+          cv_file_url_path: getFacultyImportValue(row, ['CV File', 'CV File URL / Path']),
+          cv_upload_date: getFacultyImportValue(row, ['CV Upload Date']),
+          cv_version: getFacultyImportValue(row, ['CV Version']),
+          cv_file_size: getFacultyImportValue(row, ['CV File Size']),
+          faculty_photo_url_path: getFacultyImportValue(row, ['Faculty Photo', 'Faculty Photo URL / File Path']),
+        };
+        return !payload.faculty_code || !payload.full_name || !payload.display_name
+          ? null
+          : { payload, uniqueFieldGroups: [['faculty_code'], ['display_name']] };
+      })
+      .filter(Boolean) as BulkImportEntry[];
+    await upsertImportRecordsBulk('/api/faculties', entries);
+    invalidateSharedLookupCache(['/api/faculties']);
+  };
+
+  return (
+    <GenericCRUD
+      type="Faculty Profile"
+      fields={FACULTY_PROFILE_FIELDS}
+      apiPath="/api/faculties"
+      onImport={handleImport}
+      initialSearchTerm=""
+    />
+  );
+}
+
+function FacultyDirectory() {
+  const [faculties, setFaculties] = useState<any[]>([]);
+  const [searchTerm, setSearchTerm] = useState('');
+
+  useEffect(() => {
+    fetchSharedLookupJson('/api/faculties')
+      .then((data) => setFaculties(Array.isArray(data) ? data : []))
+      .catch(() => setFaculties([]));
+  }, []);
+
+  const filtered = faculties
+    .filter((faculty: any) => {
+      const query = normalizeLookupValue(searchTerm);
+      if (!query) return true;
+      return [
+        faculty?.faculty_code,
+        faculty?.full_name,
+        faculty?.display_name,
+        faculty?.designation,
+        faculty?.school,
+        faculty?.department,
+      ].some((value) => normalizeLookupValue(value).includes(query));
+    })
+    .sort((left: any, right: any) => compareNaturalSortValues(left?.display_name || left?.full_name, right?.display_name || right?.full_name));
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm md:flex-row md:items-center md:justify-between">
+        <div>
+          <h2 className="text-2xl font-bold text-slate-900">Faculty Directory</h2>
+          <p className="mt-1 text-sm text-slate-500">Browse imported faculty profiles and open the full profile page.</p>
+        </div>
+        <div className="relative w-full md:max-w-sm">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+          <input
+            type="text"
+            value={searchTerm}
+            onChange={(event) => setSearchTerm(event.target.value)}
+            placeholder="Search faculty..."
+            className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2 pl-10 pr-4 text-sm text-slate-700 focus:border-emerald-500 focus:outline-none"
+          />
+        </div>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {filtered.map((faculty: any) => (
+          <Link
+            key={faculty.id}
+            to={`/faculties/${encodeURIComponent(faculty.faculty_code)}`}
+            className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition-all hover:-translate-y-0.5 hover:border-emerald-200 hover:shadow-md"
+          >
+            <div className="flex items-start gap-4">
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-100 text-lg font-bold text-emerald-700">
+                {(faculty?.display_name || faculty?.full_name || 'F').toString().trim().charAt(0).toUpperCase()}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-lg font-bold text-slate-900">{faculty.display_name || faculty.full_name}</p>
+                <p className="text-sm font-semibold text-emerald-700">{faculty.designation || '-'}</p>
+                <p className="mt-2 text-sm text-slate-500">{faculty.school || '-'}</p>
+                <p className="text-sm text-slate-500">{faculty.department || '-'}</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">{faculty.faculty_code}</span>
+                  <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">{faculty.faculty_status || 'Unknown'}</span>
+                </div>
+              </div>
+            </div>
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FacultyProfilePage() {
+  const { facultyCode = '' } = useParams();
+  const [profile, setProfile] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [cvUploadStatus, setCvUploadStatus] = useState('');
+  const [cvUploading, setCvUploading] = useState(false);
+  const [photoUploadStatus, setPhotoUploadStatus] = useState('');
+  const [photoUploading, setPhotoUploading] = useState(false);
+  const [photoLoadFailed, setPhotoLoadFailed] = useState(false);
+  const cvFileInputRef = useRef<HTMLInputElement | null>(null);
+  const photoFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const loadProfile = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const data = await apiJson(`/api/faculties/${encodeURIComponent(facultyCode)}/profile`);
+      setProfile(data);
+    } catch (err: any) {
+      setError(err?.message || 'Failed to load faculty profile.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (facultyCode) {
+      void loadProfile();
+    } else {
+      setLoading(false);
+      setError('Faculty Code is missing.');
+    }
+  }, [facultyCode]);
+
+  useEffect(() => {
+    setPhotoLoadFailed(false);
+  }, [profile?.faculty?.faculty_photo_url_path]);
+
+  const handleCvUpload = async (event: any) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    const allowedTypes = new Set([
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    ]);
+    const fileExtension = file.name.split('.').pop()?.toLowerCase() || '';
+    if (!allowedTypes.has(file.type) && !['pdf', 'doc', 'docx'].includes(fileExtension)) {
+      setCvUploadStatus('Please upload a PDF, DOC, or DOCX CV file.');
+      return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      setCvUploadStatus('CV file size must be 20 MB or smaller.');
+      return;
+    }
+
+    setCvUploading(true);
+    setCvUploadStatus('');
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result?.toString() || '');
+        reader.onerror = () => reject(new Error('Failed to read the selected CV file.'));
+        reader.readAsDataURL(file);
+      });
+      await apiJson(`/api/faculties/${encodeURIComponent(facultyCode)}/cv`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileName: file.name,
+          mimeType: file.type || (fileExtension === 'pdf' ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
+          data: dataUrl,
+        }),
+      });
+      setCvUploadStatus('CV uploaded successfully.');
+      await loadProfile();
+    } catch (err: any) {
+      setCvUploadStatus(err?.message || 'Upload request failed.');
+    } finally {
+      setCvUploading(false);
+    }
+  };
+
+  const handlePhotoUpload = async (event: any) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
+    const fileExtension = file.name.split('.').pop()?.toLowerCase() || '';
+    if (!allowedTypes.has(file.type) && !['jpg', 'jpeg', 'png', 'webp'].includes(fileExtension)) {
+      setPhotoUploadStatus('Please upload a JPG, PNG, or WebP faculty photo.');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setPhotoUploadStatus('Faculty photo size must be 5 MB or smaller.');
+      return;
+    }
+
+    setPhotoUploading(true);
+    setPhotoUploadStatus('');
+    try {
+      const dataUrl = await autoCropImageFileToDataUrl(file);
+      const photoUploadFileName = file.name.replace(/\.[^.]+$/, '') || 'faculty-photo';
+      await apiJson(`/api/faculties/${encodeURIComponent(facultyCode)}/photo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileName: `${photoUploadFileName}.jpg`,
+          mimeType: 'image/jpeg',
+          data: dataUrl,
+        }),
+      });
+      setPhotoLoadFailed(false);
+      setPhotoUploadStatus('Photo uploaded successfully.');
+      await loadProfile();
+    } catch (err: any) {
+      setPhotoUploadStatus(err?.message || 'Photo upload request failed.');
+    } finally {
+      setPhotoUploading(false);
+    }
+  };
+
+  if (loading) return <div className="p-8 text-center text-slate-400">Loading faculty profile...</div>;
+  if (error) return <div className="rounded-2xl border border-rose-200 bg-rose-50 p-6 text-sm text-rose-700">{error}</div>;
+
+  const faculty = profile?.faculty || {};
+  const facultyPhotoPath = normalizeProfileFileUrl(faculty.faculty_photo_url_path);
+  const cvFilePath = normalizeProfileFileUrl(faculty.cv_file_url_path);
+  const cvFileName = isMeaningfulProfileFileValue(faculty.cv_file_name) ? faculty.cv_file_name : '';
+  const cvUploadDate = isMeaningfulProfileFileValue(faculty.cv_upload_date) ? faculty.cv_upload_date : '';
+  const cvFileSize = isMeaningfulProfileFileValue(faculty.cv_file_size) ? faculty.cv_file_size : '';
+  const rawTeachingAssignments = Array.isArray(profile?.teachingAssignments) ? profile.teachingAssignments : [];
+  const teachingAssignments = Array.from(new Map(rawTeachingAssignments.map((item: any) => [
+    [
+      item.program,
+      item.course_name,
+      item.course_code,
+      item.semester,
+      item.section,
+      item.day_of_week,
+      item.start_time,
+      item.end_time,
+      item.room_id || item.room_label || item.room_number,
+    ].map(value => normalizeLookupValue(value)).join('|'),
+    item,
+  ] as const)).values());
+  const metricCards = [
+    { label: 'Publications', value: faculty.publications_count_snapshot ?? '-' },
+    { label: 'Citations', value: faculty.citations_count_snapshot ?? '-' },
+    { label: 'h-index', value: faculty.h_index_snapshot ?? '-' },
+    { label: 'Projects', value: faculty.projects_count_snapshot ?? '-' },
+    { label: 'Patents', value: faculty.patents_count_snapshot ?? '-' },
+    { label: 'PhD Guided', value: faculty.phd_guided_count_snapshot ?? '-' },
+  ];
+  const facultyTimetableDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const facultyTimeSlots = Array.from(new Map(
+    teachingAssignments
+      .filter((item: any) => item?.start_time && item?.end_time)
+      .map((item: any) => ({
+        start_time: item.start_time,
+        end_time: item.end_time,
+        key: `${item.start_time}-${item.end_time}`,
+      }))
+      .map((slot: any) => [slot.key, slot] as const),
+  ).values()).sort((left: any, right: any) => {
+    const leftStart = timeToMinutesValue(left.start_time) ?? Number.MAX_SAFE_INTEGER;
+    const rightStart = timeToMinutesValue(right.start_time) ?? Number.MAX_SAFE_INTEGER;
+    if (leftStart !== rightStart) return leftStart - rightStart;
+    return compareNaturalSortValues(left.end_time, right.end_time);
+  });
+  const getFacultyTimetableCellItems = (day: string, slot: any) => {
+    const matchingItems = teachingAssignments.filter((item: any) =>
+      normalizeLookupValue(item?.day_of_week) === normalizeLookupValue(day) &&
+      item?.start_time === slot.start_time &&
+      item?.end_time === slot.end_time
+    );
+    return Array.from(new Map(matchingItems.map((item: any) => [
+      [
+        item.course_name,
+        item.course_code,
+        item.program,
+        item.semester,
+        item.section,
+        item.room_label || item.room_number,
+      ].map(value => normalizeLookupValue(value)).join('|'),
+      item,
+    ] as const)).values());
+  };
+  const facultyInitial = (faculty.display_name || faculty.full_name || 'F').toString().trim().charAt(0).toUpperCase();
+  const shouldShowFacultyPhoto = facultyPhotoPath && !photoLoadFailed;
+
+  return (
+    <div className="space-y-6">
+      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex flex-col gap-6 xl:flex-row">
+          <div className="w-36 shrink-0">
+            <div className="flex aspect-[4/5] w-36 items-center justify-center overflow-hidden rounded-2xl border border-slate-200 bg-slate-100 text-4xl font-bold text-slate-500 shadow-sm">
+              {shouldShowFacultyPhoto ? (
+                <img
+                  src={facultyPhotoPath}
+                  alt={faculty.display_name || faculty.full_name || 'Faculty photo'}
+                  className="h-full w-full object-cover object-top"
+                  onError={() => setPhotoLoadFailed(true)}
+                />
+              ) : (
+                facultyInitial
+              )}
+            </div>
+            <input
+              ref={photoFileInputRef}
+              type="file"
+              accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+              className="hidden"
+              onChange={handlePhotoUpload}
+            />
+            <button
+              type="button"
+              onClick={() => photoFileInputRef.current?.click()}
+              disabled={photoUploading}
+              className="mt-3 w-full rounded-xl bg-slate-900 px-3 py-2 text-xs font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {photoUploading ? 'Uploading...' : 'Upload Photo'}
+            </button>
+            {photoUploadStatus ? (
+              <p className={cn("mt-2 text-xs font-semibold", photoUploadStatus.includes('successfully') ? "text-emerald-700" : "text-rose-600")}>{photoUploadStatus}</p>
+            ) : null}
+          </div>
+          <div className="flex-1 space-y-4">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <h2 className="text-3xl font-bold text-slate-900">{faculty.display_name || faculty.full_name || '-'}</h2>
+                <p className="mt-2 text-lg font-semibold text-emerald-700">{faculty.designation || '-'}</p>
+                <p className="mt-2 text-sm text-slate-500">{faculty.school || '-'}</p>
+                <p className="text-sm text-slate-500">{faculty.department || '-'}</p>
+              </div>
+              <div className="rounded-2xl border border-emerald-100 bg-emerald-50 px-5 py-4 text-center">
+                <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">Profile Completion</p>
+                <p className="mt-2 text-3xl font-bold text-emerald-700">{profile.profileCompletion ?? 0}%</p>
+              </div>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <p className="text-xs font-bold uppercase tracking-wide text-slate-400">Faculty Code</p>
+                <p className="mt-1 font-semibold text-slate-800">{faculty.faculty_code || '-'}</p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <p className="text-xs font-bold uppercase tracking-wide text-slate-400">Employee ID</p>
+                <p className="mt-1 font-semibold text-slate-800">{faculty.employee_id || '-'}</p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <p className="text-xs font-bold uppercase tracking-wide text-slate-400">Date of Joining</p>
+                <p className="mt-1 font-semibold text-slate-800">{formatDisplayDate(faculty.date_of_joining) || '-'}</p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <p className="text-xs font-bold uppercase tracking-wide text-slate-400">Experience</p>
+                <p className="mt-1 font-semibold text-slate-800">{faculty.experience_display || faculty.total_experience_years || '-'}</p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-3 text-sm text-slate-600">
+              <span>{faculty.official_email || 'Email not set'}</span>
+              <span>{faculty.phone_number || 'Phone not set'}</span>
+              <span>{faculty.office_room_cabin || 'Room not set'}</span>
+              <span>{faculty.faculty_status || 'Status not set'}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-[2fr_1fr]">
+        <div className="space-y-6">
+          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h3 className="text-xl font-bold text-slate-900">Personal & Professional Information</h3>
+            <div className="mt-5 grid gap-4 md:grid-cols-2">
+              {[
+                ['Full Name', faculty.full_name],
+                ['Display Name', faculty.display_name],
+                ['Designation', faculty.designation],
+                ['School', faculty.school],
+                ['Department', faculty.department],
+                ['Official Email', faculty.official_email],
+                ['Phone Number', faculty.phone_number],
+                ['Office Room / Cabin', faculty.office_room_cabin],
+                ['Employment Type', faculty.employment_type],
+                ['Faculty Status', faculty.faculty_status],
+                ['Date of Joining', formatDisplayDate(faculty.date_of_joining) || '-'],
+                ['Joining Designation', faculty.joining_designation],
+                ['Teaching Experience', faculty.teaching_experience_years],
+                ['Research Experience', faculty.research_experience_years],
+                ['Industry Experience', faculty.industry_experience_years],
+                ['Total Experience', faculty.total_experience_years],
+              ].map(([label, value]) => (
+                <div key={label as string} className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+                  <p className="text-xs font-bold uppercase tracking-wide text-slate-400">{label}</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-800">{value || '-'}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h3 className="text-xl font-bold text-slate-900">Academic Information</h3>
+            <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {[
+                ['Highest Qualification', faculty.highest_qualification],
+                ['Qualification Institution', faculty.qualification_institution],
+                ['Year of Qualification', faculty.year_of_qualification],
+                ['Specialization', faculty.specialization],
+                ['Subjects / Expertise', faculty.subjects_expertise],
+                ['Research Interests', faculty.research_interests],
+              ].map(([label, value]) => (
+                <div key={label as string} className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+                  <p className="text-xs font-bold uppercase tracking-wide text-slate-400">{label}</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-800">{value || '-'}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-xl font-bold text-slate-900">Profile Summary</h3>
+              <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">Snapshot</span>
+            </div>
+            <p className="mt-4 text-sm leading-7 text-slate-600">{faculty.profile_summary || 'Profile summary is not available yet.'}</p>
+          </div>
+
+          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+              <div>
+                <h3 className="text-xl font-bold text-slate-900">Timetable Assignments</h3>
+                <p className="mt-1 text-sm text-slate-500">Weekly view generated from matched timetable records.</p>
+              </div>
+              <span className="text-xs font-bold uppercase tracking-wide text-slate-400">{teachingAssignments.length} Records</span>
+            </div>
+
+            <div className="mt-5 overflow-x-auto rounded-2xl border border-slate-200">
+              {teachingAssignments.length === 0 || facultyTimeSlots.length === 0 ? (
+                <div className="p-8 text-center text-sm text-slate-400">No timetable assignments found for this faculty yet.</div>
+              ) : (
+                <table className="min-w-[900px] w-full border-collapse">
+                  <thead>
+                    <tr>
+                      <th className="w-24 border-b border-r border-slate-200 bg-slate-100 px-3 py-3 text-left text-xs font-black uppercase text-slate-600">Day</th>
+                      {facultyTimeSlots.map((slot: any) => (
+                        <th key={slot.key} className="border-b border-r border-slate-200 bg-slate-50 px-3 py-3 text-center text-xs font-black text-slate-600 last:border-r-0">
+                          {slot.start_time} - {slot.end_time}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {facultyTimetableDays.map((day) => (
+                      <tr key={day}>
+                        <th className="border-b border-r border-slate-200 bg-[#dedac2] px-3 py-4 text-left text-xs font-black uppercase text-slate-900 last:border-b-0">
+                          {day.slice(0, 3)}
+                        </th>
+                        {facultyTimeSlots.map((slot: any) => {
+                          const cellItems = getFacultyTimetableCellItems(day, slot);
+                          return (
+                            <td key={`${day}-${slot.key}`} className="h-28 min-w-36 border-b border-r border-slate-200 bg-white p-2 align-top last:border-r-0">
+                              {cellItems.length > 0 ? (
+                                <div className="space-y-2">
+                                  {cellItems.map((item: any) => (
+                                    <div key={`${item.id}-${item.course_code || item.course_name}`} className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2">
+                                      <p className="text-xs font-black uppercase leading-4 text-slate-900">{item.course_name || 'Scheduled Class'}</p>
+                                      <p className="mt-1 text-[11px] font-semibold text-slate-600">{[item.course_code, item.program, item.semester].filter(Boolean).join(' | ')}</p>
+                                      <p className="mt-1 text-[11px] text-slate-500">{[item.section ? `Section ${item.section}` : '', item.room_label || item.room_number ? `Room ${item.room_label || item.room_number}` : ''].filter(Boolean).join(' | ')}</p>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            {teachingAssignments.length > 0 && (
+              <div className="mt-6">
+                <h4 className="text-sm font-bold uppercase tracking-wide text-slate-500">Detailed List</h4>
+                <div className="mt-3 overflow-x-auto">
+                  <table className="min-w-full divide-y divide-slate-200">
+                    <thead>
+                      <tr className="text-left text-xs font-bold uppercase tracking-wide text-slate-400">
+                        <th className="px-3 py-2">Program</th>
+                        <th className="px-3 py-2">Course</th>
+                        <th className="px-3 py-2">Course Code</th>
+                        <th className="px-3 py-2">Semester</th>
+                        <th className="px-3 py-2">Section</th>
+                        <th className="px-3 py-2">Day</th>
+                        <th className="px-3 py-2">Time</th>
+                        <th className="px-3 py-2">Room</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {teachingAssignments.map((item: any) => (
+                        <tr key={item.id}>
+                          <td className="px-3 py-3 text-sm text-slate-600">{item.program || '-'}</td>
+                          <td className="px-3 py-3 text-sm font-semibold text-slate-800">{item.course_name || '-'}</td>
+                          <td className="px-3 py-3 text-sm text-slate-600">{item.course_code || '-'}</td>
+                          <td className="px-3 py-3 text-sm text-slate-600">{item.semester || '-'}</td>
+                          <td className="px-3 py-3 text-sm text-slate-600">{item.section || '-'}</td>
+                          <td className="px-3 py-3 text-sm text-slate-600">{item.day_of_week || '-'}</td>
+                          <td className="px-3 py-3 text-sm text-slate-600">{[item.start_time, item.end_time].filter(Boolean).join(' - ') || '-'}</td>
+                          <td className="px-3 py-3 text-sm text-slate-600">{item.room_label || item.room_number || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+            </div>
+        </div>
+
+        <div className="space-y-6">
+          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h3 className="text-xl font-bold text-slate-900">CV / Resume</h3>
+            <div className="mt-4 space-y-3 text-sm text-slate-600">
+              <p><span className="font-semibold text-slate-800">File:</span> {cvFileName || '-'}</p>
+              <p><span className="font-semibold text-slate-800">Uploaded On:</span> {cvUploadDate || '-'}</p>
+              <p><span className="font-semibold text-slate-800">File Size:</span> {cvFileSize || '-'}</p>
+            </div>
+            <input
+              ref={cvFileInputRef}
+              type="file"
+              accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              className="hidden"
+              onChange={handleCvUpload}
+            />
+            <div className="mt-5 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={() => cvFileInputRef.current?.click()}
+                disabled={cvUploading}
+                className="inline-flex items-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {cvUploading ? 'Uploading...' : 'Upload CV'}
+              </button>
+              {cvFilePath ? (
+                <a
+                  href={cvFilePath}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center rounded-xl bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700"
+                >
+                  View CV
+                </a>
+              ) : null}
+            </div>
+            {cvUploadStatus ? (
+              <p className={cn("mt-3 text-sm font-semibold", cvUploadStatus.includes('successfully') ? "text-emerald-700" : "text-rose-600")}>{cvUploadStatus}</p>
+            ) : !cvFilePath ? (
+              <p className="mt-3 text-sm text-slate-400">No CV file linked yet.</p>
+            ) : null}
+          </div>
+
+          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h3 className="text-xl font-bold text-slate-900">Research Identifiers</h3>
+            <div className="mt-4 space-y-4">
+              {[
+                ['ORCID ID', faculty.orcid_id, faculty.orcid_url],
+                ['Scopus Author ID', faculty.scopus_author_id, faculty.scopus_url],
+                ['Web of Science ResearcherID', faculty.web_of_science_researcherid, faculty.web_of_science_url],
+              ].map(([label, value, url]) => (
+                <div key={label as string} className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+                  <p className="text-xs font-bold uppercase tracking-wide text-slate-400">{label}</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-800">{value || '-'}</p>
+                  {url ? <a href={url as string} target="_blank" rel="noreferrer" className="mt-2 inline-block text-xs font-semibold text-emerald-700 hover:underline">{url}</a> : null}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-xl font-bold text-slate-900">Research Metrics</h3>
+              <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">{formatDisplayDate(faculty.metrics_last_updated_on) || 'Snapshot'}</span>
+            </div>
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              {metricCards.map((item) => (
+                <div key={item.label} className="rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-4">
+                  <p className="text-xs font-bold uppercase tracking-wide text-emerald-700">{item.label}</p>
+                  <p className="mt-2 text-2xl font-bold text-slate-900">{item.value}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function UserManagement() {
   const { user } = useAuth();
@@ -8683,6 +9901,7 @@ function RoomManagement() {
   const [blocks, setBlocks] = useState<any[]>([]);
   const [buildings, setBuildings] = useState<any[]>([]);
   const [rooms, setRooms] = useState<any[]>([]);
+  const [cameras, setCameras] = useState<any[]>([]);
   const [roomFilters, setRoomFilters] = useState({
     campus_id: '',
     building_id: '',
@@ -8696,7 +9915,7 @@ function RoomManagement() {
   };
 
   useEffect(() => {
-    invalidateSharedLookupCache(['/api/campuses', '/api/floors', '/api/blocks', '/api/buildings', '/api/rooms']);
+    invalidateSharedLookupCache(['/api/campuses', '/api/floors', '/api/blocks', '/api/buildings', '/api/rooms', '/api/cameras']);
     fetchSharedLookupJsons(['/api/campuses', '/api/floors', '/api/blocks', '/api/buildings']).then(([campusData, floorData, blockData, buildingData]) => {
       setCampuses(Array.isArray(campusData) ? campusData : []);
       setFloors(Array.isArray(floorData) ? floorData : []);
@@ -8704,6 +9923,7 @@ function RoomManagement() {
       setBuildings(Array.isArray(buildingData) ? buildingData : []);
     });
     refreshRooms();
+    fetchSharedLookupJson('/api/cameras').then(data => setCameras(Array.isArray(data) ? data : []));
   }, []);
 
   const getRoomLocation = (room: any) => {
@@ -9158,6 +10378,20 @@ function RoomManagement() {
       render: (item: any) => isCapacityRoomType(item.room_type) ? item.capacity : '-',
     },
     { key: 'status', label: 'Status', type: 'select', options: ['Available', 'Maintenance'] },
+    {
+      key: 'cctv_status',
+      label: 'CCTV',
+      tableOnly: true,
+      render: (item: any) => {
+        const cameraSummary = getRoomCameraSummary(cameras, item.id);
+        return cameraSummary.total > 0 ? (
+          <span className={cn('inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-bold', cameraSummary.online > 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-100 text-slate-600')}>
+            <Camera size={13} />
+            {cameraSummary.total}
+          </span>
+        ) : '-';
+      },
+    },
   ];
 
   const prepareFormData = (item: any) => {
@@ -9517,6 +10751,577 @@ function RoomManagement() {
       dataSorter={(left, right) => compareRoomsByNaturalOrder(left, right, rooms)}
       filterControls={roomFilterControls}
     />
+  );
+}
+
+const CAMERA_STATUS_STYLES: Record<string, string> = {
+  online: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  offline: 'bg-rose-50 text-rose-700 border-rose-200',
+  maintenance: 'bg-amber-50 text-amber-700 border-amber-200',
+  'not commissioned': 'bg-slate-100 text-slate-700 border-slate-200',
+};
+
+const getCameraStatusStyle = (status: unknown) =>
+  CAMERA_STATUS_STYLES[normalizeLookupValue(status)] || 'bg-slate-100 text-slate-700 border-slate-200';
+
+const maskCameraStreamUrl = (value: unknown) => {
+  const raw = value?.toString().trim() || '';
+  if (!raw) return '-';
+  return raw.replace(/(rtsp:\/\/)([^:@/\s]+):([^@/\s]+)@/i, '$1$2:********@');
+};
+
+const extractRoomLabelFromCameraArea = (value: unknown) => {
+  const raw = value?.toString().trim() || '';
+  if (!raw) return '';
+  const roomMatch = raw.match(/\b(?:room|class\s*room|lab|hall)\s*[-:]?\s*([a-z0-9][a-z0-9/-]*)\b/i);
+  if (roomMatch?.[1]) return roomMatch[1].toUpperCase();
+  const compactMatch = raw.match(/\b(?:mp|m-plaza|room)\s*[-:]?\s*([0-9]{2,5}[a-z-]*)\b/i);
+  if (compactMatch?.[1]) return compactMatch[1].toUpperCase();
+  const numberMatch = raw.match(/\b([0-9]{2,5}[a-z-]*)\b/i);
+  return numberMatch?.[1]?.toUpperCase() || raw;
+};
+
+const buildCameraCodeFromNetworkRow = (channel: unknown, area: unknown) => {
+  const channelPart = channel?.toString().trim().replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toUpperCase() || 'CAM';
+  const areaPart = area?.toString().trim().replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toUpperCase() || 'AREA';
+  return `CCTV-${areaPart}-${channelPart}`.slice(0, 80);
+};
+
+const decodeURIComponentSafely = (value: string) => {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+};
+
+const encodeRtspUserInfo = (streamUrl: unknown) => {
+  const raw = streamUrl?.toString().trim() || '';
+  const prefixMatch = raw.match(/^rtsp:\/\//i);
+  if (!prefixMatch) return raw;
+  const prefix = prefixMatch[0];
+  const rest = raw.slice(prefix.length);
+  const pathIndex = rest.search(/[/?#]/);
+  const authority = pathIndex >= 0 ? rest.slice(0, pathIndex) : rest;
+  const suffix = pathIndex >= 0 ? rest.slice(pathIndex) : '';
+  const atIndex = authority.lastIndexOf('@');
+  if (atIndex <= 0) return raw;
+  const userInfo = authority.slice(0, atIndex);
+  const host = authority.slice(atIndex + 1);
+  const colonIndex = userInfo.indexOf(':');
+  const encodedUserInfo = colonIndex >= 0
+    ? `${encodeURIComponent(decodeURIComponentSafely(userInfo.slice(0, colonIndex)))}:${encodeURIComponent(decodeURIComponentSafely(userInfo.slice(colonIndex + 1)))}`
+    : encodeURIComponent(decodeURIComponentSafely(userInfo));
+  return `${prefix}${encodedUserInfo}@${host}${suffix}`;
+};
+
+const normalizeHikvisionRtspChannelPath = (streamUrl: unknown, channel: unknown, stream: unknown) => {
+  const encodedUrl = encodeRtspUserInfo(streamUrl);
+  const channelNumber = parseInt(channel?.toString().trim() || '', 10);
+  const streamNumber = parseInt(stream?.toString().trim() || '', 10);
+  if (!encodedUrl || !Number.isFinite(channelNumber) || channelNumber <= 0 || !Number.isFinite(streamNumber) || streamNumber <= 0) {
+    return encodedUrl;
+  }
+  const expectedPathChannel = `${channelNumber}${streamNumber.toString().padStart(2, '0')}`;
+  return encodedUrl.replace(/(\/Streaming\/Channels\/)(\d+)(?=\/|\?|#|$)/i, (_match, prefix) => `${prefix}${expectedPathChannel}`);
+};
+
+const getRoomCameraItems = (cameras: any[], roomId: unknown) =>
+  (Array.isArray(cameras) ? cameras : []).filter(camera => idsMatch(camera?.room_id, roomId));
+
+const getRoomCameraSummary = (cameras: any[], roomId: unknown) => {
+  const roomCameras = getRoomCameraItems(cameras, roomId);
+  return {
+    cameras: roomCameras,
+    total: roomCameras.length,
+    online: roomCameras.filter(camera => normalizeLookupValue(camera?.status) === 'online').length,
+    maintenance: roomCameras.filter(camera => normalizeLookupValue(camera?.status) === 'maintenance').length,
+    offline: roomCameras.filter(camera => normalizeLookupValue(camera?.status) === 'offline').length,
+  };
+};
+
+function HlsVideoPlayer({ src, className }: { src: string; className?: string }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !src) return;
+    if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = src;
+      return;
+    }
+    if (!Hls.isSupported()) return;
+    const hls = new Hls({
+      liveSyncDurationCount: 3,
+      lowLatencyMode: true,
+      xhrSetup: (xhr) => {
+        xhr.withCredentials = true;
+      },
+    });
+    hls.loadSource(src);
+    hls.attachMedia(video);
+    return () => hls.destroy();
+  }, [src]);
+
+  return (
+    <video ref={videoRef} controls autoPlay muted playsInline className={className}>
+      Browser cannot play this live stream.
+    </video>
+  );
+}
+
+const getCameraPreviewUrl = (camera: any) => camera?.stream_url?.toString().trim() || '';
+
+function CameraLivePreviewPanel({ camera }: { camera: any }) {
+  const [snapshotRefreshKey, setSnapshotRefreshKey] = useState(Date.now());
+  const [rtspPreviewState, setRtspPreviewState] = useState({ loading: false, playlistUrl: '', error: '' });
+  const streamType = normalizeLookupValue(camera?.stream_type);
+  const streamUrl = getCameraPreviewUrl(camera);
+
+  useEffect(() => {
+    if (streamType !== 'http snapshot') return;
+    const timer = window.setInterval(() => setSnapshotRefreshKey(Date.now()), 3000);
+    return () => window.clearInterval(timer);
+  }, [camera?.id, streamType]);
+
+  useEffect(() => {
+    setRtspPreviewState({ loading: false, playlistUrl: '', error: '' });
+    return () => {
+      if (!camera?.id) return;
+      apiJson(`/api/cameras/${camera.id}/hls/stop`, { method: 'POST' }).catch(() => undefined);
+    };
+  }, [camera?.id]);
+
+  const startRtspPreview = async () => {
+    setRtspPreviewState({ loading: true, playlistUrl: '', error: '' });
+    try {
+      await apiJson(`/api/cameras/${camera.id}/hls/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transport: camera.stream_transport || 'TCP' }),
+      });
+      let lastStatus: any = null;
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        await new Promise(resolve => window.setTimeout(resolve, 1000));
+        const status = await apiJson(`/api/cameras/${camera.id}/hls/status`);
+        lastStatus = status;
+        if (status.playlistReady && status.playlistUrl) {
+          setRtspPreviewState({ loading: false, playlistUrl: status.playlistUrl, error: '' });
+          return;
+        }
+        if (!status.active && status.lastError) {
+          throw new Error(status.lastError);
+        }
+      }
+      if (lastStatus?.lastError) {
+        throw new Error(lastStatus.lastError);
+      }
+      throw new Error('The RTSP stream did not become playable within 30 seconds. Check the stream URL, NVR port forwarding, camera credentials, and network access from this server.');
+    } catch (err: any) {
+      const message = err.message || 'Unable to start RTSP live preview.';
+      setRtspPreviewState({
+        loading: false,
+        playlistUrl: '',
+        error: /invalid token|session expired|unauthorized/i.test(message)
+          ? 'Your login session expired. Please refresh the page and log in again, then start live preview.'
+          : message,
+      });
+    }
+  };
+
+  if (!streamUrl && streamType !== 'rtsp') {
+    return (
+      <div className="flex min-h-72 items-center justify-center rounded-2xl border border-dashed border-slate-700 bg-slate-950 text-sm font-semibold text-slate-400">
+        Stream URL is not available for this camera.
+      </div>
+    );
+  }
+  if (streamType === 'mjpeg') {
+    return <img src={streamUrl} alt={camera.camera_name || 'Camera stream'} className="h-full max-h-[60vh] w-full rounded-2xl bg-slate-950 object-contain" />;
+  }
+  if (streamType === 'http snapshot') {
+    const separator = streamUrl.includes('?') ? '&' : '?';
+    return <img src={`${streamUrl}${separator}ts=${snapshotRefreshKey}`} alt={camera.camera_name || 'Camera snapshot'} className="h-full max-h-[60vh] w-full rounded-2xl bg-slate-950 object-contain" />;
+  }
+  if (streamType === 'hls') {
+    return <HlsVideoPlayer src={streamUrl} className="h-full max-h-[60vh] w-full rounded-2xl bg-slate-950" />;
+  }
+  if (streamType === 'rtsp') {
+    const hasStreamUrl = !!streamUrl;
+    return (
+      <div className="space-y-4">
+        {rtspPreviewState.playlistUrl ? (
+          <HlsVideoPlayer src={rtspPreviewState.playlistUrl} className="h-full max-h-[60vh] w-full rounded-2xl bg-slate-950" />
+        ) : (
+          <div className="rounded-2xl border border-amber-300 bg-amber-50 p-5">
+            <p className="text-sm font-bold text-amber-900">RTSP camera needs server conversion before the browser can show live video.</p>
+            <p className="mt-3 text-sm leading-6 text-amber-800">
+              Add the exact VLC-tested RTSP URL in Stream URL, then start live preview. The server converts it to HLS with FFmpeg.
+            </p>
+            <button
+              type="button"
+              onClick={startRtspPreview}
+              disabled={rtspPreviewState.loading || !hasStreamUrl}
+              className="mt-4 inline-flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Camera size={16} />
+              {rtspPreviewState.loading ? 'Starting Preview...' : 'Start Live Preview'}
+            </button>
+            {!hasStreamUrl && (
+              <p className="mt-3 text-sm font-semibold text-red-600">Stream URL is empty. Fill the VLC-tested RTSP URL for this camera first.</p>
+            )}
+            {rtspPreviewState.error && (
+              <p className="mt-3 text-sm font-semibold text-red-600">{rtspPreviewState.error}</p>
+            )}
+          </div>
+        )}
+        <div className="rounded-xl border border-slate-700 bg-slate-800 p-3 text-xs font-semibold text-slate-200">
+          <p>Camera IP: {camera.camera_ip || '-'}</p>
+          <p>NVR IP: {camera.nvr_ip || '-'}</p>
+          <p>Port: {camera.rtsp_port || '-'}</p>
+          <p>Channel: {camera.channel_number || '-'}</p>
+          <p>Stream Number: {camera.stream_number || '-'}</p>
+          <p>Public IP: {camera.public_ip || '-'}</p>
+          <p>Transport: {camera.stream_transport || 'TCP'}</p>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="flex min-h-72 items-center justify-center rounded-2xl border border-dashed border-slate-700 bg-slate-950 text-sm font-semibold text-slate-400">
+      Live preview is not configured for this stream type.
+    </div>
+  );
+}
+
+function CameraPreviewModal({ camera, locationLabel, onClose }: { camera: any; locationLabel: string; onClose: () => void }) {
+  if (!camera) return null;
+  return (
+    <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-md">
+      <div className="max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-3xl border border-slate-800 bg-white shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 p-5">
+          <div>
+            <p className="text-xs font-black uppercase tracking-widest text-slate-400">Live Camera Preview</p>
+            <h3 className="mt-1 text-xl font-black text-slate-900">{camera.camera_name || camera.camera_code}</h3>
+            <p className="mt-1 text-sm text-slate-500">{locationLabel}</p>
+          </div>
+          <button onClick={onClose} className="rounded-xl p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+            <X size={20} />
+          </button>
+        </div>
+        <div className="space-y-4 overflow-y-auto bg-slate-900 p-5">
+          <CameraLivePreviewPanel camera={camera} />
+          <div className="grid gap-3 text-xs text-slate-300 md:grid-cols-4">
+            <div className="rounded-xl border border-slate-700 bg-slate-800 p-3">
+              <p className="font-bold uppercase tracking-widest text-slate-500">Stream Type</p>
+              <p className="mt-1 font-semibold text-white">{camera.stream_type || '-'}</p>
+            </div>
+            <div className="rounded-xl border border-slate-700 bg-slate-800 p-3">
+              <p className="font-bold uppercase tracking-widest text-slate-500">Status</p>
+              <p className="mt-1 font-semibold text-white">{camera.status || '-'}</p>
+            </div>
+            <div className="rounded-xl border border-slate-700 bg-slate-800 p-3">
+              <p className="font-bold uppercase tracking-widest text-slate-500">Make</p>
+              <p className="mt-1 font-semibold text-white">{camera.camera_make || '-'}</p>
+            </div>
+            <div className="rounded-xl border border-slate-700 bg-slate-800 p-3">
+              <p className="font-bold uppercase tracking-widest text-slate-500">Recording</p>
+              <p className="mt-1 font-semibold text-white">{normalizeBooleanLikeValue(camera.recording_enabled, false) ? 'Yes' : 'No'}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CameraSurveillanceManagement() {
+  const location = useLocation();
+  const [campuses, setCampuses] = useState<any[]>([]);
+  const [buildings, setBuildings] = useState<any[]>([]);
+  const [blocks, setBlocks] = useState<any[]>([]);
+  const [floors, setFloors] = useState<any[]>([]);
+  const [rooms, setRooms] = useState<any[]>([]);
+  const [cameras, setCameras] = useState<any[]>([]);
+  const [previewCamera, setPreviewCamera] = useState<any>(null);
+
+  const refreshCameras = async () => {
+    const data = await fetchSharedLookupJson('/api/cameras');
+    setCameras(Array.isArray(data) ? data : []);
+  };
+
+  useEffect(() => {
+    invalidateSharedLookupCache(['/api/campuses', '/api/buildings', '/api/blocks', '/api/floors', '/api/rooms', '/api/cameras']);
+    fetchSharedLookupJsons(['/api/campuses', '/api/buildings', '/api/blocks', '/api/floors', '/api/rooms']).then(([campusData, buildingData, blockData, floorData, roomData]) => {
+      setCampuses(Array.isArray(campusData) ? campusData : []);
+      setBuildings(Array.isArray(buildingData) ? buildingData : []);
+      setBlocks(Array.isArray(blockData) ? blockData : []);
+      setFloors(Array.isArray(floorData) ? floorData : []);
+      setRooms(Array.isArray(roomData) ? roomData : []);
+    });
+    refreshCameras();
+  }, []);
+
+  const getRoomLocation = (room: any) => {
+    const floor = floors.find(item => idsMatch(item.id, room?.floor_id));
+    const block = blocks.find(item => idsMatch(item.id, floor?.block_id));
+    const building = buildings.find(item => idsMatch(item.id, block?.building_id));
+    const campus = campuses.find(item => idsMatch(item.id, building?.campus_id));
+    return { floor, block, building, campus };
+  };
+
+  const getCameraRoom = (camera: any) => rooms.find(room => idsMatch(room.id, camera?.room_id));
+  const getCameraLocationLabel = (camera: any) => {
+    const room = getCameraRoom(camera);
+    if (!room) return 'Unmapped room';
+    const { floor, block, building } = getRoomLocation(room);
+    return [building?.name, block ? getBlockDisplayLabel(block, building) : '', floor ? getFloorDisplayLabel(floor, blocks, buildings) : '', getRoomDisplayLabel(room, rooms)].filter(Boolean).join(' | ');
+  };
+
+  const summaryCards = [
+    { label: 'Total Cameras', value: cameras.length, className: 'bg-slate-50 text-slate-700 border-slate-200' },
+    { label: 'Online', value: cameras.filter(camera => normalizeLookupValue(camera.status) === 'online').length, className: CAMERA_STATUS_STYLES.online },
+    { label: 'Offline', value: cameras.filter(camera => normalizeLookupValue(camera.status) === 'offline').length, className: CAMERA_STATUS_STYLES.offline },
+    { label: 'Maintenance', value: cameras.filter(camera => normalizeLookupValue(camera.status) === 'maintenance').length, className: CAMERA_STATUS_STYLES.maintenance },
+    { label: 'Recording', value: cameras.filter(camera => normalizeBooleanLikeValue(camera.recording_enabled, false)).length, className: 'bg-sky-50 text-sky-700 border-sky-200' },
+  ];
+  const requestedRoomId = new URLSearchParams(location.search).get('roomId') || '';
+  const requestedRoom = rooms.find(room => idsMatch(room.id, requestedRoomId));
+
+  const fields = [
+    { key: 'camera_code', label: 'Camera Code' },
+    { key: 'camera_name', label: 'Camera Name' },
+    { key: 'camera_ip', label: 'Camera IP', required: false },
+    {
+      key: 'camera_type',
+      label: 'Camera Type',
+      type: 'select',
+      required: false,
+      options: ['Dome', 'Bullet', 'PTZ', 'IP Camera', 'NVR Channel', 'Door Camera'],
+    },
+    { key: 'camera_make', label: 'Make', required: false },
+    {
+      key: 'building_id',
+      label: 'Building',
+      type: 'select',
+      formOnly: true,
+      resetKeys: ['block_id', 'floor_id', 'room_id'],
+      options: buildings.map(building => ({ value: building.id, label: building.name })),
+    },
+    {
+      key: 'block_id',
+      label: 'Block / Direct Floors',
+      type: 'select',
+      formOnly: true,
+      resetKeys: ['floor_id', 'room_id'],
+      options: (formData: any) => blocks
+        .filter(block => !formData.building_id || idsMatch(block.building_id, formData.building_id))
+        .map(block => {
+          const building = buildings.find(item => idsMatch(item.id, block.building_id));
+          return { value: block.id, label: getBlockDisplayLabel(block, building) };
+        }),
+    },
+    {
+      key: 'floor_id',
+      label: 'Floor',
+      type: 'select',
+      formOnly: true,
+      resetKeys: ['room_id'],
+      options: (formData: any) => floors
+        .filter(floor => !formData.block_id || idsMatch(floor.block_id, formData.block_id))
+        .map(floor => ({ value: floor.id, label: getFloorDisplayLabel(floor, blocks, buildings) })),
+    },
+    {
+      key: 'room_id',
+      label: 'Room',
+      type: 'select',
+      options: (formData: any) => rooms
+        .filter(room => !formData.floor_id || idsMatch(room.floor_id, formData.floor_id))
+        .map(room => ({ value: room.id, label: getRoomDisplayLabel(room, rooms) })),
+      render: (item: any) => getCameraLocationLabel(item),
+    },
+    { key: 'placement', label: 'Placement', required: false, placeholder: 'Inside room / Entrance / Corridor' },
+    { key: 'coverage_description', label: 'Coverage Description', type: 'textarea', required: false, rows: 2 },
+    { key: 'stream_type', label: 'Stream Type', type: 'select', options: ['HLS', 'MJPEG', 'RTSP', 'HTTP Snapshot', 'Metadata Only'] },
+    { key: 'stream_url', label: 'Stream URL', required: false, fullWidth: true, render: (item: any) => maskCameraStreamUrl(item.stream_url) },
+    { key: 'nvr_ip', label: 'NVR IP', required: false },
+    { key: 'rtsp_port', label: 'RTSP Port', required: false },
+    { key: 'channel_number', label: 'Channel Number', required: false },
+    { key: 'stream_number', label: 'Stream Number', required: false },
+    { key: 'public_ip', label: 'Public IP', required: false },
+    { key: 'stream_transport', label: 'Transport', type: 'select', required: false, options: ['TCP', 'UDP'] },
+    {
+      key: 'status',
+      label: 'Status',
+      type: 'select',
+      options: ['Online', 'Offline', 'Maintenance', 'Not Commissioned'],
+      render: (item: any) => (
+        <span className={cn('inline-flex rounded-full border px-2 py-1 text-xs font-bold', getCameraStatusStyle(item.status))}>
+          {item.status || 'Online'}
+        </span>
+      ),
+    },
+    {
+      key: 'recording_enabled',
+      label: 'Recording Enabled',
+      type: 'select',
+      required: false,
+      options: [{ value: '1', label: 'Yes' }, { value: '0', label: 'No' }],
+      render: (item: any) => normalizeBooleanLikeValue(item.recording_enabled, false) ? 'Yes' : 'No',
+    },
+    { key: 'access_level', label: 'Access Level', type: 'select', required: false, options: ['Security', 'Infrastructure Admin', 'Master Admin', 'Department Restricted'] },
+    { key: 'notes', label: 'Notes', type: 'textarea', required: false, rows: 3, fullWidth: true },
+  ];
+
+  const prepareFormData = (item: any) => {
+    const room = rooms.find(roomItem => idsMatch(roomItem.id, item?.room_id));
+    const { floor, block, building } = getRoomLocation(room);
+    return {
+      ...item,
+      building_id: building?.id || '',
+      block_id: block?.id || '',
+      floor_id: floor?.id || '',
+      recording_enabled: normalizeBooleanLikeValue(item?.recording_enabled, false) ? '1' : '0',
+    };
+  };
+
+  const prepareSubmitData = (formData: any) => ({
+    camera_code: formData.camera_code?.toString().trim(),
+    camera_name: formData.camera_name?.toString().trim(),
+    camera_ip: formData.camera_ip || '',
+    camera_type: formData.camera_type || '',
+    camera_make: formData.camera_make || '',
+    room_id: formData.room_id,
+    placement: formData.placement || '',
+    coverage_description: formData.coverage_description || '',
+    stream_type: formData.stream_type || 'Metadata Only',
+    stream_url: formData.stream_url || '',
+    nvr_ip: formData.nvr_ip || '',
+    rtsp_port: formData.rtsp_port || '',
+    channel_number: formData.channel_number || '',
+    stream_number: formData.stream_number || '',
+    public_ip: formData.public_ip || '',
+    stream_transport: formData.stream_transport || 'TCP',
+    status: formData.status || 'Online',
+    recording_enabled: normalizeBooleanLikeValue(formData.recording_enabled, false) ? 1 : 0,
+    access_level: formData.access_level || 'Security',
+    notes: formData.notes || '',
+  });
+
+  const handleImport = async (rows: any[]) => {
+    const entries: BulkImportEntry[] = [];
+    const auditRows: ImportAuditRow[] = [];
+    for (const row of rows) {
+      const cameraArea = getImportValue(row, ['Camera Area', 'CAMERA AREA']);
+      const channel = getImportValue(row, ['Channel Number', 'channel', 'Channel']);
+      const roomLabel = getImportValue(row, ['Room Number', 'Room', 'Room ID']) || extractRoomLabelFromCameraArea(cameraArea);
+      const room = findRoomByImportLabel(rooms, roomLabel);
+      if (!room) {
+        auditRows.push({
+          Row: row.__rowNumber || '',
+          'Camera Area': cameraArea || '',
+          'Room Label': roomLabel || '',
+          Status: 'Skipped',
+          Reason: `Room "${roomLabel || '-'}" was not found in Room Management.`,
+        });
+        continue;
+      }
+      const payload = prepareSubmitData({
+        camera_code: getImportValue(row, ['Camera Code']) || buildCameraCodeFromNetworkRow(channel, cameraArea),
+        camera_name: getImportValue(row, ['Camera Name']) || cameraArea,
+        camera_ip: getImportValue(row, ['Camera IP', 'CAMERA IP']),
+        camera_type: getImportValue(row, ['Camera Type', 'TYPE']),
+        camera_make: getImportValue(row, ['Make', 'MAKE']),
+        room_id: room.id,
+        placement: getImportValue(row, ['Placement']) || cameraArea,
+        coverage_description: getImportValue(row, ['Coverage Description']) || cameraArea,
+        stream_type: getImportValue(row, ['Stream Type']) || (getImportValue(row, ['NVR IP']) || getImportValue(row, ['PUBLIC IP', 'Public IP']) ? 'RTSP' : 'Metadata Only'),
+        stream_url: normalizeHikvisionRtspChannelPath(getImportValue(row, ['Stream URL']), channel, getImportValue(row, ['Stream Number'])),
+        nvr_ip: getImportValue(row, ['NVR IP']),
+        rtsp_port: getImportValue(row, ['RTSP Port', 'PORT', 'Port']),
+        channel_number: channel,
+        stream_number: getImportValue(row, ['Stream Number']),
+        public_ip: getImportValue(row, ['Public IP', 'PUBLIC IP']),
+        stream_transport: getImportValue(row, ['Transport']) || 'TCP',
+        status: getImportValue(row, ['Status']) || 'Online',
+        recording_enabled: normalizeBooleanLikeValue(getImportValue(row, ['Recording Enabled']), false) ? '1' : '0',
+        access_level: getImportValue(row, ['Access Level']) || 'Security',
+        notes: getImportValue(row, ['Notes']),
+      });
+      if (!payload.camera_code || !payload.camera_name || !payload.room_id) {
+        auditRows.push({
+          Row: row.__rowNumber || '',
+          'Camera Area': cameraArea || '',
+          'Room Label': roomLabel || '',
+          Status: 'Skipped',
+          Reason: 'Camera Code, Camera Name, and Room are required.',
+        });
+        continue;
+      }
+      entries.push({ payload, uniqueFieldGroups: [['camera_code'], ['room_id', 'camera_name']] });
+    }
+    const results = await upsertImportRecordsBulk('/api/cameras', entries);
+    const created = results.filter(result => result?.action === 'created').length;
+    const updated = results.filter(result => result?.action === 'updated').length;
+    const failed = results.filter(result => !result?.ok).length;
+    results.forEach((result, index) => {
+      if (!result?.ok) {
+        auditRows.push({
+          Row: '',
+          'Camera Area': entries[index]?.payload?.camera_name || '',
+          'Room Label': entries[index]?.payload?.room_id || '',
+          Status: 'Failed',
+          Reason: result?.error || 'Import failed.',
+        });
+      }
+    });
+    return {
+      message: `Camera import completed. Created ${created}, updated ${updated}, skipped ${rows.length - entries.length}, failed ${failed}.`,
+      auditRows,
+      auditHeaders: ['Row', 'Camera Area', 'Room Label', 'Status', 'Reason'],
+      auditTitle: 'Camera Surveillance Import Audit',
+      summary: { totalRowsRead: rows.length, validRows: entries.length, created, updated, skipped: rows.length - entries.length, failed },
+    };
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+        {summaryCards.map(card => (
+          <div key={card.label} className={cn('rounded-2xl border p-5', card.className)}>
+            <p className="text-[10px] font-black uppercase tracking-widest opacity-70">{card.label}</p>
+            <p className="mt-2 text-3xl font-black">{card.value}</p>
+          </div>
+        ))}
+      </div>
+      <GenericCRUD
+        type="Camera Surveillance"
+        fields={fields}
+        apiPath="/api/cameras"
+        onImport={handleImport}
+        prepareSubmitData={prepareSubmitData}
+        prepareFormData={prepareFormData}
+        onDataChanged={refreshCameras}
+        dataSorter={(left, right) => compareNaturalSortValues(left.camera_code, right.camera_code)}
+        serverSearchFields={['camera_code', 'camera_name', 'camera_ip', 'camera_type', 'camera_make', 'stream_type', 'status', 'placement', 'nvr_ip', 'public_ip', 'channel_number']}
+        initialSearchTerm={requestedRoom ? getRoomDisplayLabel(requestedRoom, rooms) : ''}
+        rowActions={(item: any) => (
+          <button
+            type="button"
+            onClick={() => setPreviewCamera(item)}
+            className="p-2 text-slate-400 hover:text-sky-600 transition-colors"
+            title="Live preview"
+          >
+            <Camera size={16} />
+          </button>
+        )}
+      />
+      <CameraPreviewModal
+        camera={previewCamera}
+        locationLabel={previewCamera ? getCameraLocationLabel(previewCamera) : ''}
+        onClose={() => setPreviewCamera(null)}
+      />
+    </div>
   );
 }
 
@@ -13325,7 +15130,10 @@ function SchedulingManagement() {
     { key: 'section', label: 'Section', required: false, render: (schedule: any) => schedule?.section || '-' },
     { key: 'course_code', label: 'Course Code' },
     { key: 'course_name', label: 'Course Name' },
-    { key: 'faculty', label: 'Faculty' },
+    { key: 'faculty_code', label: 'Faculty Code', required: false },
+    { key: 'faculty_display_name', label: 'Display Name', required: false },
+    { key: 'faculty_full_name', label: 'Full Name', required: false },
+    { key: 'faculty', label: 'Faculty', required: false },
     {
       key: 'room_id',
       label: 'Room',
@@ -13392,6 +15200,16 @@ function SchedulingManagement() {
       program: normalizeProgramValue(data.program) || null,
       specialization: data.specialization?.toString().trim() || null,
       section: data.section?.toString().trim() || null,
+      faculty_code: data.faculty_code?.toString().trim() || null,
+      faculty_display_name: data.faculty_display_name?.toString().trim() || null,
+      faculty_full_name: data.faculty_full_name?.toString().trim() || null,
+      faculty: (
+        data.faculty?.toString().trim() ||
+        data.faculty_display_name?.toString().trim() ||
+        data.faculty_full_name?.toString().trim() ||
+        data.faculty_code?.toString().trim() ||
+        null
+      ),
       semester: normalizedSemester || data.semester,
       year_of_study: derivedYearNumber ? derivedYearNumber.toString() : normalizeYearOfStudyValue(data.year_of_study) || null,
     };
@@ -13495,6 +15313,11 @@ function SchedulingManagement() {
         normalizeYearOfStudyValue(getImportValue(row, [EXACT_SEMESTER_LABEL, 'Semester', 'Term']));
       const normalizedSemester = normalizeExactSemesterValue(getImportValue(row, [EXACT_SEMESTER_LABEL, 'Semester', 'Term']), normalizedYear, '');
       const derivedYearNumber = getYearNumberFromAcademicContext(normalizedYear, normalizedSemester);
+      const facultyCode = getFacultyImportValue(row, ['Faculty Code']);
+      const facultyDisplayName = getFacultyImportValue(row, ['Display Name', 'Faculty Display Name']);
+      const facultyFullName = getFacultyImportValue(row, ['Full Name', 'Faculty Full Name']);
+      const legacyFaculty = getFacultyImportValue(row, ['Faculty']);
+      const facultyLabel = legacyFaculty || facultyDisplayName || facultyFullName || facultyCode;
       const sessionPayload = {
         department_id: dept?.id,
         program: program || null,
@@ -13503,7 +15326,10 @@ function SchedulingManagement() {
         section: section || null,
         course_code: row['Course Code'],
         course_name: courseName,
-        faculty: row['Faculty'],
+        faculty_code: facultyCode || null,
+        faculty_display_name: facultyDisplayName || null,
+        faculty_full_name: facultyFullName || null,
+        faculty: facultyLabel || null,
         day_of_week: dayOfWeek,
         start_time: startTime,
         end_time: endTime,
@@ -23698,12 +25524,14 @@ function ReportGeneration() {
 
 function TimetableBuilder() {
   const { user, selectedHodDepartmentId, setSelectedHodDepartmentId } = useAuth();
+  const navigate = useNavigate();
   const location = useLocation();
   const TIMETABLE_ROOM_STATUS_OPTIONS = ['All', 'Scheduled', 'Unscheduled'] as const;
   const [schedules, setSchedules] = useState<any[]>([]);
   const [rooms, setRooms] = useState<any[]>([]);
   const [schools, setSchools] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
+  const [faculties, setFaculties] = useState<any[]>([]);
   const [academicCalendars, setAcademicCalendars] = useState<any[]>([]);
   const [timingProfiles, setTimingProfiles] = useState<any[]>([]);
   const [batchRoomAllocations, setBatchRoomAllocations] = useState<any[]>([]);
@@ -24079,6 +25907,33 @@ function TimetableBuilder() {
     [activeTimingProfile],
   );
 
+  const facultyLookup = useMemo(() => {
+    const lookup = new Map<string, any[]>();
+    (faculties || []).forEach((faculty: any) => {
+      [
+        faculty?.faculty_code,
+        faculty?.display_name,
+        faculty?.full_name,
+      ].forEach((value) => appendLookupCandidate(lookup, normalizeLookupValue(value), faculty));
+    });
+    return lookup;
+  }, [faculties]);
+
+  const getFacultyProfilePath = (...facultyIdentifiers: unknown[]) => {
+    for (const identifier of facultyIdentifiers) {
+      const matches = facultyLookup.get(normalizeLookupValue(identifier)) || [];
+      const matchedFaculty = matches[0];
+      const facultyCode = matchedFaculty?.faculty_code?.toString?.().trim?.() || '';
+      if (facultyCode) return `/faculties/${encodeURIComponent(facultyCode)}`;
+    }
+    return '';
+  };
+  const getScheduleFacultyProfilePath = (schedule: any) => {
+    const matchedFaculty = resolveFacultyProfileFromSchedule(schedule, faculties, departments, schools);
+    const facultyCode = matchedFaculty?.faculty_code?.toString?.().trim?.() || '';
+    return facultyCode ? `/faculties/${encodeURIComponent(facultyCode)}` : '';
+  };
+
   const mergedRoomTimingProfileSlots = useMemo(() => getMergedTimingProfileSlotsForSchedules({
     contexts: roomTimingContexts,
     timingProfiles,
@@ -24153,6 +26008,7 @@ function TimetableBuilder() {
         : await fetchSharedLookupJson('/api/schools');
       const dData = Array.isArray(bundle?.departments) ? bundle.departments
         : await fetchSharedLookupJson('/api/departments');
+      const facultyData = await fetchSharedLookupJson('/api/faculties');
       const cData = Array.isArray(bundle?.academic_calendars) ? bundle.academic_calendars
         : await fetchSharedLookupJson('/api/academic_calendars');
       const tpData = Array.isArray(bundle?.timing_profiles) ? bundle.timing_profiles
@@ -24172,6 +26028,7 @@ function TimetableBuilder() {
       setRooms(rData);
       setSchools(Array.isArray(schoolData) ? schoolData : []);
       setDepartments(dData);
+      setFaculties(Array.isArray(facultyData) ? facultyData : []);
       setAcademicCalendars(Array.isArray(cData) ? cData : []);
       setTimingProfiles(Array.isArray(tpData) ? tpData : []);
       setBatchRoomAllocations(Array.isArray(baData) ? baData : []);
@@ -24702,11 +26559,27 @@ function TimetableBuilder() {
                               </button>
                             )}
                             <h5 className="pr-6 text-sm font-bold text-slate-800 mb-1 line-clamp-1">{s.course_name}</h5>
-                            <p className="text-[10px] text-slate-500 font-medium mb-2">
-                              {s.isCombinedSummary
-                                ? [s.combinedAudience, s.course_code, s.faculty].filter(Boolean).join(' | ')
-                                : [s.specialization || '', s.section ? `Section ${s.section}` : '', s.course_code, s.faculty].filter(Boolean).join(' | ')}
-                            </p>
+                            <div className="mb-2 text-[10px] text-slate-500 font-medium">
+                              <p>
+                                {s.isCombinedSummary
+                                  ? [s.combinedAudience, s.course_code].filter(Boolean).join(' | ')
+                                  : [s.specialization || '', s.section ? `Section ${s.section}` : '', s.course_code].filter(Boolean).join(' | ')}
+                                {s.faculty ? ((s.isCombinedSummary
+                                  ? [s.combinedAudience, s.course_code].filter(Boolean).length
+                                  : [s.specialization || '', s.section ? `Section ${s.section}` : '', s.course_code].filter(Boolean).length) > 0 ? ' | ' : '') : ''}
+                                {getScheduleFacultyProfilePath(s) || getFacultyProfilePath(s.faculty_code, s.faculty_display_name, s.faculty_full_name, s.faculty) ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => navigate(getScheduleFacultyProfilePath(s) || getFacultyProfilePath(s.faculty_code, s.faculty_display_name, s.faculty_full_name, s.faculty))}
+                                    className="font-bold text-emerald-700 hover:text-emerald-800 hover:underline"
+                                  >
+                                    {s.faculty}
+                                  </button>
+                                ) : (
+                                  <span>{s.faculty}</span>
+                                )}
+                              </p>
+                            </div>
                             {slot.state === 'split' && (
                               <p className="text-[10px] text-violet-700 font-medium mb-2">
                                 Rooms: {getSplitClassRoomSummary(slot.schedules, daySchedules, rooms)}
@@ -24833,6 +26706,7 @@ function DigitalTwin() {
   const [blocks, setBlocks] = useState<any[]>([]);
   const [floors, setFloors] = useState<any[]>([]);
   const [rooms, setRooms] = useState<any[]>([]);
+  const [cameras, setCameras] = useState<any[]>([]);
   const [maintenance, setMaintenance] = useState<any[]>([]);
   const [schedules, setSchedules] = useState<any[]>([]);
   const [bookings, setBookings] = useState<any[]>([]);
@@ -24855,6 +26729,8 @@ function DigitalTwin() {
   const [loadingAi, setLoadingAi] = useState(false);
   const [aiOptimizationError, setAiOptimizationError] = useState('');
   const [aiOptimizationSource, setAiOptimizationSource] = useState<'ai' | 'fallback' | ''>('');
+  const [previewCamera, setPreviewCamera] = useState<any>(null);
+  const [cameraPickerRoom, setCameraPickerRoom] = useState<any>(null);
   const [filters, setFilters] = useState({
     search: '',
     status: '',
@@ -24883,6 +26759,7 @@ function DigitalTwin() {
         blData,
         fData,
         rData,
+        cameraData,
         liveData,
         aData,
         baData,
@@ -24894,6 +26771,7 @@ function DigitalTwin() {
         fetchSharedLookupJson('/api/blocks'),
         fetchSharedLookupJson('/api/floors'),
         fetchSharedLookupJson('/api/rooms'),
+        fetchSharedLookupJson('/api/cameras'),
         apiJson('/api/digital-twin/live-data'),
         fetchSharedLookupJson('/api/department_allocations'),
         fetchSharedLookupJson('/api/batch_room_allocations'),
@@ -24906,6 +26784,7 @@ function DigitalTwin() {
       setFloors(fData);
       setBuildings(bData);
       setRooms(rData);
+      setCameras(Array.isArray(cameraData) ? cameraData : []);
       setMaintenance(Array.isArray(liveData?.maintenance) ? liveData.maintenance : []);
       setSchedules(Array.isArray(liveData?.schedules) ? liveData.schedules : []);
       setBookings(Array.isArray(liveData?.bookings) ? liveData.bookings : []);
@@ -25185,6 +27064,32 @@ function DigitalTwin() {
     });
     return map;
   }, [buildings, blocksByBuildingId, floorsByBlockId, roomsByFloorId]);
+
+  const getDigitalTwinRoomLocationLabel = (room: any) => {
+    const floor = floorById.get(toKey(room?.floor_id));
+    const block = blockById.get(toKey(floor?.block_id));
+    const building = buildingById.get(toKey(block?.building_id));
+    return [building?.name, block ? getBlockDisplayLabel(block, building) : '', floor ? getFloorDisplayLabel(floor, blocks, buildings) : '', getRoomDisplayLabel(room, rooms)]
+      .filter(Boolean)
+      .join(' | ');
+  };
+
+  const getDigitalTwinCameraLocationLabel = (camera: any) => {
+    const room = rooms.find((item: any) => idsMatch(item.id, camera?.room_id));
+    return room ? getDigitalTwinRoomLocationLabel(room) : 'Unmapped room';
+  };
+
+  const openRoomCameraPreview = (room: any) => {
+    const roomCameras = getRoomCameraItems(cameras, room?.id);
+    if (roomCameras.length === 1) {
+      setPreviewCamera(roomCameras[0]);
+      setCameraPickerRoom(null);
+      return;
+    }
+    if (roomCameras.length > 1) {
+      setCameraPickerRoom(room);
+    }
+  };
 
   const dedupedSchedules = useMemo(
     () => deduplicateScheduleRows(schedules),
@@ -26115,6 +28020,7 @@ function DigitalTwin() {
               const roomContextCount = getRoomContextCount(r);
               const liveSnapshot = getLiveRoomSnapshot(r);
               const statusTheme = DIGITAL_TWIN_STATUS_STYLES[twinStatus];
+              const cameraSummary = getRoomCameraSummary(cameras, r.id);
               return (
               <div 
                 key={r.id} 
@@ -26125,7 +28031,28 @@ function DigitalTwin() {
               >
                 <div className="flex justify-between items-start mb-4">
                   <span className="text-lg font-bold text-white">{r.room_number}</span>
-                  <div className={cn("w-3 h-3 rounded-full", statusTheme.darkDot)} />
+                  <div className="flex items-center gap-2">
+                    {cameraSummary.total > 0 && (
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openRoomCameraPreview(r);
+                        }}
+                        className={cn(
+                          'inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[10px] font-black transition-colors',
+                          cameraSummary.online > 0
+                            ? 'border-emerald-400/30 bg-emerald-400/15 text-emerald-200 hover:bg-emerald-400/25'
+                            : 'border-slate-500/40 bg-slate-700/50 text-slate-300 hover:bg-slate-700'
+                        )}
+                        title={cameraSummary.total === 1 ? 'Open live camera preview' : 'Choose camera'}
+                      >
+                        <Camera size={12} />
+                        {cameraSummary.total}
+                      </button>
+                    )}
+                    <div className={cn("w-3 h-3 rounded-full", statusTheme.darkDot)} />
+                  </div>
                 </div>
                 <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest mb-1">{getRoomTypeDisplay(r)}</p>
                 <p className="text-[10px] text-slate-300 font-bold mb-1">{twinStatus}</p>
@@ -26198,6 +28125,16 @@ function DigitalTwin() {
                 <div className="flex items-center justify-between mt-4">
                   <span className="text-[10px] font-bold text-slate-500">CAP: {r.capacity}</span>
                   <span className="text-[10px] font-bold text-slate-500">CLS: {roomSchedules.length}</span>
+                  {cameraSummary.total > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => openRoomCameraPreview(r)}
+                      className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-300 hover:text-emerald-200"
+                    >
+                      <Camera size={12} />
+                      CCTV {cameraSummary.online}/{cameraSummary.total}
+                    </button>
+                  )}
                   {getRoomMaintenance(r).length > 0 && (
                     <AlertTriangle size={14} className="text-amber-500" />
                   )}
@@ -26261,6 +28198,48 @@ function DigitalTwin() {
           </div>
         </div>
       )}
+      {cameraPickerRoom && (
+        <div className="fixed inset-0 z-[115] flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-md">
+          <div className="w-full max-w-lg rounded-3xl border border-slate-800 bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 p-5">
+              <div>
+                <p className="text-xs font-black uppercase tracking-widest text-slate-400">Choose Camera</p>
+                <h3 className="mt-1 text-xl font-black text-slate-900">{getRoomDisplayLabel(cameraPickerRoom, rooms)}</h3>
+                <p className="mt-1 text-sm text-slate-500">{getDigitalTwinRoomLocationLabel(cameraPickerRoom)}</p>
+              </div>
+              <button onClick={() => setCameraPickerRoom(null)} className="rounded-xl p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="space-y-3 p-5">
+              {getRoomCameraItems(cameras, cameraPickerRoom.id).map((camera: any) => (
+                <button
+                  key={camera.id}
+                  type="button"
+                  onClick={() => {
+                    setPreviewCamera(camera);
+                    setCameraPickerRoom(null);
+                  }}
+                  className="flex w-full items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-left transition hover:border-emerald-300 hover:bg-emerald-50"
+                >
+                  <span>
+                    <span className="block text-sm font-black text-slate-900">{camera.camera_name || camera.camera_code}</span>
+                    <span className="mt-1 block text-xs font-semibold text-slate-500">{camera.camera_ip || camera.nvr_ip || 'Camera network details not set'}</span>
+                  </span>
+                  <span className={cn('rounded-full border px-2 py-1 text-[10px] font-black', getCameraStatusStyle(camera.status))}>
+                    {camera.status || 'Online'}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+      <CameraPreviewModal
+        camera={previewCamera}
+        locationLabel={previewCamera ? getDigitalTwinCameraLocationLabel(previewCamera) : ''}
+        onClose={() => setPreviewCamera(null)}
+      />
     </div>
   );
 }

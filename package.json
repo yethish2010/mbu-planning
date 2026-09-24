@@ -27,6 +27,7 @@
     "dotenv": "^17.2.3",
     "exceljs": "^4.4.0",
     "express": "^4.21.2",
+    "hls.js": "^1.6.15",
     "jsonwebtoken": "^9.0.3",
     "jspdf": "^4.2.0",
     "jspdf-autotable": "^5.0.7",
