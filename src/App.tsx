@@ -10840,7 +10840,7 @@ const getRoomCameraSummary = (cameras: any[], roomId: unknown) => {
   };
 };
 
-function HlsVideoPlayer({ src, className }: { src: string; className?: string }) {
+function HlsVideoPlayer({ src, className, onStreamError }: { src: string; className?: string; onStreamError?: (message: string) => void }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   useEffect(() => {
@@ -10848,6 +10848,7 @@ function HlsVideoPlayer({ src, className }: { src: string; className?: string })
     if (!video || !src) return;
     if (video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = src;
+      video.onerror = () => onStreamError?.('Browser could not continue playing this live stream.');
       return;
     }
     if (!Hls.isSupported()) return;
@@ -10858,10 +10859,15 @@ function HlsVideoPlayer({ src, className }: { src: string; className?: string })
         xhr.withCredentials = true;
       },
     });
+    hls.on(Hls.Events.ERROR, (_event, data) => {
+      if (data?.fatal) {
+        onStreamError?.(data?.details ? `Live stream playback failed: ${data.details}.` : 'Live stream playback failed.');
+      }
+    });
     hls.loadSource(src);
     hls.attachMedia(video);
     return () => hls.destroy();
-  }, [src]);
+  }, [src, onStreamError]);
 
   return (
     <video ref={videoRef} controls autoPlay muted playsInline className={className}>
@@ -10891,6 +10897,51 @@ function CameraLivePreviewPanel({ camera }: { camera: any }) {
       apiJson(`/api/cameras/${camera.id}/hls/stop`, { method: 'POST' }).catch(() => undefined);
     };
   }, [camera?.id]);
+
+  useEffect(() => {
+    if (streamType !== 'rtsp' || !camera?.id || !rtspPreviewState.playlistUrl) return;
+    let cancelled = false;
+    const checkStreamHealth = async () => {
+      try {
+        const status = await apiJson(`/api/cameras/${camera.id}/hls/status`);
+        if (cancelled) return;
+        if (!status.active || !status.running || status.stale || !status.playlistReady) {
+          setRtspPreviewState({
+            loading: false,
+            playlistUrl: '',
+            error: status.lastError || 'Live stream stopped. Start preview again.',
+          });
+        }
+      } catch (err: any) {
+        if (cancelled) return;
+        const message = err.message || 'Unable to verify live stream health.';
+        setRtspPreviewState({
+          loading: false,
+          playlistUrl: '',
+          error: /invalid token|session expired|unauthorized/i.test(message)
+            ? 'Your login session expired. Please refresh the page and log in again, then start live preview.'
+            : message,
+        });
+      }
+    };
+    const timer = window.setInterval(checkStreamHealth, 5000);
+    checkStreamHealth();
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [camera?.id, rtspPreviewState.playlistUrl, streamType]);
+
+  const handlePlaybackError = (message: string) => {
+    setRtspPreviewState(current => {
+      if (!current.playlistUrl) return current;
+      return {
+        loading: false,
+        playlistUrl: '',
+        error: message || 'Live stream playback stopped. Start preview again.',
+      };
+    });
+  };
 
   const startRtspPreview = async () => {
     setRtspPreviewState({ loading: true, playlistUrl: '', error: '' });
@@ -10951,7 +11002,7 @@ function CameraLivePreviewPanel({ camera }: { camera: any }) {
     return (
       <div className="space-y-4">
         {rtspPreviewState.playlistUrl ? (
-          <HlsVideoPlayer src={rtspPreviewState.playlistUrl} className="h-full max-h-[60vh] w-full rounded-2xl bg-slate-950" />
+          <HlsVideoPlayer src={rtspPreviewState.playlistUrl} onStreamError={handlePlaybackError} className="h-full max-h-[60vh] w-full rounded-2xl bg-slate-950" />
         ) : (
           <div className="rounded-2xl border border-amber-300 bg-amber-50 p-5">
             <p className="text-sm font-bold text-amber-900">RTSP camera needs server conversion before the browser can show live video.</p>

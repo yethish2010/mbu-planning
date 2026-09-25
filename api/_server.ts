@@ -4013,14 +4013,20 @@ const localUploadPathExists = async (urlPath: string) => {
   }
 };
 
-const activeCameraStreams = new Map<string, {
+type CameraStreamState = {
   process: ChildProcessWithoutNullStreams;
   directory: string;
   playlistPath: string;
   startedAt: number;
+  exitedAt: number | null;
+  exitCode: number | null;
+  exitSignal: NodeJS.Signals | null;
   lastError: string;
-}>();
+};
+
+const activeCameraStreams = new Map<string, CameraStreamState>();
 const recentCameraStreamErrors = new Map<string, string>();
+const CAMERA_STREAM_STALE_AFTER_MS = 15000;
 
 let ffmpegAvailability: Promise<boolean> | null = null;
 
@@ -4162,6 +4168,73 @@ const stopCameraStreamProcess = (cameraId: any) => {
 const rememberCameraStreamError = (key: string, message: any) => {
   const sanitized = maskSensitiveStreamUrl(message?.toString?.() || "").trim();
   if (sanitized) recentCameraStreamErrors.set(key, sanitized.slice(-1200));
+};
+
+const getCameraStreamHealth = async (key: string, active: CameraStreamState | undefined) => {
+  let playlistReady = false;
+  let playlistUpdatedAt: number | null = null;
+  let latestSegmentUpdatedAt: number | null = null;
+  let segmentCount = 0;
+
+  if (active) {
+    try {
+      const playlistStat = await fs.promises.stat(active.playlistPath);
+      playlistReady = playlistStat.isFile();
+      playlistUpdatedAt = playlistStat.mtimeMs;
+    } catch {
+      playlistReady = false;
+    }
+
+    try {
+      const entries = await fs.promises.readdir(active.directory, { withFileTypes: true });
+      const segmentStats = await Promise.all(
+        entries
+          .filter(entry => entry.isFile() && /\.ts$/i.test(entry.name))
+          .map(async (entry) => {
+            try {
+              const stat = await fs.promises.stat(path.join(active.directory, entry.name));
+              return stat.mtimeMs;
+            } catch {
+              return 0;
+            }
+          }),
+      );
+      const validSegmentStats = segmentStats.filter(Boolean);
+      segmentCount = validSegmentStats.length;
+      latestSegmentUpdatedAt = validSegmentStats.length ? Math.max(...validSegmentStats) : null;
+    } catch {
+      segmentCount = 0;
+    }
+  }
+
+  const running = !!active && active.exitCode === null && active.exitSignal === null && !active.process.killed;
+  const lastUpdateAt = Math.max(playlistUpdatedAt || 0, latestSegmentUpdatedAt || 0) || null;
+  const stale = !!active && playlistReady && running && !!lastUpdateAt && Date.now() - lastUpdateAt > CAMERA_STREAM_STALE_AFTER_MS;
+  const lastError = active?.lastError || recentCameraStreamErrors.get(key) || "";
+  const exitMessage = !active
+    ? (lastError || "Live stream process is not running. Start preview again.")
+    : active.exitedAt
+      ? (lastError || `FFmpeg stopped. Exit code: ${active.exitCode ?? "-"}, signal: ${active.exitSignal ?? "-"}.`)
+      : "";
+  const staleMessage = stale
+    ? "Live stream stopped updating. The camera or NVR dropped the RTSP feed; start preview again."
+    : "";
+
+  return {
+    active: !!active,
+    running,
+    startedAt: active?.startedAt || null,
+    exitedAt: active?.exitedAt || null,
+    exitCode: active?.exitCode ?? null,
+    exitSignal: active?.exitSignal || null,
+    playlistReady,
+    playlistUrl: playlistReady ? `/api/camera-streams/${key}/index.m3u8` : "",
+    playlistUpdatedAt,
+    latestSegmentUpdatedAt,
+    segmentCount,
+    stale,
+    lastError: staleMessage || exitMessage || lastError,
+  };
 };
 
 const normalizeOptionalNumberField = (value: any) => {
@@ -7659,11 +7732,14 @@ app.post("/api/cameras/:id/hls/start", authenticate, async (req, res) => {
       playlistPath,
     ];
     const processHandle = spawn(getFfmpegPath(), ffmpegArgs, { windowsHide: true });
-    const streamState = {
+    const streamState: CameraStreamState = {
       process: processHandle,
       directory: streamDirectory,
       playlistPath,
       startedAt: Date.now(),
+      exitedAt: null,
+      exitCode: null,
+      exitSignal: null,
       lastError: "",
     };
     activeCameraStreams.set(key, streamState);
@@ -7673,6 +7749,9 @@ app.post("/api/cameras/:id/hls/start", authenticate, async (req, res) => {
       rememberCameraStreamError(key, streamState.lastError);
     });
     processHandle.once("exit", (code, signal) => {
+      streamState.exitedAt = Date.now();
+      streamState.exitCode = code;
+      streamState.exitSignal = signal;
       if (streamState.lastError) {
         rememberCameraStreamError(key, streamState.lastError);
       } else if (code !== 0) {
@@ -7706,14 +7785,7 @@ app.post("/api/cameras/:id/hls/stop", authenticate, async (req, res) => {
 app.get("/api/cameras/:id/hls/status", authenticate, async (req, res) => {
   const key = sanitizeCameraStreamSessionKey(req.params.id);
   const active = activeCameraStreams.get(key);
-  const playlistReady = active ? fs.existsSync(active.playlistPath) : false;
-  res.json({
-    active: !!active,
-    startedAt: active?.startedAt || null,
-    playlistReady,
-    playlistUrl: playlistReady ? `/api/camera-streams/${key}/index.m3u8` : "",
-    lastError: active?.lastError || recentCameraStreamErrors.get(key) || "",
-  });
+  res.json(await getCameraStreamHealth(key, active));
 });
 
 createCrudRoutes("faculties");
