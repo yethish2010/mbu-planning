@@ -18,6 +18,7 @@ campus.db
 .codex-work/
 tools/ffmpeg/
 tools/ffmpeg-download/
+camera-streams/
 
 # Database exports
 smart_campus_export.sql
