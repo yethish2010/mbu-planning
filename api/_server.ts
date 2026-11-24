@@ -1705,21 +1705,31 @@ const getBookingTimingPolicyDetails = async (booking: any) => {
   return { purposeType, timingProfile, slots, slotWindows, matchesWindow, timingOverride };
 };
 
-const normalizeTimingProfilePayload = async (payload: any) => {
+const normalizeTimingProfilePayload = async (payload: any, referenceCache?: Map<string, any>) => {
   const nextPayload = { ...payload };
   const departmentId = nextPayload.department_id ? Number(nextPayload.department_id) : null;
   const schoolId = nextPayload.school_id ? Number(nextPayload.school_id) : null;
 
-  const department = departmentId
-    ? await db.prepare("SELECT id, school_id FROM departments WHERE id = ?").get(departmentId) as any
-    : null;
+  const departmentCacheKey = departmentId ? `department:${departmentId}` : "";
+  let department = departmentCacheKey ? referenceCache?.get(departmentCacheKey) : null;
+  if (department === undefined || (!department && departmentId)) {
+    department = departmentId
+      ? await db.prepare("SELECT id, school_id FROM departments WHERE id = ?").get(departmentId) as any
+      : null;
+    if (departmentCacheKey) referenceCache?.set(departmentCacheKey, department);
+  }
 
   if (departmentId && !department) {
     throw new Error("Please select a valid department.");
   }
 
   if (schoolId) {
-    const school = await db.prepare("SELECT id FROM schools WHERE id = ?").get(schoolId) as any;
+    const schoolCacheKey = `school:${schoolId}`;
+    let school = referenceCache?.get(schoolCacheKey);
+    if (school === undefined) {
+      school = await db.prepare("SELECT id FROM schools WHERE id = ?").get(schoolId) as any;
+      referenceCache?.set(schoolCacheKey, school);
+    }
     if (!school) {
       throw new Error("Please select a valid school.");
     }
@@ -2247,6 +2257,7 @@ const buildScheduleCodePrefix = (department: any, program: any, specialization: 
 type BulkImportContext = {
   tableName: string;
   records: any[];
+  referenceByKey: Map<string, any>;
   departmentById: Map<string, any>;
   roomById: Map<string, any>;
   roomBookableErrorByRoomId: Map<string, string | null>;
@@ -2259,6 +2270,7 @@ type BulkImportContext = {
 const createBulkImportContext = (tableName: string, records: any[]): BulkImportContext => ({
   tableName,
   records,
+  referenceByKey: new Map(),
   departmentById: new Map(),
   roomById: new Map(),
   roomBookableErrorByRoomId: new Map(),
@@ -4896,7 +4908,10 @@ const normalizeBulkImportPayload = async (tableName: string, payload: any, exist
     nextPayload = await normalizeAcademicCalendarPayload(existingItem ? { ...existingItem, ...nextPayload } : nextPayload);
   }
   if (tableName === "timing_profiles") {
-    nextPayload = await normalizeTimingProfilePayload(existingItem ? { ...existingItem, ...nextPayload } : nextPayload);
+    nextPayload = await normalizeTimingProfilePayload(
+      existingItem ? { ...existingItem, ...nextPayload } : nextPayload,
+      context?.referenceByKey,
+    );
   }
   if (tableName === "batch_room_allocations") {
     nextPayload = await normalizeBatchRoomAllocationPayload(existingItem ? { ...existingItem, ...nextPayload } : nextPayload);

@@ -260,6 +260,49 @@ const sanitizeExtractedSchedule = (schedule: any) => {
 const normalizeLookupValue = (value: unknown) =>
   value?.toString().trim().toLowerCase().replace(/\s+/g, ' ') || '';
 
+// Import files often use descriptive hierarchy labels while master data uses a
+// short code (for example, "School of Computing" and "SoC"). Keep the normal
+// exact name/code lookup first, then use these keys only as an unambiguous
+// fallback for hierarchy imports.
+const getHierarchyImportLookupKeys = (value: unknown) => {
+  const normalized = normalizeLookupValue(value);
+  if (!normalized) return [];
+
+  const words = normalized.replace(/[^a-z0-9]+/g, ' ').split(' ').filter(Boolean);
+  const meaningfulWords = words.filter(word => !['school', 'department', 'of', 'and', 'the', 'for'].includes(word));
+
+  return Array.from(new Set([
+    normalized,
+    words.join(''),
+    words.map(word => word[0]).join(''),
+    meaningfulWords.join(' '),
+    meaningfulWords.join(''),
+    meaningfulWords.map(word => word[0]).join(''),
+  ].filter(Boolean)));
+};
+
+const findHierarchyImportRecord = <T extends Record<string, any>>(
+  records: T[],
+  importValue: unknown,
+  lookupFields: string[],
+) => {
+  const normalizedImportValue = normalizeLookupValue(importValue);
+  if (!normalizedImportValue) return undefined;
+
+  const exactMatch = records.find(record => lookupFields.some(field =>
+    normalizeLookupValue(record?.[field]) === normalizedImportValue,
+  ));
+  if (exactMatch) return exactMatch;
+
+  const importKeys = new Set(getHierarchyImportLookupKeys(importValue));
+  const fallbackMatches = records.filter(record => lookupFields.some(field =>
+    getHierarchyImportLookupKeys(record?.[field]).some(key => importKeys.has(key)),
+  ));
+
+  // Never guess when two master records share an abbreviation or alias.
+  return fallbackMatches.length === 1 ? fallbackMatches[0] : undefined;
+};
+
 const isMeaningfulProfileFileValue = (value: unknown) => {
   const normalized = normalizeLookupValue(value);
   return !!normalized && !['-', '--', 'na', 'n/a', 'none', 'null', 'not found'].includes(normalized);
@@ -2299,21 +2342,40 @@ type BulkImportEntry = {
   uniqueFieldGroups: string[][];
 };
 
+const isServerlessInvocationTimeout = (error: any) =>
+  /function_invocation_timeout|function invocation timeout|timed out/i.test(error?.message || '');
+
 const upsertImportRecordsBulk = async (
   apiPath: string,
   entries: BulkImportEntry[],
-  chunkSize: number = 200,
+  // Keep each request comfortably below serverless execution limits. Imports
+  // remain idempotent: a retry updates a matching record instead of creating it.
+  chunkSize: number = 10,
 ) => {
   if (!Array.isArray(entries) || entries.length === 0) return [];
 
   const results: Array<{ ok: boolean; record?: any; action?: 'created' | 'updated'; error?: string }> = [];
   for (let start = 0; start < entries.length; start += chunkSize) {
     const chunk = entries.slice(start, start + chunkSize);
-    const response = await apiJson(`${apiPath}/import-bulk`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ entries: chunk }),
-    });
+    let response: any;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        response = await apiJson(`${apiPath}/import-bulk`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ entries: chunk }),
+        });
+        break;
+      } catch (error: any) {
+        if (attempt === 0 && isServerlessInvocationTimeout(error)) {
+          // All imports are upserts, so resending a timed-out batch safely
+          // updates any records that were committed before the timeout.
+          await new Promise(resolve => window.setTimeout(resolve, 500));
+          continue;
+        }
+        throw error;
+      }
+    }
     const chunkResults = Array.isArray(response?.results) ? response.results : [];
     results.push(...chunkResults);
   }
@@ -7542,6 +7604,7 @@ function GenericCRUD({
   const [editingItem, setEditingItem] = useState<any>(null);
   const [formData, setFormData] = useState<any>({});
   const [isImporting, setIsImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState<{ percent: number; status: string } | null>(null);
   const [lastImportAudit, setLastImportAudit] = useState<ImportAuditResult | null>(null);
   const [visiblePasswordFields, setVisiblePasswordFields] = useState<Record<string, boolean>>({});
   const [openMultiSelectKey, setOpenMultiSelectKey] = useState<string | null>(null);
@@ -7790,10 +7853,25 @@ function GenericCRUD({
     if (!file) return;
 
     setIsImporting(true);
+    setImportProgress({ percent: 0, status: `Reading ${file.name}` });
     setLastImportAudit(null);
     const reader = new FileReader();
+    reader.onprogress = (event) => {
+      if (!event.lengthComputable) return;
+      // Reading is a real measurable portion of the import. The remaining
+      // phases are shown explicitly while the module validates and saves rows.
+      const percent = Math.max(1, Math.min(30, Math.round((event.loaded / event.total) * 30)));
+      setImportProgress({ percent, status: `Reading ${file.name}` });
+    };
+    reader.onerror = () => {
+      setIsImporting(false);
+      setImportProgress(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      alert('Import failed: the selected Excel file could not be read.');
+    };
     reader.onload = async (evt) => {
       try {
+        setImportProgress({ percent: 35, status: 'Reading workbook sheets' });
         const bstr = evt.target?.result;
         const wb = XLSX.read(bstr, { type: 'binary' });
         const importSheetNames = wb.SheetNames.includes('Template')
@@ -7808,7 +7886,10 @@ function GenericCRUD({
             __rowNumber: index + 2,
           }));
         });
+        const rowLabel = jsonData.length === 1 ? 'row' : 'rows';
+        setImportProgress({ percent: 45, status: `Importing ${jsonData.length} ${rowLabel}` });
         const importResult = await onImport(jsonData);
+        setImportProgress({ percent: 80, status: 'Refreshing imported records' });
         invalidateSharedLookupCache();
         await fetchData();
         if (onDataChanged) await onDataChanged();
@@ -7976,7 +8057,7 @@ function GenericCRUD({
             </button>
           )}
           <button
-            onClick={() => { setEditingItem(null); setFormData({}); setIsModalOpen(true); }}
+            onClick={() => { setEditingItem(null); setFormData(initialFormData); setIsModalOpen(true); }}
             className="flex items-center gap-2 bg-slate-900 text-white px-4 py-2 rounded-lg font-bold hover:bg-slate-800 transition-all"
           >
             <Plus size={18} />
@@ -11582,16 +11663,11 @@ function TimingProfileManagement() {
 
   const handleImport = async (data: any[]) => {
     const entries = data.map((row) => {
-      const school = schools.find(item =>
-        normalizeLookupValue(item.name) === normalizeLookupValue(row['School']) ||
-        normalizeLookupValue(item.school_id) === normalizeLookupValue(row['School'])
-      );
-      const department = sortedDepartments.find(item =>
-        (
-          normalizeLookupValue(item.name) === normalizeLookupValue(row['Department']) ||
-          normalizeLookupValue(item.department_id) === normalizeLookupValue(row['Department'])
-        ) &&
-        (!school || idsMatch(item.school_id, school.id))
+      const school = findHierarchyImportRecord(schools, row['School'], ['name', 'school_id']);
+      const department = findHierarchyImportRecord(
+        sortedDepartments.filter(item => !school || idsMatch(item.school_id, school.id)),
+        row['Department'],
+        ['name', 'department_id'],
       );
 
       const payload = {
