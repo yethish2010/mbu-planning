@@ -22,6 +22,7 @@ const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const JWT_SECRET = process.env.JWT_SECRET || "smart-campus-secret-key";
 const AUTH_TOKEN_EXPIRY = process.env.AUTH_TOKEN_EXPIRY || "7d";
+const AUTH_TOKEN_RENEWAL_GRACE_SECONDS = 24 * 60 * 60;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const isProduction = process.env.NODE_ENV === "production";
 const isVercelRuntime = process.env.VERCEL === "1";
@@ -3118,12 +3119,32 @@ const getTokenCandidates = (req: any) => {
 
 const resolveSessionFromRequest = async (req: any) => {
   for (const token of getTokenCandidates(req)) {
+    let decoded: any;
+    let shouldRenew = false;
     try {
-      const decoded = jwt.verify(token, JWT_SECRET);
-      const userId = (decoded as any)?.id;
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch (error: any) {
+      if (error?.name !== "TokenExpiredError") continue;
+      try {
+        const expiredToken = jwt.verify(token, JWT_SECRET, { ignoreExpiration: true }) as any;
+        const expiredAt = Number(expiredToken?.exp || 0);
+        const secondsSinceExpiry = Math.floor(Date.now() / 1000) - expiredAt;
+        if (!expiredAt || secondsSinceExpiry < 0 || secondsSinceExpiry > AUTH_TOKEN_RENEWAL_GRACE_SECONDS) continue;
+        decoded = expiredToken;
+        shouldRenew = true;
+      } catch {
+        continue;
+      }
+    }
+
+    try {
+      const userId = decoded?.id;
       if (!userId) return decoded;
       const user = await db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
-      if (user) return await getUserSessionPayload(user);
+      if (user) {
+        if (shouldRenew) req.__renewAuthToken = true;
+        return await getUserSessionPayload(user);
+      }
     } catch {
       // Try the next token candidate.
     }
@@ -3137,6 +3158,9 @@ const authenticate = async (req: any, res: any, next: any) => {
   if (!user) {
     res.clearCookie("token", getAuthCookieOptions());
     return res.status(401).json({ error: "Session expired. Please log in again." });
+  }
+  if (req.__renewAuthToken) {
+    res.cookie("token", createAuthToken(user), getAuthCookieOptions());
   }
   req.user = user;
   next();

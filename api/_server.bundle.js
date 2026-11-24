@@ -176,6 +176,7 @@ var app = express();
 var PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3e3;
 var JWT_SECRET = process.env.JWT_SECRET || "smart-campus-secret-key";
 var AUTH_TOKEN_EXPIRY = process.env.AUTH_TOKEN_EXPIRY || "7d";
+var AUTH_TOKEN_RENEWAL_GRACE_SECONDS = 24 * 60 * 60;
 var GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 var isProduction = process.env.NODE_ENV === "production";
 var isVercelRuntime = process.env.VERCEL === "1";
@@ -2789,12 +2790,31 @@ var getTokenCandidates = (req) => {
 };
 var resolveSessionFromRequest = async (req) => {
   for (const token of getTokenCandidates(req)) {
+    let decoded;
+    let shouldRenew = false;
     try {
-      const decoded = jwt.verify(token, JWT_SECRET);
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch (error) {
+      if (error?.name !== "TokenExpiredError") continue;
+      try {
+        const expiredToken = jwt.verify(token, JWT_SECRET, { ignoreExpiration: true });
+        const expiredAt = Number(expiredToken?.exp || 0);
+        const secondsSinceExpiry = Math.floor(Date.now() / 1e3) - expiredAt;
+        if (!expiredAt || secondsSinceExpiry < 0 || secondsSinceExpiry > AUTH_TOKEN_RENEWAL_GRACE_SECONDS) continue;
+        decoded = expiredToken;
+        shouldRenew = true;
+      } catch {
+        continue;
+      }
+    }
+    try {
       const userId = decoded?.id;
       if (!userId) return decoded;
       const user = await db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
-      if (user) return await getUserSessionPayload(user);
+      if (user) {
+        if (shouldRenew) req.__renewAuthToken = true;
+        return await getUserSessionPayload(user);
+      }
     } catch {
     }
   }
@@ -2805,6 +2825,9 @@ var authenticate = async (req, res, next) => {
   if (!user) {
     res.clearCookie("token", getAuthCookieOptions());
     return res.status(401).json({ error: "Session expired. Please log in again." });
+  }
+  if (req.__renewAuthToken) {
+    res.cookie("token", createAuthToken(user), getAuthCookieOptions());
   }
   req.user = user;
   next();
