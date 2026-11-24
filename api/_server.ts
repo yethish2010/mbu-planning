@@ -4885,7 +4885,7 @@ const findDuplicateRecordInCollection = (
   return null;
 };
 
-const normalizeBulkImportPayload = async (tableName: string, payload: any, existingItem?: any) => {
+const normalizeBulkImportPayload = async (tableName: string, payload: any, existingItem?: any, context?: BulkImportContext) => {
   let nextPayload = { ...(payload || {}) };
 
   if (tableName === "users") {
@@ -5003,7 +5003,7 @@ const validateBulkImportPayload = async (tableName: string, payload: any, existi
 };
 
 const persistBulkImportRecord = async (tableName: string, payload: any, existingItem?: any, context?: BulkImportContext) => {
-  const normalizedPayload = await normalizeBulkImportPayload(tableName, payload, existingItem);
+  const normalizedPayload = await normalizeBulkImportPayload(tableName, payload, existingItem, context);
   await validateBulkImportPayload(tableName, normalizedPayload, existingItem, context);
 
   const fields = Object.keys(normalizedPayload);
@@ -6528,7 +6528,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         const records = await transactionDb.prepare(`SELECT * FROM ${tableName}`).all() as any[];
         const importContext = createBulkImportContext(tableName, records);
         const scopedPersistBulkImportRecord = async (payload: any, existingItem?: any, context?: BulkImportContext) => {
-          const normalizedPayload = await normalizeBulkImportPayload(tableName, payload, existingItem);
+          const normalizedPayload = await normalizeBulkImportPayload(tableName, payload, existingItem, context);
           const userAssignmentPayload = tableName === "users"
             ? {
                 assigned_schools: normalizedPayload.assigned_schools,
