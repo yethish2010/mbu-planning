@@ -2177,6 +2177,9 @@ const apiJson = async (url: string, options?: RequestInit) => {
     ? await res.json().catch(() => ({}))
     : { error: await res.text().catch(() => '') };
   if (!res.ok) {
+    if (res.status === 401) {
+      window.dispatchEvent(new Event('auth:expired'));
+    }
     throw new Error(data?.error || res.statusText || 'Request failed');
   }
   return data;
@@ -4272,6 +4275,12 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
   const [authServiceMessage, setAuthServiceMessage] = useState('');
 
   useEffect(() => {
+    const handleExpiredSession = () => {
+      setUser(null);
+      setAuthServiceMessage('Your session expired. Please log in again.');
+    };
+
+    window.addEventListener('auth:expired', handleExpiredSession);
     fetch('/api/auth/me', { credentials: 'include' })
       .then(async res => {
         const data = await readJsonResponse(res);

@@ -21,6 +21,7 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const JWT_SECRET = process.env.JWT_SECRET || "smart-campus-secret-key";
+const AUTH_TOKEN_EXPIRY = process.env.AUTH_TOKEN_EXPIRY || "7d";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const isProduction = process.env.NODE_ENV === "production";
 const isVercelRuntime = process.env.VERCEL === "1";
@@ -3097,6 +3098,9 @@ const getAuthCookieOptions = () => ({
   sameSite: (isProduction ? "none" : "lax") as "none" | "lax",
 });
 
+const createAuthToken = (sessionUser: any) =>
+  jwt.sign(sessionUser, JWT_SECRET, { expiresIn: AUTH_TOKEN_EXPIRY });
+
 const getTokenCandidates = (req: any) => {
   const candidates = new Set<string>();
   const parsedToken = req.cookies?.token?.toString?.().trim();
@@ -3494,7 +3498,7 @@ app.post("/api/auth/login", async (req, res) => {
       return res.status(401).json({ error: "Invalid credentials" });
     }
     const sessionUser = await getUserSessionPayload(user);
-    const token = jwt.sign(sessionUser, JWT_SECRET, { expiresIn: "24h" });
+    const token = createAuthToken(sessionUser);
     res.cookie("token", token, getAuthCookieOptions());
     res.json({ user: sessionUser });
   } catch (err: any) {
@@ -3513,6 +3517,7 @@ app.get("/api/auth/me", async (req, res) => {
     res.clearCookie("token", getAuthCookieOptions());
     return res.status(401).json({ error: "Not logged in" });
   }
+  res.cookie("token", createAuthToken(user), getAuthCookieOptions());
   res.json({ user });
 });
 
@@ -3531,7 +3536,7 @@ app.put("/api/auth/preferences/dashboard-view", authenticate, async (req: any, r
     await db.prepare("UPDATE users SET dashboard_view_mode = ? WHERE id = ?").run(dashboardViewMode, req.user.id);
     const updatedUser: any = await db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
     const sessionUser = await getUserSessionPayload(updatedUser);
-    const token = jwt.sign(sessionUser, JWT_SECRET, { expiresIn: "24h" });
+    const token = createAuthToken(sessionUser);
     res.cookie("token", token, getAuthCookieOptions());
     res.json({ user: sessionUser });
   } catch (err: any) {
@@ -3901,7 +3906,7 @@ app.post("/api/auth/change-password", authenticate, async (req: any, res) => {
     await db.prepare("UPDATE users SET password = ?, force_password_change = 0 WHERE id = ?").run(hashedPassword, req.user.id);
     const user: any = await db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
     const sessionUser = await getUserSessionPayload(user);
-    const token = jwt.sign(sessionUser, JWT_SECRET, { expiresIn: "24h" });
+    const token = createAuthToken(sessionUser);
     res.cookie("token", token, getAuthCookieOptions());
     res.json({ user: sessionUser });
   } catch (err: any) {
