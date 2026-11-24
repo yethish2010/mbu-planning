@@ -269,7 +269,7 @@ const getHierarchyImportLookupKeys = (value: unknown) => {
   if (!normalized) return [];
 
   const words = normalized.replace(/[^a-z0-9]+/g, ' ').split(' ').filter(Boolean);
-  const meaningfulWords = words.filter(word => !['school', 'department', 'of', 'and', 'the', 'for'].includes(word));
+  const meaningfulWords = words.filter(word => !['school', 'department', 'dept', 'of', 'and', 'the', 'for'].includes(word));
 
   return Array.from(new Set([
     normalized,
