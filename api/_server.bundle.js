@@ -175,6 +175,7 @@ dotenv.config();
 var app = express();
 var PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3e3;
 var JWT_SECRET = process.env.JWT_SECRET || "smart-campus-secret-key";
+var AUTH_TOKEN_EXPIRY = process.env.AUTH_TOKEN_EXPIRY || "7d";
 var GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 var isProduction = process.env.NODE_ENV === "production";
 var isVercelRuntime = process.env.VERCEL === "1";
@@ -1654,16 +1655,26 @@ var getBookingTimingPolicyDetails = async (booking) => {
   const timingOverride = purposeType !== "Academic Regular" && slots.length > 0 && !matchesWindow ? 1 : 0;
   return { purposeType, timingProfile, slots, slotWindows, matchesWindow, timingOverride };
 };
-var normalizeTimingProfilePayload = async (payload) => {
+var normalizeTimingProfilePayload = async (payload, referenceCache) => {
   const nextPayload = { ...payload };
   const departmentId = nextPayload.department_id ? Number(nextPayload.department_id) : null;
   const schoolId = nextPayload.school_id ? Number(nextPayload.school_id) : null;
-  const department = departmentId ? await db.prepare("SELECT id, school_id FROM departments WHERE id = ?").get(departmentId) : null;
+  const departmentCacheKey = departmentId ? `department:${departmentId}` : "";
+  let department = departmentCacheKey ? referenceCache?.get(departmentCacheKey) : null;
+  if (department === void 0 || !department && departmentId) {
+    department = departmentId ? await db.prepare("SELECT id, school_id FROM departments WHERE id = ?").get(departmentId) : null;
+    if (departmentCacheKey) referenceCache?.set(departmentCacheKey, department);
+  }
   if (departmentId && !department) {
     throw new Error("Please select a valid department.");
   }
   if (schoolId) {
-    const school = await db.prepare("SELECT id FROM schools WHERE id = ?").get(schoolId);
+    const schoolCacheKey = `school:${schoolId}`;
+    let school = referenceCache?.get(schoolCacheKey);
+    if (school === void 0) {
+      school = await db.prepare("SELECT id FROM schools WHERE id = ?").get(schoolId);
+      referenceCache?.set(schoolCacheKey, school);
+    }
     if (!school) {
       throw new Error("Please select a valid school.");
     }
@@ -2102,6 +2113,7 @@ var buildScheduleCodePrefix = (department, program, specialization) => {
 var createBulkImportContext = (tableName, records) => ({
   tableName,
   records,
+  referenceByKey: /* @__PURE__ */ new Map(),
   departmentById: /* @__PURE__ */ new Map(),
   roomById: /* @__PURE__ */ new Map(),
   roomBookableErrorByRoomId: /* @__PURE__ */ new Map(),
@@ -2760,6 +2772,7 @@ var getAuthCookieOptions = () => ({
   secure: isProduction,
   sameSite: isProduction ? "none" : "lax"
 });
+var createAuthToken = (sessionUser) => jwt.sign(sessionUser, JWT_SECRET, { expiresIn: AUTH_TOKEN_EXPIRY });
 var getTokenCandidates = (req) => {
   const candidates = /* @__PURE__ */ new Set();
   const parsedToken = req.cookies?.token?.toString?.().trim();
@@ -3085,7 +3098,7 @@ app.post("/api/auth/login", async (req, res) => {
       return res.status(401).json({ error: "Invalid credentials" });
     }
     const sessionUser = await getUserSessionPayload(user);
-    const token = jwt.sign(sessionUser, JWT_SECRET, { expiresIn: "24h" });
+    const token = createAuthToken(sessionUser);
     res.cookie("token", token, getAuthCookieOptions());
     res.json({ user: sessionUser });
   } catch (err) {
@@ -3102,6 +3115,7 @@ app.get("/api/auth/me", async (req, res) => {
     res.clearCookie("token", getAuthCookieOptions());
     return res.status(401).json({ error: "Not logged in" });
   }
+  res.cookie("token", createAuthToken(user), getAuthCookieOptions());
   res.json({ user });
 });
 app.put("/api/auth/preferences/dashboard-view", authenticate, async (req, res) => {
@@ -3117,7 +3131,7 @@ app.put("/api/auth/preferences/dashboard-view", authenticate, async (req, res) =
     await db.prepare("UPDATE users SET dashboard_view_mode = ? WHERE id = ?").run(dashboardViewMode, req.user.id);
     const updatedUser = await db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
     const sessionUser = await getUserSessionPayload(updatedUser);
-    const token = jwt.sign(sessionUser, JWT_SECRET, { expiresIn: "24h" });
+    const token = createAuthToken(sessionUser);
     res.cookie("token", token, getAuthCookieOptions());
     res.json({ user: sessionUser });
   } catch (err) {
@@ -3431,7 +3445,7 @@ app.post("/api/auth/change-password", authenticate, async (req, res) => {
     await db.prepare("UPDATE users SET password = ?, force_password_change = 0 WHERE id = ?").run(hashedPassword, req.user.id);
     const user = await db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
     const sessionUser = await getUserSessionPayload(user);
-    const token = jwt.sign(sessionUser, JWT_SECRET, { expiresIn: "24h" });
+    const token = createAuthToken(sessionUser);
     res.cookie("token", token, getAuthCookieOptions());
     res.json({ user: sessionUser });
   } catch (err) {
@@ -4241,7 +4255,7 @@ var findDuplicateRecordInCollection = (tableName, records, data, excludeId) => {
   }
   return null;
 };
-var normalizeBulkImportPayload = async (tableName, payload, existingItem) => {
+var normalizeBulkImportPayload = async (tableName, payload, existingItem, context) => {
   let nextPayload = { ...payload || {} };
   if (tableName === "users") {
     if (existingItem && !nextPayload.password) delete nextPayload.password;
@@ -4262,7 +4276,10 @@ var normalizeBulkImportPayload = async (tableName, payload, existingItem) => {
     nextPayload = await normalizeAcademicCalendarPayload(existingItem ? { ...existingItem, ...nextPayload } : nextPayload);
   }
   if (tableName === "timing_profiles") {
-    nextPayload = await normalizeTimingProfilePayload(existingItem ? { ...existingItem, ...nextPayload } : nextPayload);
+    nextPayload = await normalizeTimingProfilePayload(
+      existingItem ? { ...existingItem, ...nextPayload } : nextPayload,
+      context?.referenceByKey
+    );
   }
   if (tableName === "batch_room_allocations") {
     nextPayload = await normalizeBatchRoomAllocationPayload(existingItem ? { ...existingItem, ...nextPayload } : nextPayload);
@@ -5651,7 +5668,7 @@ var createCrudRoutes = (tableName, idField = "id") => {
         const records = await transactionDb.prepare(`SELECT * FROM ${tableName}`).all();
         const importContext = createBulkImportContext(tableName, records);
         const scopedPersistBulkImportRecord = async (payload, existingItem, context) => {
-          const normalizedPayload = await normalizeBulkImportPayload(tableName, payload, existingItem);
+          const normalizedPayload = await normalizeBulkImportPayload(tableName, payload, existingItem, context);
           const userAssignmentPayload = tableName === "users" ? {
             assigned_schools: normalizedPayload.assigned_schools,
             assigned_school_ids: normalizedPayload.assigned_school_ids,
