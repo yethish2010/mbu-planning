@@ -11661,21 +11661,42 @@ function TimingProfileManagement() {
     };
   };
 
-  const handleImport = async (data: any[]) => {
-    const entries = data.map((row) => {
-      const school = findHierarchyImportRecord(schools, row['School'], ['name', 'school_id']);
+  const handleImport = async (data: any[]): Promise<ImportAuditResult> => {
+    // Re-read hierarchy records at import time. The management screen can stay
+    // open while School or Department records change elsewhere in the app.
+    invalidateSharedLookupCache(['/api/schools', '/api/departments']);
+    const [latestSchoolData, latestDepartmentData] = await fetchSharedLookupJsons([
+      '/api/schools',
+      '/api/departments',
+    ]);
+    const importSchools = Array.isArray(latestSchoolData) ? latestSchoolData : [];
+    const importDepartments = Array.isArray(latestDepartmentData) ? latestDepartmentData : [];
+    const importAuditRows: ImportAuditRow[] = [];
+    const entries: BulkImportEntry[] = [];
+
+    data.forEach((row) => {
+      const schoolValue = getImportValue(row, ['School', 'School Name', 'School ID']);
+      const departmentValue = getImportValue(row, ['Department', 'Department Name', 'Department ID']);
+      const school = findHierarchyImportRecord(importSchools, schoolValue, ['name', 'school_id']);
       const department = findHierarchyImportRecord(
-        sortedDepartments.filter(item => !school || idsMatch(item.school_id, school.id)),
-        row['Department'],
+        importDepartments.filter(item => !school || idsMatch(item.school_id, school.id)),
+        departmentValue,
         ['name', 'department_id'],
       );
+      const importedSchoolId = department?.school_id || school?.id || null;
+      const sourceHasSchool = !!normalizeLookupValue(schoolValue);
+      const sourceHasDepartment = !!normalizeLookupValue(departmentValue);
+      const mappingErrors = [
+        !isHodUser && sourceHasSchool && !importedSchoolId ? `School "${schoolValue}" was not found. Please import or correct the School record first.` : '',
+        !isHodUser && sourceHasDepartment && !department ? `Department "${departmentValue}" was not found under the selected School.` : '',
+      ].filter(Boolean);
 
       const payload = {
         profile_id: row['Profile ID']?.toString(),
         profile_name: row['Profile Name']?.toString() || row['Profile ID']?.toString(),
         school_id: isHodUser
-          ? (departments.find(item => idsMatch(item.id, activeHodDepartmentId))?.school_id || null)
-          : (department?.school_id || school?.id || null),
+          ? (importDepartments.find(item => idsMatch(item.id, activeHodDepartmentId))?.school_id || null)
+          : importedSchoolId,
         department_id: isHodUser ? (activeHodDepartmentId || null) : (department?.id || null),
         program: normalizeProgramValue(row['Program']),
         specialization: getImportValue(row, [SPECIALIZATION_BRANCH_LABEL, 'Specialization', 'Branch'])?.toString().trim() || null,
@@ -11688,11 +11709,46 @@ function TimingProfileManagement() {
         notes: row['Notes']?.toString() || null,
       };
 
-      return !payload.profile_id || !payload.profile_name || !payload.slot_pattern
-        ? null
-        : { payload, uniqueFieldGroups: [['profile_id']] };
-    }).filter(Boolean) as BulkImportEntry[];
-    await upsertImportRecordsBulk('/api/timing_profiles', entries);
+      const invalidReason = !payload.profile_id || !payload.profile_name || !payload.slot_pattern
+        ? 'Profile ID, Profile Name, and Slot Timings are required.'
+        : mappingErrors.join(' ');
+      if (invalidReason) {
+        importAuditRows.push({
+          'Profile ID': payload.profile_id || '-',
+          School: schoolValue || '-',
+          Department: departmentValue || '-',
+          Status: 'Skipped',
+          Details: invalidReason,
+        });
+        return;
+      }
+
+      entries.push({ payload, uniqueFieldGroups: [['profile_id']] });
+    });
+
+    const results = await upsertImportRecordsBulk('/api/timing_profiles', entries);
+    results.forEach((result, index) => {
+      const payload = entries[index]?.payload;
+      importAuditRows.push({
+        'Profile ID': payload?.profile_id || '-',
+        School: payload?.school_id || '-',
+        Department: payload?.department_id || '-',
+        Status: result?.ok ? (result.action === 'updated' ? 'Updated' : 'Created') : 'Failed',
+        Details: result?.ok ? 'Latest imported values saved.' : (result?.error || 'Import failed.'),
+      });
+    });
+    const created = results.filter(result => result?.ok && result.action === 'created').length;
+    const updated = results.filter(result => result?.ok && result.action === 'updated').length;
+    const failed = results.filter(result => !result?.ok).length;
+    const skipped = importAuditRows.filter(row => row.Status === 'Skipped').length;
+
+    return {
+      message: `Timing Profile import complete. Created ${created}, updated ${updated}, skipped ${skipped}, failed ${failed}.`,
+      auditTitle: 'Timing Profile Import Audit',
+      auditHeaders: ['Profile ID', 'School', 'Department', 'Status', 'Details'],
+      auditRows: importAuditRows,
+      summary: { totalRowsRead: data.length, validRows: entries.length, created, updated, skipped, failed },
+    };
   };
 
   const timingProfileSorter = (left: any, right: any) => {
