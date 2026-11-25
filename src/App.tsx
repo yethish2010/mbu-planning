@@ -7720,6 +7720,14 @@ function GenericCRUD({
   const getMultiSelectValues = (value: any) =>
     value?.toString().split(',').map((part: string) => part.trim()).filter(Boolean) || [];
 
+  const openCreateModal = () => {
+    setOpenMultiSelectKey(null);
+    setVisiblePasswordFields({});
+    setEditingItem(null);
+    setFormData({ ...(initialFormData || {}) });
+    setIsModalOpen(true);
+  };
+
   const getFieldDisplayValue = (field: any, item: any) => {
     if (field.render) return field.render(item);
     const value = item[field.key];
@@ -8073,7 +8081,8 @@ function GenericCRUD({
             </button>
           )}
           <button
-            onClick={() => { setEditingItem(null); setFormData(initialFormData); setIsModalOpen(true); }}
+            type="button"
+            onClick={openCreateModal}
             className="flex items-center gap-2 bg-slate-900 text-white px-4 py-2 rounded-lg font-bold hover:bg-slate-800 transition-all"
           >
             <Plus size={18} />
