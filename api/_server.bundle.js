@@ -177,6 +177,7 @@ var PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3e3;
 var JWT_SECRET = process.env.JWT_SECRET || "smart-campus-secret-key";
 var AUTH_TOKEN_EXPIRY = process.env.AUTH_TOKEN_EXPIRY || "7d";
 var AUTH_TOKEN_RENEWAL_GRACE_SECONDS = 24 * 60 * 60;
+var AUTH_COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1e3;
 var GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 var isProduction = process.env.NODE_ENV === "production";
 var isVercelRuntime = process.env.VERCEL === "1";
@@ -2771,7 +2772,12 @@ app.use((_req, res, next) => {
 var getAuthCookieOptions = () => ({
   httpOnly: true,
   secure: isProduction,
-  sameSite: isProduction ? "none" : "lax"
+  sameSite: "lax",
+  path: "/"
+});
+var getAuthSessionCookieOptions = () => ({
+  ...getAuthCookieOptions(),
+  maxAge: AUTH_COOKIE_MAX_AGE_MS
 });
 var createAuthToken = (sessionUser) => jwt.sign(sessionUser, JWT_SECRET, { expiresIn: AUTH_TOKEN_EXPIRY });
 var getTokenCandidates = (req) => {
@@ -2827,7 +2833,7 @@ var authenticate = async (req, res, next) => {
     return res.status(401).json({ error: "Session expired. Please log in again." });
   }
   if (req.__renewAuthToken) {
-    res.cookie("token", createAuthToken(user), getAuthCookieOptions());
+    res.cookie("token", createAuthToken(user), getAuthSessionCookieOptions());
   }
   req.user = user;
   next();
@@ -3122,7 +3128,7 @@ app.post("/api/auth/login", async (req, res) => {
     }
     const sessionUser = await getUserSessionPayload(user);
     const token = createAuthToken(sessionUser);
-    res.cookie("token", token, getAuthCookieOptions());
+    res.cookie("token", token, getAuthSessionCookieOptions());
     res.json({ user: sessionUser });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3138,7 +3144,7 @@ app.get("/api/auth/me", async (req, res) => {
     res.clearCookie("token", getAuthCookieOptions());
     return res.status(401).json({ error: "Not logged in" });
   }
-  res.cookie("token", createAuthToken(user), getAuthCookieOptions());
+  res.cookie("token", createAuthToken(user), getAuthSessionCookieOptions());
   res.json({ user });
 });
 app.put("/api/auth/preferences/dashboard-view", authenticate, async (req, res) => {
@@ -3155,7 +3161,7 @@ app.put("/api/auth/preferences/dashboard-view", authenticate, async (req, res) =
     const updatedUser = await db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
     const sessionUser = await getUserSessionPayload(updatedUser);
     const token = createAuthToken(sessionUser);
-    res.cookie("token", token, getAuthCookieOptions());
+    res.cookie("token", token, getAuthSessionCookieOptions());
     res.json({ user: sessionUser });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3469,7 +3475,7 @@ app.post("/api/auth/change-password", authenticate, async (req, res) => {
     const user = await db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
     const sessionUser = await getUserSessionPayload(user);
     const token = createAuthToken(sessionUser);
-    res.cookie("token", token, getAuthCookieOptions());
+    res.cookie("token", token, getAuthSessionCookieOptions());
     res.json({ user: sessionUser });
   } catch (err) {
     res.status(500).json({ error: err.message });

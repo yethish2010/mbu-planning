@@ -23,6 +23,7 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const JWT_SECRET = process.env.JWT_SECRET || "smart-campus-secret-key";
 const AUTH_TOKEN_EXPIRY = process.env.AUTH_TOKEN_EXPIRY || "7d";
 const AUTH_TOKEN_RENEWAL_GRACE_SECONDS = 24 * 60 * 60;
+const AUTH_COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const isProduction = process.env.NODE_ENV === "production";
 const isVercelRuntime = process.env.VERCEL === "1";
@@ -3096,7 +3097,13 @@ app.use((_req: any, res: any, next: any) => {
 const getAuthCookieOptions = () => ({
   httpOnly: true,
   secure: isProduction,
-  sameSite: (isProduction ? "none" : "lax") as "none" | "lax",
+  sameSite: "lax" as const,
+  path: "/",
+});
+
+const getAuthSessionCookieOptions = () => ({
+  ...getAuthCookieOptions(),
+  maxAge: AUTH_COOKIE_MAX_AGE_MS,
 });
 
 const createAuthToken = (sessionUser: any) =>
@@ -3160,7 +3167,7 @@ const authenticate = async (req: any, res: any, next: any) => {
     return res.status(401).json({ error: "Session expired. Please log in again." });
   }
   if (req.__renewAuthToken) {
-    res.cookie("token", createAuthToken(user), getAuthCookieOptions());
+    res.cookie("token", createAuthToken(user), getAuthSessionCookieOptions());
   }
   req.user = user;
   next();
@@ -3523,7 +3530,7 @@ app.post("/api/auth/login", async (req, res) => {
     }
     const sessionUser = await getUserSessionPayload(user);
     const token = createAuthToken(sessionUser);
-    res.cookie("token", token, getAuthCookieOptions());
+    res.cookie("token", token, getAuthSessionCookieOptions());
     res.json({ user: sessionUser });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -3541,7 +3548,7 @@ app.get("/api/auth/me", async (req, res) => {
     res.clearCookie("token", getAuthCookieOptions());
     return res.status(401).json({ error: "Not logged in" });
   }
-  res.cookie("token", createAuthToken(user), getAuthCookieOptions());
+  res.cookie("token", createAuthToken(user), getAuthSessionCookieOptions());
   res.json({ user });
 });
 
@@ -3561,7 +3568,7 @@ app.put("/api/auth/preferences/dashboard-view", authenticate, async (req: any, r
     const updatedUser: any = await db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
     const sessionUser = await getUserSessionPayload(updatedUser);
     const token = createAuthToken(sessionUser);
-    res.cookie("token", token, getAuthCookieOptions());
+    res.cookie("token", token, getAuthSessionCookieOptions());
     res.json({ user: sessionUser });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -3931,7 +3938,7 @@ app.post("/api/auth/change-password", authenticate, async (req: any, res) => {
     const user: any = await db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
     const sessionUser = await getUserSessionPayload(user);
     const token = createAuthToken(sessionUser);
-    res.cookie("token", token, getAuthCookieOptions());
+    res.cookie("token", token, getAuthSessionCookieOptions());
     res.json({ user: sessionUser });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
