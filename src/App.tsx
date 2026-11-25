@@ -2178,6 +2178,7 @@ const apiJson = async (url: string, options?: RequestInit) => {
     : { error: await res.text().catch(() => '') };
   if (!res.ok) {
     if (res.status === 401) {
+      window.sessionStorage.removeItem('mbu-planning-auth-token');
       window.dispatchEvent(new Event('auth:expired'));
     }
     throw new Error(data?.error || res.statusText || 'Request failed');
@@ -4276,6 +4277,7 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const handleExpiredSession = () => {
+      window.sessionStorage.removeItem('mbu-planning-auth-token');
       setUser(null);
       setAuthServiceMessage('Your session expired. Please log in again.');
     };
@@ -4286,6 +4288,7 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
         const data = await readJsonResponse(res);
 
         if (res.ok && data?.user) {
+          if (data.token) window.sessionStorage.setItem('mbu-planning-auth-token', data.token);
           setUser(data.user);
           setAuthServiceMessage('');
           return;
@@ -4309,7 +4312,10 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(userData);
   };
   const logout = () => {
-    fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).then(() => setUser(null));
+    fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).then(() => {
+      window.sessionStorage.removeItem('mbu-planning-auth-token');
+      setUser(null);
+    });
   };
   const clearAuthServiceMessage = () => setAuthServiceMessage('');
 
@@ -4766,6 +4772,7 @@ function LoginPage() {
       const data = await readJsonResponse(res);
 
       if (res.ok && data?.user) {
+        if (data.token) window.sessionStorage.setItem('mbu-planning-auth-token', data.token);
         login(data.user);
         navigate('/');
         return;

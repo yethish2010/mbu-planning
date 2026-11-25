@@ -10,15 +10,24 @@ const configuredApiBaseUrl = ((import.meta as any).env?.VITE_API_BASE_URL || '')
 const isGitHubPages = typeof window !== 'undefined' && window.location.hostname === 'yethish2010.github.io';
 const defaultGitHubPagesApiBaseUrl = 'https://mbu-planning.vercel.app';
 const apiBaseUrl = configuredApiBaseUrl || (isGitHubPages ? defaultGitHubPagesApiBaseUrl : '');
+const authSessionStorageKey = 'mbu-planning-auth-token';
 
 if (typeof window !== 'undefined') {
   const nativeFetch = window.fetch.bind(window);
+
+  const withSessionAuthorization = (init?: RequestInit, inheritedHeaders?: HeadersInit): RequestInit => {
+    const token = window.sessionStorage.getItem(authSessionStorageKey)?.trim();
+    if (!token) return init || {};
+    const headers = new Headers(inheritedHeaders || init?.headers || undefined);
+    if (!headers.has('Authorization')) headers.set('Authorization', `Bearer ${token}`);
+    return { ...(init || {}), headers };
+  };
 
   const buildApiFetchTarget = (input: RequestInfo | URL, init?: RequestInit) => {
     if (typeof input === 'string' && input.startsWith('/api/')) {
       return {
         rewrittenInput: (apiBaseUrl ? `${apiBaseUrl}${input}` : input) as RequestInfo | URL,
-        rewrittenInit: { ...init, credentials: init?.credentials ?? 'include' },
+        rewrittenInit: withSessionAuthorization({ ...init, credentials: init?.credentials ?? 'include' }),
       };
     }
 
@@ -29,12 +38,18 @@ if (typeof window !== 'undefined') {
           const rewrittenUrl = `${apiBaseUrl}${input.url.slice(currentOrigin.length)}`;
           return {
             rewrittenInput: new Request(rewrittenUrl, input) as RequestInfo | URL,
-            rewrittenInit: { ...init, credentials: init?.credentials ?? input.credentials ?? 'include' },
+            rewrittenInit: withSessionAuthorization(
+              { ...init, credentials: init?.credentials ?? input.credentials ?? 'include' },
+              init?.headers || input.headers,
+            ),
           };
         }
         return {
           rewrittenInput: input,
-          rewrittenInit: { ...init, credentials: init?.credentials ?? input.credentials ?? 'include' },
+          rewrittenInit: withSessionAuthorization(
+            { ...init, credentials: init?.credentials ?? input.credentials ?? 'include' },
+            init?.headers || input.headers,
+          ),
         };
       }
     }

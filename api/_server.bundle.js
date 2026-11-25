@@ -2784,6 +2784,11 @@ var getTokenCandidates = (req) => {
   const candidates = /* @__PURE__ */ new Set();
   const parsedToken = req.cookies?.token?.toString?.().trim();
   if (parsedToken) candidates.add(parsedToken);
+  const authorization = req.headers?.authorization?.toString?.().trim() || "";
+  if (/^Bearer\s+/i.test(authorization)) {
+    const bearerToken = authorization.replace(/^Bearer\s+/i, "").trim();
+    if (bearerToken) candidates.add(bearerToken);
+  }
   const rawCookieHeader = req.headers?.cookie?.toString?.() || "";
   rawCookieHeader.split(";").forEach((part) => {
     const [name, ...valueParts] = part.trim().split("=");
@@ -2822,6 +2827,7 @@ var resolveSessionFromRequest = async (req) => {
         return await getUserSessionPayload(user);
       }
     } catch {
+      return decoded;
     }
   }
   return null;
@@ -3129,7 +3135,7 @@ app.post("/api/auth/login", async (req, res) => {
     const sessionUser = await getUserSessionPayload(user);
     const token = createAuthToken(sessionUser);
     res.cookie("token", token, getAuthSessionCookieOptions());
-    res.json({ user: sessionUser });
+    res.json({ user: sessionUser, token });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3144,8 +3150,9 @@ app.get("/api/auth/me", async (req, res) => {
     res.clearCookie("token", getAuthCookieOptions());
     return res.status(401).json({ error: "Not logged in" });
   }
-  res.cookie("token", createAuthToken(user), getAuthSessionCookieOptions());
-  res.json({ user });
+  const token = createAuthToken(user);
+  res.cookie("token", token, getAuthSessionCookieOptions());
+  res.json({ user, token });
 });
 app.put("/api/auth/preferences/dashboard-view", authenticate, async (req, res) => {
   try {
