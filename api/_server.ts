@@ -1708,7 +1708,11 @@ const getBookingTimingPolicyDetails = async (booking: any) => {
   return { purposeType, timingProfile, slots, slotWindows, matchesWindow, timingOverride };
 };
 
-const normalizeTimingProfilePayload = async (payload: any, referenceCache?: Map<string, any>) => {
+const normalizeTimingProfilePayload = async (
+  payload: any,
+  referenceCache?: Map<string, any>,
+  database: DatabaseClient = db,
+) => {
   const nextPayload = { ...payload };
   const departmentId = nextPayload.department_id ? Number(nextPayload.department_id) : null;
   const schoolId = nextPayload.school_id ? Number(nextPayload.school_id) : null;
@@ -1717,7 +1721,7 @@ const normalizeTimingProfilePayload = async (payload: any, referenceCache?: Map<
   let department = departmentCacheKey ? referenceCache?.get(departmentCacheKey) : null;
   if (department === undefined || (!department && departmentId)) {
     department = departmentId
-      ? await db.prepare("SELECT id, school_id FROM departments WHERE id = ?").get(departmentId) as any
+      ? await database.prepare("SELECT id, school_id FROM departments WHERE id = ?").get(departmentId) as any
       : null;
     if (departmentCacheKey) referenceCache?.set(departmentCacheKey, department);
   }
@@ -1730,7 +1734,7 @@ const normalizeTimingProfilePayload = async (payload: any, referenceCache?: Map<
     const schoolCacheKey = `school:${schoolId}`;
     let school = referenceCache?.get(schoolCacheKey);
     if (school === undefined) {
-      school = await db.prepare("SELECT id FROM schools WHERE id = ?").get(schoolId) as any;
+      school = await database.prepare("SELECT id FROM schools WHERE id = ?").get(schoolId) as any;
       referenceCache?.set(schoolCacheKey, school);
     }
     if (!school) {
@@ -4929,7 +4933,13 @@ const findDuplicateRecordInCollection = (
   return null;
 };
 
-const normalizeBulkImportPayload = async (tableName: string, payload: any, existingItem?: any, context?: BulkImportContext) => {
+const normalizeBulkImportPayload = async (
+  tableName: string,
+  payload: any,
+  existingItem?: any,
+  context?: BulkImportContext,
+  database: DatabaseClient = db,
+) => {
   let nextPayload = { ...(payload || {}) };
 
   if (tableName === "users") {
@@ -4955,6 +4965,7 @@ const normalizeBulkImportPayload = async (tableName: string, payload: any, exist
     nextPayload = await normalizeTimingProfilePayload(
       existingItem ? { ...existingItem, ...nextPayload } : nextPayload,
       context?.referenceByKey,
+      database,
     );
   }
   if (tableName === "batch_room_allocations") {
@@ -6572,7 +6583,13 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         const records = await transactionDb.prepare(`SELECT * FROM ${tableName}`).all() as any[];
         const importContext = createBulkImportContext(tableName, records);
         const scopedPersistBulkImportRecord = async (payload: any, existingItem?: any, context?: BulkImportContext) => {
-          const normalizedPayload = await normalizeBulkImportPayload(tableName, payload, existingItem, context);
+          const normalizedPayload = await normalizeBulkImportPayload(
+            tableName,
+            payload,
+            existingItem,
+            context,
+            transactionDb,
+          );
           const userAssignmentPayload = tableName === "users"
             ? {
                 assigned_schools: normalizedPayload.assigned_schools,
