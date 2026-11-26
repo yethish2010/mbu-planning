@@ -1806,7 +1806,11 @@ const normalizeAcademicCalendarPayload = async (payload: any) => {
   if (timingProfile?.school_id && timingProfile.school_id.toString() !== department.school_id.toString()) {
     throw new Error("Selected timing profile does not belong to the selected school.");
   }
-  if (timingProfile?.specialization && normalizeAcademicContextText(timingProfile.specialization) !== normalizeAcademicContextText(nextPayload.specialization)) {
+  if (
+    timingProfile?.specialization &&
+    nextPayload.specialization &&
+    normalizeAcademicContextText(timingProfile.specialization) !== normalizeAcademicContextText(nextPayload.specialization)
+  ) {
     throw new Error("Selected timing profile does not belong to the selected specialization / branch.");
   }
 

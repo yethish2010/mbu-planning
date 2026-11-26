@@ -11890,10 +11890,19 @@ function AcademicCalendarManagement() {
       options: (formData: any) => scopedTimingProfiles
         .filter(profile =>
           (!formData.school_id || !profile.school_id || idsMatch(profile.school_id, formData.school_id)) &&
-          (!formData.department_id || !profile.department_id || idsMatch(profile.department_id, formData.department_id)) &&
-          (!profile.specialization || normalizeLookupValue(profile.specialization) === normalizeLookupValue(formData.specialization))
+          (!formData.department_id || !profile.department_id || idsMatch(profile.department_id, formData.department_id))
         )
         .map(profile => ({ value: profile.id, label: getTimingProfileDisplayLabel(profile) })),
+      onChange: (nextData: any, value: string) => {
+        const profile = scopedTimingProfiles.find(item => idsMatch(item.id, value));
+        return {
+          ...nextData,
+          timing_profile_id: value,
+          // A profile is scoped to its specialization. Keep the calendar in
+          // the same scope when an administrator selects that profile.
+          specialization: profile?.specialization || nextData.specialization,
+        };
+      },
       render: (item: any) => getTimingProfileDisplayLabel(scopedTimingProfiles.find(profile => idsMatch(profile.id, item.timing_profile_id))) || '-',
     },
     {
