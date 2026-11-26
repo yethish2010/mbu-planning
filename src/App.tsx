@@ -1,4 +1,5 @@
 import { useState, useEffect, createContext, useContext, useRef, useMemo, Fragment, Component } from 'react';
+import { createPortal } from 'react-dom';
 import { BrowserRouter, HashRouter, Routes, Route, Navigate, Link, useNavigate, useLocation, useParams } from 'react-router-dom';
 import { 
   LayoutDashboard, Users, Building2, Layers, DoorOpen, 
@@ -8232,8 +8233,13 @@ function GenericCRUD({
         )}
       </div>
 
-      {isModalOpen && (
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[100] flex items-center justify-center p-4">
+      {isModalOpen && createPortal(
+        <div
+          className="fixed inset-0 z-[1000] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-md"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`${editingItem ? 'Edit' : 'Create'} ${type}`}
+        >
           <div className="bg-white w-full max-w-lg max-h-[90vh] rounded-2xl shadow-2xl overflow-hidden border border-slate-200">
             <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-white">
               <h3 className="text-lg font-bold text-slate-800">{editingItem ? 'Edit' : 'Create'} {type}</h3>
@@ -8391,7 +8397,8 @@ function GenericCRUD({
               </div>
             </form>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
