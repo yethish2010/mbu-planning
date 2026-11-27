@@ -11864,14 +11864,14 @@ function AcademicCalendarManagement() {
       key: 'school_id',
       label: 'School',
       type: 'select',
-      resetKeys: ['department_id', 'specialization', 'timing_profile_id'],
+      resetKeys: ['department_id', 'specialization', 'academic_year', 'timing_profile_id'],
       options: schoolOptions,
     },
     {
       key: 'department_id',
       label: 'Department',
       type: 'select',
-      resetKeys: ['specialization', 'timing_profile_id'],
+      resetKeys: ['specialization', 'academic_year', 'timing_profile_id'],
       options: (formData: any) => sortedDepartments
         .filter(department => idsMatch(department.school_id, formData.school_id))
         .map(department => ({ value: department.id, label: department.name })),
@@ -11899,7 +11899,24 @@ function AcademicCalendarManagement() {
           .map(specialization => ({ value: specialization, label: specialization }));
       },
     },
-    { key: 'academic_year', label: 'Academic Year' },
+    {
+      key: 'academic_year',
+      label: 'Academic Year',
+      type: 'select',
+      options: (formData: any) => {
+        const selectedDepartmentId = formData.department_id || activeHodDepartmentId;
+        const academicYears = scopedTimingProfiles
+          .filter(profile =>
+            profile?.academic_year?.toString().trim() &&
+            (!selectedDepartmentId || !profile.department_id || idsMatch(profile.department_id, selectedDepartmentId)) &&
+            (!formData.school_id || !profile.school_id || idsMatch(profile.school_id, formData.school_id))
+          )
+          .map(profile => profile.academic_year.toString().trim());
+        return Array.from(new Set(academicYears))
+          .sort((left, right) => left.localeCompare(right))
+          .map(academicYear => ({ value: academicYear, label: academicYear }));
+      },
+    },
     { key: 'semester', label: SEMESTER_TYPE_LABEL, type: 'select', resetKeys: ['year_of_study'], options: SEMESTER_OPTIONS },
     {
       key: 'year_of_study',
