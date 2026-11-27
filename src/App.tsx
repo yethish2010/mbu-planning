@@ -11860,11 +11860,18 @@ function AcademicCalendarManagement() {
 
   const fields = [
     { key: 'calendar_id', label: 'Calendar ID' },
-    { key: 'school_id', label: 'School', type: 'select', resetKeys: ['department_id'], options: schoolOptions },
+    {
+      key: 'school_id',
+      label: 'School',
+      type: 'select',
+      resetKeys: ['department_id', 'specialization', 'timing_profile_id'],
+      options: schoolOptions,
+    },
     {
       key: 'department_id',
       label: 'Department',
       type: 'select',
+      resetKeys: ['specialization', 'timing_profile_id'],
       options: (formData: any) => sortedDepartments
         .filter(department => idsMatch(department.school_id, formData.school_id))
         .map(department => ({ value: department.id, label: department.name })),
@@ -11872,7 +11879,26 @@ function AcademicCalendarManagement() {
     },
     { key: 'program', label: 'Program', type: 'select', options: PROGRAM_OPTIONS },
     { key: 'batch', label: 'Batch' },
-    { key: 'specialization', label: SPECIALIZATION_BRANCH_LABEL, required: false },
+    {
+      key: 'specialization',
+      label: SPECIALIZATION_BRANCH_LABEL,
+      type: 'select',
+      required: false,
+      resetKeys: ['timing_profile_id'],
+      options: (formData: any) => {
+        const selectedDepartmentId = formData.department_id || activeHodDepartmentId;
+        const specializations = scopedTimingProfiles
+          .filter(profile =>
+            profile?.specialization?.toString().trim() &&
+            (!selectedDepartmentId || !profile.department_id || idsMatch(profile.department_id, selectedDepartmentId)) &&
+            (!formData.school_id || !profile.school_id || idsMatch(profile.school_id, formData.school_id))
+          )
+          .map(profile => profile.specialization.toString().trim());
+        return Array.from(new Set(specializations))
+          .sort((left, right) => left.localeCompare(right))
+          .map(specialization => ({ value: specialization, label: specialization }));
+      },
+    },
     { key: 'academic_year', label: 'Academic Year' },
     { key: 'semester', label: SEMESTER_TYPE_LABEL, type: 'select', resetKeys: ['year_of_study'], options: SEMESTER_OPTIONS },
     {
